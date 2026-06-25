@@ -137,24 +137,33 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
-  it('applies a stable pending badge while pending and clears on release (no flicker)', async () => {
+  it('swaps to the badged icon while pending and back to base on release (no title change)', async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: 'alice' });
     const tray = makeTray();
-    const host = new TrayHost(store, tray, makeWindow(), { title: 'pnpm-pub' });
+    let icon = 'base.png';
+    const host = new TrayHost(store, tray, makeWindow(), {
+      title: 'pnpm-pub',
+      baseIcon: 'base.png',
+      pendingIcon: 'pending.png',
+      setIcon: (p) => {
+        icon = p;
+      },
+    });
 
     const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    // The badge is a single steady "● pnpm-pub" (no timer toggling).
     await new Promise((r) => setTimeout(r, 10));
-    expect(tray.title).toBe('● pnpm-pub');
-    // It must NOT flicker back to the base title while still pending.
+    // Pending swaps to the badged icon; the title is NEVER mutated.
+    expect(icon).toBe('pending.png');
+    expect(tray.title).toBe('pnpm-pub');
+    // Stable — no flicker back to base while still pending.
     await new Promise((r) => setTimeout(r, 50));
-    expect(tray.title).toBe('● pnpm-pub');
+    expect(icon).toBe('pending.png');
 
     store.resolveEvent(evt.id, 'success', 'done');
     await new Promise((r) => setTimeout(r, 10));
-    expect(tray.title).toBe('pnpm-pub'); // restored, no longer flashing
+    expect(icon).toBe('base.png'); // restored to base icon
     await host.destroy();
   });
 });

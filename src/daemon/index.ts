@@ -136,6 +136,13 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       // so any suspended CLI exits instead of hanging.
       onWindowHidden: () => scheduler.drainAll(),
       openItemId: 1,
+      // Pending signal is delivered by swapping to a badged icon (NOT by
+      // mutating the title). opentray has no native badge API.
+      baseIcon: iconPath(false) ?? undefined,
+      pendingIcon: iconPath(true) ?? undefined,
+      setIcon: (p) => {
+        tray?.setIcon?.({ type: 'file', path: p });
+      },
     });
   }
   log(`WebUI available at ${web.webUiUrl(port)}`);
@@ -299,19 +306,25 @@ async function tryCreateTray(
  * ship the official npm red (#CB3837) version. Both are rasterized from the
  * simple-icons npm SVG into 64×64 rgba PNGs (opentray's required icon format).
  *
- * If a cached user avatar exists it takes precedence (the "avatar as tray icon"
- * affordance), otherwise the platform npm mark is used.
+ * A `pending` variant (same mark + a corner badge dot) is used to signal an
+ * awaiting-confirmation publish WITHOUT touching the title — opentray has no
+ * native badge API, so we swap the icon file itself.
+ *
+ * If a cached user avatar exists it takes precedence for the base icon.
  */
-function iconPath(): string | null {
-  // Prefer a cached user avatar when present (Chapter 1.3.2 avatar affordance).
-  const profile = activeProfileRef;
-  if (profile) {
-    const { trayIconForProfile } = require('./avatar.js') as typeof import('./avatar.js');
-    const avatar = trayIconForProfile(profile);
-    if (avatar) return avatar;
+function iconPath(pending = false): string | null {
+  // Prefer a cached user avatar when present (base icon only; the avatar has no
+  // badge variant, so pending still falls back to the npm mark + dot).
+  if (!pending) {
+    const profile = activeProfileRef;
+    if (profile) {
+      const { trayIconForProfile } = require('./avatar.js') as typeof import('./avatar.js');
+      const avatar = trayIconForProfile(profile);
+      if (avatar) return avatar;
+    }
   }
-  // Platform npm mark (bundled rgba PNGs).
-  const name = process.platform === 'darwin' ? 'tray-icon-macos.png' : 'tray-icon-windows.png';
+  const plat = process.platform === 'darwin' ? 'macos' : 'windows';
+  const name = pending ? `tray-icon-${plat}-pending.png` : `tray-icon-${plat}.png`;
   const candidates = [
     path.join(__dirname, 'assets', name), // dist/assets (bundled)
     path.join(__dirname, '..', 'assets', name), // dev: src/daemon → <root>/assets

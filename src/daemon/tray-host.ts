@@ -28,6 +28,7 @@ import type { DaemonStore } from './store.js';
 export interface OpentrayTray {
   onMenuClick(handler: (e: { itemId?: number }) => void): () => void;
   setTitle(title: string): Promise<void>;
+  setIcon?(icon: { type: 'file'; path: string }): Promise<void>;
   setTooltip?(tooltip: string): Promise<void>;
   destroy(): Promise<void>;
 }
@@ -44,7 +45,7 @@ export interface OpentrayWindow {
 }
 
 export interface TrayHostOptions {
-  /** Initial tray title (restored when flash stops). */
+  /** Tray title (kept static; pending is NOT signaled via the title). */
   title?: string;
   /** Log sink for dev/test observability. */
   log?: (line: string) => void;
@@ -52,6 +53,12 @@ export interface TrayHostOptions {
   onWindowHidden?: () => void;
   /** Menu item id that opens the window (primaryEvent). */
   openItemId?: number;
+  /** Base tray icon path (idle state). */
+  baseIcon?: string;
+  /** Tray icon path with a pending badge (corner dot). */
+  pendingIcon?: string;
+  /** Swaps the tray icon. Used to apply/clear the pending badge. */
+  setIcon?: (path: string) => void | Promise<void>;
 }
 
 type Visibility = 'hidden' | 'shown' | 'pinned';
@@ -59,8 +66,7 @@ type Visibility = 'hidden' | 'shown' | 'pinned';
 export class TrayHost {
   private visibility: Visibility = 'hidden';
   private unsubs: Array<() => void> = [];
-  private flashTimer: ReturnType<typeof setInterval> | null = null;
-  private flashOn = false;
+  private badgeApplied = false;
 
   constructor(
     private store: DaemonStore,
@@ -176,21 +182,24 @@ export class TrayHost {
   }
 
   /**
-   * Apply a stable "pending" badge to the tray title (a single dot prefix) and
-   * let KeepOnTop + the icon signal urgency. We deliberately do NOT toggle the
-   * title on a timer — rapid title flicker is jarring and not idiomatic for a
-   * tray; a steady badge plus a pinned window reads as "awaiting confirmation".
+   * Signal "pending" by swapping to the badged tray icon (NOT by mutating the
+   * title). opentray exposes no native badge API, so we keep two icon files and
+   * setIcon() between them. KeepOnTop + the badged icon read as
+   * "awaiting confirmation" without any title flicker.
    */
   private startFlash(): void {
-    if (this.flashTimer || !this.tray) return;
-    this.flashTimer = 1 as unknown as ReturnType<typeof setInterval>; // mark "badge applied"
-    this.safeCall('setTitle(pending)', this.tray.setTitle(`● ${this.opts.title ?? 'pnpm-pub'}`));
+    if (this.badgeApplied) return;
+    this.badgeApplied = true;
+    if (this.opts.pendingIcon && this.opts.setIcon) {
+      this.safeCall('setIcon(pending)', Promise.resolve(this.opts.setIcon(this.opts.pendingIcon)));
+    }
   }
 
   private stopFlash(): void {
-    if (this.flashTimer) this.flashTimer = null;
-    this.flashOn = false;
-    this.safeCall('setTitle(idle)', this.tray?.setTitle(this.opts.title ?? 'pnpm-pub'));
+    this.badgeApplied = false;
+    if (this.opts.baseIcon && this.opts.setIcon) {
+      this.safeCall('setIcon(idle)', Promise.resolve(this.opts.setIcon(this.opts.baseIcon)));
+    }
   }
 
   /** Recompute pin/release from the current pending-event set. */
