@@ -1,0 +1,230 @@
+/**
+ * Global daemon connection — a long-lived WebSocket client carrying the
+ * WebToken (Chapter 3.2.2 / 4.4.3).
+ *
+ * The store exposes reactive Svelte state for profiles / workspaces / events
+ * and helper methods for every action verb in the protocol. The WebToken is
+ * injected via the URL hash by the opentray host (Chapter 3.2.2 安全分发).
+ */
+import { writable, derived, get } from 'svelte/store';
+import { browser } from '$app/environment';
+import type {
+	WsServerMessage,
+	WsClientMessage,
+	PubEvent,
+	Profile,
+	WorkspaceEntry,
+	PublishTarget,
+} from './types';
+
+/** Exposed so pages can build authenticated REST requests (Chapter 3.2.2). */
+export function readWebToken(): string {
+	if (!browser) return '';
+	const hash = window.location.hash.replace(/^#/, '');
+	const params = new URLSearchParams(hash);
+	return params.get('token') ?? '';
+}
+
+function derivePort(): string {
+	if (!browser) return '0';
+	// The daemon serves on a random port; opentray loads /#token=... on whatever
+	// port it was told. We just use the current window location.
+	return window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+}
+
+export interface DaemonState {
+	connected: boolean;
+	authed: boolean;
+	profiles: Profile[];
+	defaultProfile: string;
+	workspaces: WorkspaceEntry[];
+	events: PubEvent[];
+	packages: PublishTarget[];
+	scannedRoot: string | null;
+	/** Staged confirmation token for a risky-workspace add (Chapter 5.3.2). */
+	riskyConfirmationToken: string | null;
+	toast: { level: 'info' | 'success' | 'error' | 'warning'; message: string; id: number } | null;
+}
+
+function createState(): DaemonState {
+	return {
+		connected: false,
+		authed: false,
+		profiles: [],
+		defaultProfile: '',
+		workspaces: [],
+		events: [],
+		packages: [],
+		scannedRoot: null,
+		riskyConfirmationToken: null,
+		toast: null,
+	};
+}
+
+export const daemon = writable<DaemonState>(createState());
+
+let socket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function send(msg: WsClientMessage): void {
+	if (socket && socket.readyState === WebSocket.OPEN) {
+		socket.send(JSON.stringify(msg));
+	}
+}
+
+/** Open (or reopen) the daemon WebSocket and authenticate with the WebToken. */
+export function connect(): void {
+	if (!browser) return;
+	if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+		return;
+	}
+	const token = readWebToken();
+	const port = derivePort();
+	const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+	const url = `${proto}://${window.location.hostname}:${port}/?token=${encodeURIComponent(token)}`;
+	try {
+		socket = new WebSocket(url);
+	} catch {
+		scheduleReconnect();
+		return;
+	}
+	socket.onopen = () => {
+		daemon.update((s) => ({ ...s, connected: true }));
+		// Immediately authenticate so the daemon will honour action verbs.
+		send({ type: 'auth', webToken: token });
+	};
+	socket.onmessage = (ev) => {
+		let msg: WsServerMessage;
+		try {
+			msg = JSON.parse(ev.data as string) as WsServerMessage;
+		} catch {
+			return;
+		}
+		handleServerMessage(msg);
+	};
+	socket.onclose = () => {
+		daemon.update((s) => ({ ...s, connected: false, authed: false }));
+		socket = null;
+		scheduleReconnect();
+	};
+	socket.onerror = () => {
+		try {
+			socket?.close();
+		} catch {
+			/* ignore */
+		}
+	};
+}
+
+function scheduleReconnect(): void {
+	if (reconnectTimer) return;
+	reconnectTimer = setTimeout(() => {
+		reconnectTimer = null;
+		connect();
+	}, 1500);
+}
+
+function handleServerMessage(msg: WsServerMessage): void {
+	switch (msg.type) {
+		case 'hello':
+			// daemon requires auth; we already sent it on open.
+			break;
+		case 'profiles':
+			daemon.update((s) => ({ ...s, profiles: msg.profiles, defaultProfile: msg.default }));
+			break;
+		case 'workspaces':
+			daemon.update((s) => ({ ...s, workspaces: msg.workspaces }));
+			break;
+		case 'events':
+			daemon.update((s) => ({ ...s, events: sortEvents(msg.events) }));
+			break;
+		case 'event':
+			daemon.update((s) => {
+				const others = s.events.filter((e) => e.id !== msg.event.id);
+				return { ...s, events: sortEvents([msg.event, ...others]) };
+			});
+			break;
+		case 'packages':
+			daemon.update((s) => ({
+				...s,
+				packages: msg.packages,
+				scannedRoot: msg.root,
+				riskyConfirmationToken: msg.riskyConfirmationToken ?? null,
+			}));
+			break;
+		case 'toast':
+			daemon.update((s) => ({ ...s, toast: { ...msg, id: Date.now() } }));
+			break;
+	}
+}
+
+function sortEvents(events: PubEvent[]): PubEvent[] {
+	return [...events].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+// ----- Derived selectors -----
+
+export const pendingEvents = derived(daemon, ($d) => $d.events.filter((e) => e.status === 'pending'));
+export const historyEvents = derived(daemon, ($d) => $d.events.filter((e) => e.status !== 'pending'));
+export const activeProfile = derived(daemon, ($d) =>
+	$d.profiles.find((p) => p.username === $d.defaultProfile) ?? null,
+);
+
+// ----- Action helpers (Chapter 6.2 / 6.3) -----
+
+export const actions = {
+	selectProfile(username: string): void {
+			// Chapter 6.1.1: switching identity clears the client store and
+			// re-fetches the target profile's data so workspaces/packages are
+			// re-scoped (profile isolation). Events stay global (a CLI publish
+			// from another profile can still surface as a context-override card),
+			// but the profile-scoped views reset.
+			daemon.update((s) => ({
+				...s,
+				defaultProfile: username,
+				workspaces: [],
+				packages: [],
+				scannedRoot: null,
+				riskyConfirmationToken: null,
+			}));
+			send({ type: 'select-profile', username });
+		},
+	confirm(id: string): void {
+		send({ type: 'confirm-event', id });
+	},
+	reject(id: string): void {
+		send({ type: 'reject-event', id });
+	},
+	scanWorkspace(root: string): void {
+		send({ type: 'scan-workspace', root });
+	},
+	/** Confirm a staged risky-workspace add (Chapter 5.3.2). */
+	async confirmRiskyWorkspace(token: string): Promise<boolean> {
+		const res = await fetch('/api/workspace/confirm', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			body: JSON.stringify({ token }),
+		});
+		const json = (await res.json()) as { ok: boolean };
+		if (json.ok) daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
+		return json.ok;
+	},
+	/** Cancel a staged risky-workspace add (Chapter 5.3.2). */
+	cancelRiskyWorkspace(token: string): Promise<void> {
+		daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
+		return fetch('/api/workspace/cancel', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			body: JSON.stringify({ token }),
+		}).then(() => undefined, () => undefined);
+	},
+	createEvent(kind: Extract<WsClientMessage, { type: 'create-event' }>['kind'], payload: unknown): void {
+		send({ type: 'create-event', kind, payload });
+	},
+	// import/export are handled via REST (/api/export, /api/import), not WS.
+};
+
+/** Convenience: are we waiting on any pending event? (Tray keepOnTop hint.) */
+export function hasPending(): boolean {
+	return get(daemon).events.some((e) => e.status === 'pending');
+}
