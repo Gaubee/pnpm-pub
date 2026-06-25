@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "opentray": {
+      "source": "jixoai/opentray",
+      "sourceType": "github",
+      "skillPath": "skills/opentray/SKILL.md",
+      "computedHash": "c23b25526bc74847dbc5cd95a1a02ce3934c403f309eea8b5e98911d4083a6e6"
+    }
+  }
+}

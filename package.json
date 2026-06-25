@@ -1,0 +1,65 @@
+{
+  "name": "pnpm-pub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop-level local daemon proxy and productivity tool for high-frequency NPM package authors.",
+  "type": "module",
+  "packageManager": "pnpm@10.22.0",
+  "bin": {
+    "pnpm-pub": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
+    "build:webui": "pnpm --filter ./webui run build",
+    "copy:webui": "rm -rf dist/webui && mkdir -p dist && cp -r webui/build dist/webui",
+    "build:core": "tsdown",
+
+    "dev:webui": "pnpm run build:webui && pnpm run copy:webui",
+    "dev": "pnpm run dev:webui && bun run src/daemon/dev.ts",
+    "dev:core": "bun run src/daemon/dev.ts",
+    "dev:cli": "bun run src/cli/cli.ts",
+    "dev:publish": "bun run src/cli/cli.ts",
+
+    "release:start": "node dist/cli.js start",
+    "release:status": "node dist/cli.js status",
+    "release:stop": "node dist/cli.js stop",
+    "release:publish": "node dist/cli.js",
+
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:e2e:docker": "docker compose -f test/e2e/docker/verdaccio.compose.yml up -d --wait && pnpm test:e2e; docker compose -f test/e2e/docker/verdaccio.compose.yml down -v",
+    "clean": "rm -rf dist packages/*/dist webui/build webui/.svelte-kit"
+  },
+  "keywords": [
+    "npm",
+    "publish",
+    "2fa",
+    "totp",
+    "tray",
+    "daemon",
+    "oidc",
+    "trusted-publish"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@github/keytar": "^7.0.0",
+    "@opentray/ext-webview": "^0.7.0",
+    "opentray": "^0.8.0",
+    "otplib": "^12.0.1",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@opentray/ext-webview-darwin-arm64": "0.7.0",
+    "@types/node": "^22.10.0",
+    "@types/yargs": "^17.0.33",
+    "fast-glob": "^3.3.3",
+    "memfs": "^4.17.0",
+    "tsdown": "^0.22.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

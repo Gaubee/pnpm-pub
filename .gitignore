@@ -1,0 +1,15 @@
+node_modules
+dist
+webui/build
+webui/.svelte-kit
+webui/node_modules
+*.log
+.DS_Store
+coverage
+.pnpm-pub-test
+.pnpm-pub-dev
+
+# Personal IDE / agent configs (not project-shared)
+.agents
+.factory
+.qoder
