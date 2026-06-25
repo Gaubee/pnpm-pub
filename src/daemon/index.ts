@@ -13,7 +13,7 @@ import { IpcServer } from './ipc-server.js';
 import { WebServer } from './web-server.js';
 import { randomHex } from './crypto.js';
 import * as keychain from './keychain.js';
-import { TrayHost, type TrayHandleLike, type TraySurfaceLike } from './tray-host.js';
+import { TrayHost, type OpentrayTray, type OpentrayWindow } from './tray-host.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,14 +116,14 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       const { fetchAndCacheAvatar } = await import('./avatar.js');
       await fetchAndCacheAvatar(defaultProfile, registry);
     }
-    const { handle, surface } = await tryCreateTray(web.webUiUrl(port), (line) => log(line));
-    trayHost = new TrayHost(store, handle, surface, {
-      url: web.webUiUrl(port),
+    const { tray, window } = await tryCreateTray(web.webUiUrl(port), (line) => log(line));
+    trayHost = new TrayHost(store, tray, window, {
       title: 'pnpm-pub',
       log: (line) => log(line),
       // Chapter 6.2.2: closing the tray window with pending events rejects them
       // so any suspended CLI exits instead of hanging.
       onWindowHidden: () => scheduler.drainAll(),
+      openItemId: 1,
     });
   }
   log(`WebUI available at ${web.webUiUrl(port)}`);
@@ -198,21 +198,28 @@ export { keychain };
 /**
  * Mount the WebUI inside a real opentray WebView window (Chapter 6.4).
  *
- * Follows the canonical opentray recipe: create a tray, extend it with
- * `WebviewExt`, then `createWebviewWindow({ url, style })`. The returned
- * `WebviewWindowHandle` provides show/hide/setStyle({keepOnTop})/listen — which
- * map directly onto TrayHost's surface interface.
+ * Implements the opentray skill's "Tray-Launched WebView Surface" scenario card
+ * verbatim:
+ *   const tray = (await createTray({ menu, primaryEvent })).extend(WebviewExt);
+ *   const window = tray.createWebviewWindow({ url, ... });
+ * and returns the real typed handles. The click→show wiring, KeepOnTop, blur
+ * auto-hide, and flash live in TrayHost (the product behavior the skill leaves
+ * to the app). This function owns only the opentray lifecycle: create tray,
+ * extend, create ONE window session, keep the handle.
  *
- * The glass-shell style follows the opentray tray-panel rule: frameless +
- * keepOnTop, macOS `hudWindow` material, Windows `mica` + rounded corners.
+ * Per the skill (ext-webview.md): createWebviewWindow bootstraps ONCE; repeated
+ * activations restore via show()/hide() and must NOT replay startup options.
+ * The `icon` is optional; native icon support is `rgba` (skill
+ * troubleshooting), so only a real .png is passed. Drag is owned by the page
+ * (startAppRegionDrag), never injected here.
  *
  * Returns null handles when opentray/native webview is unavailable (headless /
- * CI) so the TrayHost state machine still runs observably against the log.
+ * CI) so TrayHost still runs observably against the log.
  */
 async function tryCreateTray(
   url: string,
   log: (line: string) => void,
-): Promise<{ handle: TrayHandleLike | null; surface: TraySurfaceLike | null }> {
+): Promise<{ tray: OpentrayTray | null; window: OpentrayWindow | null }> {
   try {
     const opentray = (await import('opentray')) as {
       createTray?: (options: unknown) => Promise<unknown>;
@@ -222,17 +229,9 @@ async function tryCreateTray(
     };
     if (typeof opentray.createTray !== 'function' || !ext.WebviewExt) {
       log('opentray/ext-webview not available — running headless');
-      return { handle: null, surface: null };
+      return { tray: null, window: null };
     }
 
-    // opentray skill scenario "Tray-Launched WebView Surface":
-    //   const tray = (await createTray({...menu with primaryEvent...})).extend(WebviewExt);
-    //   const window = tray.createWebviewWindow({ url/html, ... });
-    //   tray.onMenuClick(({ itemId }) => { if (itemId === openId) window.show(); });
-    // Keep the WebviewWindowHandle outside the click handler; repeated tray
-    // clicks call show() on the SAME handle (never re-create or resend startup
-    // size/style). The `icon` is optional; per skill troubleshooting, native
-    // icon support is `rgba` — only pass a real .png when present.
     const trayOptions: Record<string, unknown> = {
       trayId: 'pnpm-pub',
       title: 'pnpm-pub',
@@ -240,21 +239,20 @@ async function tryCreateTray(
     };
     const icon = iconPath();
     if (icon && fs.existsSync(icon)) trayOptions.icon = { type: 'file', path: icon };
+
+    // createTray → extend(WebviewExt) → TrayHandle & WebviewTrayCapability.
     const baseTray = await opentray.createTray(trayOptions);
     const tray = (
       typeof (baseTray as { extend?: (ext: unknown) => unknown }).extend === 'function'
         ? (baseTray as { extend(ext: unknown): unknown }).extend(ext.WebviewExt)
         : baseTray
-    ) as TrayHandleLike & {
-      createWebviewWindow?(options: unknown): WebviewWindowHandleLike;
-      onMenuClick?(handler: (e: { itemId?: number }) => void): () => void;
+    ) as OpentrayTray & {
+      createWebviewWindow?(options: unknown): OpentrayWindow;
     };
 
-    // Bootstrap the single tray-scoped window session ONCE. Per the skill,
-    // startup width/height/style run once; repeated activations restore via
-    // show(). Glass-shell style uses the semantic blur token (skill canonical
-    // form), frameless + keepOnTop, and the native window API so the page can
-    // own its chrome (drag handled in-page, not injected here).
+    // Bootstrap the single tray-scoped window session ONCE. Glass-shell style
+    // uses the skill's canonical semantic-blur token, frameless + keepOnTop,
+    // nativeWindowApi so the page owns its chrome.
     const panel = tray.createWebviewWindow?.({
       url,
       width: 420,
@@ -270,26 +268,14 @@ async function tryCreateTray(
 
     if (!panel) {
       log('createWebviewWindow unavailable — running headless');
-      return { handle: tray, surface: null };
+      return { tray, window: null };
     }
 
-    // The primary tray item opens the window (Chapter 6.4 — tray click → show).
-    // Repeated clicks call show() on the same handle.
-    tray.onMenuClick?.(({ itemId }) => {
-      if (itemId === 1) void panel.show();
-    });
-
-    const surface: TraySurfaceLike = {
-      show: () => panel.show(),
-      hide: () => panel.hide(),
-      setKeepOnTop: (on) => panel.setStyle({ keepOnTop: on }).then(() => {}, () => {}),
-      onFocusLoss: (handler) => panel.listen('blur', () => handler()),
-    };
     log('opentray webview window mounted');
-    return { handle: tray, surface };
+    return { tray, window: panel };
   } catch (err) {
     log(`opentray mount failed (${(err as Error).message}) — running headless`);
-    return { handle: null, surface: null };
+    return { tray: null, window: null };
   }
 }
 
@@ -307,12 +293,3 @@ function iconPath(): string | null {
 
 /** Set by bootDaemon so the module-level iconPath() knows the active profile. */
 let activeProfileRef: string | undefined;
-
-/** Loose shape of opentray's WebviewWindowHandle (kept untyped to avoid coupling). */
-interface WebviewWindowHandleLike {
-  show(command?: unknown): Promise<void>;
-  hide(): Promise<void>;
-  destroy(): Promise<void>;
-  setStyle(style: { frameless?: boolean; keepOnTop?: boolean; background?: unknown }): Promise<unknown>;
-  listen(event: string, handler: () => void): () => void;
-}
