@@ -1,0 +1,54 @@
+# pnpm-pub CI (Chapter 10.3).
+# Runs unit tests, the full build, and the E2E suite against a Dockerized
+# Verdaccio registry so the publish red-line + clock-drift recovery are
+# verified in a genuine registry loop on every push / PR.
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (daemon)
+        run: pnpm typecheck
+
+      - name: Check (webui)
+        run: pnpm --filter ./webui exec svelte-check --tsconfig ./tsconfig.json
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Full build
+        run: pnpm build
+
+      # E2E: boot a Dockerized Verdaccio (Chapter 10.3), then run the
+      # publish-interception + clock-drift-recovery suite against it.
+      - name: Start Verdaccio (Docker)
+        run: docker compose -f test/e2e/docker/verdaccio.compose.yml up -d --wait
+
+      - name: E2E (real Verdaccio registry)
+        env:
+          PNPM_PUB_E2E_REGISTRY: http://localhost:4873
+        run: pnpm test:e2e
+
+      - name: Tear down Verdaccio
+        if: always()
+        run: docker compose -f test/e2e/docker/verdaccio.compose.yml down -v
