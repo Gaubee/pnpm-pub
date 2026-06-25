@@ -75,6 +75,20 @@ export class TrayHost {
     this.opts.log?.(`[tray] ${line}`);
   }
 
+  /**
+   * Run an opentray op, swallowing + logging any rejection. opentray commands
+   * route through the broker and can reject asynchronously (e.g. a stale
+   * SINGLE_SESSION, a capability gap); a window op failure must NEVER crash the
+   * daemon or propagate as an unhandled rejection — the IPC/HTTP/WS surfaces
+   * stay up and the WebUI remains reachable in a browser.
+   */
+  private safeCall(label: string, p: Promise<unknown> | undefined): void {
+    if (!p) return;
+    if (typeof p.catch === 'function') {
+      p.catch((err) => this.log(`${label} failed: ${(err as Error)?.message ?? err}`));
+    }
+  }
+
   private wireUp(): void {
     const openId = this.opts.openItemId ?? 1;
     // Skill scenario: tray click → show() on the SAME panel handle.
@@ -106,7 +120,7 @@ export class TrayHost {
   /** Restore window visibility (skill: show() restores, never re-bootstraps). */
   show(): void {
     if (this.visibility === 'pinned') return; // already forced visible
-    void this.window?.show();
+    this.safeCall('show', this.window?.show());
     this.visibility = 'shown';
     this.log('show');
   }
@@ -120,7 +134,7 @@ export class TrayHost {
       this.opts.onWindowHidden?.();
     }
     if (this.visibility === 'pinned') return; // KeepOnTop overrides blur-hide
-    void this.window?.hide();
+    this.safeCall('hide', this.window?.hide());
     this.visibility = 'hidden';
     this.log('hide');
   }
@@ -129,22 +143,34 @@ export class TrayHost {
    * Pending-event override (Chapter 6.4 强制唤起): pin the window on top and
    * flash the tray title until the event resolves. Uses setStyle({keepOnTop})
    * on the real handle — a real style mutation, per the skill.
+   *
+   * Operations are sequenced (show THEN setStyle) because the webview extension
+   * rejects setStyle if the window isn't fully shown yet; calling them in
+   * parallel races the broker.
    */
   private pin(): void {
     if (this.visibility === 'pinned') return;
     this.visibility = 'pinned';
-    void this.window?.setStyle({ keepOnTop: true });
-    void this.window?.show();
     this.startFlash();
     this.log('pin (keepOnTop + flash)');
+    // Sequence: show() must settle before setStyle({keepOnTop}).
+    const showP = this.window?.show();
+    if (showP && typeof showP.then === 'function') {
+      showP.then(
+        () => this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true })),
+        (err) => this.log(`show failed during pin: ${(err as Error)?.message ?? err}`),
+      );
+    } else {
+      this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true }));
+    }
   }
 
   private release(): void {
     if (this.visibility !== 'pinned') return;
-    void this.window?.setStyle({ keepOnTop: false });
+    this.safeCall('setStyle(keepOnTop=false)', this.window?.setStyle({ keepOnTop: false }));
     this.stopFlash();
     // Resume the ghost idle state.
-    void this.window?.hide();
+    this.safeCall('hide', this.window?.hide());
     this.visibility = 'hidden';
     this.log('release');
   }

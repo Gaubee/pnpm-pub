@@ -118,6 +118,8 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     const host = new TrayHost(store, makeTray(), window, { title: 'pnpm-pub' });
 
     const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
+    // pin() sequences show()→setStyle({keepOnTop}); let the microtask chain flush.
+    await new Promise((r) => setTimeout(r, 0));
     // Pending event should force keepOnTop + visible.
     expect(host.getVisibility()).toBe('pinned');
     expect(window.keepOnTop).toBe(true);

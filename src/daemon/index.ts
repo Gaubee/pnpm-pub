@@ -69,6 +69,18 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   const store = new DaemonStore();
   await store.load();
 
+  // Never let an async opentray/broker rejection (e.g. a webview command the
+  // broker rejects mid-session, a stale SINGLE_SESSION) crash the daemon. Log
+  // and continue so the IPC/HTTP/WS surfaces stay up and the WebUI is still
+  // reachable in a browser even if the native window can't mount.
+  process.on('unhandledRejection', (reason) => {
+    try {
+      log(`unhandledRejection: ${(reason as Error)?.message ?? reason}`);
+    } catch {
+      /* logging itself must never throw */
+    }
+  });
+
   // 5.1.3 single-instance lock.
   const webToken = randomHex(32); // 64-char hex (256-bit) — Chapter 3.2.2.
   const scheduler = new PublishScheduler(store);
@@ -261,7 +273,6 @@ async function tryCreateTray(
       nativeWindowApi: true,
       style: {
         frameless: true,
-        keepOnTop: true,
         background: { kind: 'semantic', token: 'blur', state: 'active' },
       },
     });
