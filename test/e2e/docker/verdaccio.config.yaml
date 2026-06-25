@@ -1,0 +1,20 @@
+# Verdaccio config for the pnpm-pub E2E suite (Chapter 10.3).
+# Permissive: no auth required, publish + unpublish allowed from all clients.
+# Used by test/e2e/docker/verdaccio.compose.yml.
+storage: /verdaccio/storage
+auth:
+  htpasswd:
+    file: /verdaccio/storage/htpasswd
+    max_users: -1
+packages:
+  '@*/*':
+    access: $all
+    publish: $all
+    unpublish: $all
+  '**':
+    access: $all
+    publish: $all
+    unpublish: $all
+loggers:
+  stdout: { format: pretty, level: warn }
+listen: 0.0.0.0:4873

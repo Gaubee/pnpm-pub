@@ -1,0 +1,28 @@
+# Verdaccio E2E registry (Chapter 10.3 — "通过 Docker 启动一个私有 Verdaccio 实例").
+#
+# Permissive, auth-free publish so the E2E suite can exercise the real
+# publish-red-line + clock-drift-recovery paths against a genuine npm registry.
+# Usage:
+#   docker compose -f test/e2e/docker/verdaccio.compose.yml up -d --wait
+#   pnpm test:e2e   # PNPM_PUB_E2E_REGISTRY defaults to http://localhost:4873
+#   docker compose -f test/e2e/docker/verdaccio.compose.yml down -v
+services:
+  verdaccio:
+    image: verdaccio/verdaccio:6
+    container_name: pnpm-pub-verdaccio
+    ports:
+      - '4873:4873'
+    environment:
+      VERDACCIO_PUBLIC_URL: http://localhost:4873
+    volumes:
+      - ./verdaccio.config.yaml:/verdaccio/conf/config.yaml:ro
+      - verdaccio-storage:/verdaccio/storage
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:4873/-/ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 4s
+
+volumes:
+  verdaccio-storage:
