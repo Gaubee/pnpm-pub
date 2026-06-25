@@ -13,18 +13,15 @@
     "build:webui": "pnpm --filter ./webui run build",
     "copy:webui": "rm -rf dist/webui && mkdir -p dist && cp -r webui/build dist/webui",
     "build:core": "tsdown",
-
     "dev:webui": "pnpm run build:webui && pnpm run copy:webui",
     "dev": "pnpm run dev:webui && bun run src/daemon/dev.ts",
     "dev:core": "bun run src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
     "dev:publish": "bun run src/cli/cli.ts",
-
     "release:start": "node dist/cli.js start",
     "release:status": "node dist/cli.js status",
     "release:stop": "node dist/cli.js stop",
     "release:publish": "node dist/cli.js",
-
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

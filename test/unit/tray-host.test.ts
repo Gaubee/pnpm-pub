@@ -137,7 +137,7 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
-  it('flashes the tray title while pending and stops on release', async () => {
+  it('applies a stable pending badge while pending and clears on release (no flicker)', async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: 'alice' });
@@ -145,11 +145,12 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     const host = new TrayHost(store, tray, makeWindow(), { title: 'pnpm-pub' });
 
     const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    // Advance the flash timer a couple of ticks.
-    await new Promise((r) => setTimeout(r, 650));
-    expect(tray.title).toBe('● pending');
-    await new Promise((r) => setTimeout(r, 650));
-    expect(tray.title).toBe('pnpm-pub');
+    // The badge is a single steady "● pnpm-pub" (no timer toggling).
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tray.title).toBe('● pnpm-pub');
+    // It must NOT flicker back to the base title while still pending.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(tray.title).toBe('● pnpm-pub');
 
     store.resolveEvent(evt.id, 'success', 'done');
     await new Promise((r) => setTimeout(r, 10));

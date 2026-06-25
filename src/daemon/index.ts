@@ -291,15 +291,33 @@ async function tryCreateTray(
 }
 
 /**
- * Resolve the tray icon for the active profile: the cached avatar (NPM logo +
- * user avatar merge, Chapter 1.3.2). Returns null when no avatar is cached so
- * the daemon creates a title-only tray (icon is optional end-to-end).
+ * Resolve the tray icon.
+ *
+ * macOS tray items render as single-color template images, so we ship a black
+ * outline version of the npm logo (transparent background) that composites well
+ * in either light or dark menubars. Windows tray items are full-color, so we
+ * ship the official npm red (#CB3837) version. Both are rasterized from the
+ * simple-icons npm SVG into 64×64 rgba PNGs (opentray's required icon format).
+ *
+ * If a cached user avatar exists it takes precedence (the "avatar as tray icon"
+ * affordance), otherwise the platform npm mark is used.
  */
 function iconPath(): string | null {
+  // Prefer a cached user avatar when present (Chapter 1.3.2 avatar affordance).
   const profile = activeProfileRef;
-  if (!profile) return null;
-  const { trayIconForProfile } = require('./avatar.js') as typeof import('./avatar.js');
-  return trayIconForProfile(profile);
+  if (profile) {
+    const { trayIconForProfile } = require('./avatar.js') as typeof import('./avatar.js');
+    const avatar = trayIconForProfile(profile);
+    if (avatar) return avatar;
+  }
+  // Platform npm mark (bundled rgba PNGs).
+  const name = process.platform === 'darwin' ? 'tray-icon-macos.png' : 'tray-icon-windows.png';
+  const candidates = [
+    path.join(__dirname, 'assets', name), // dist/assets (bundled)
+    path.join(__dirname, '..', 'assets', name), // dev: src/daemon → <root>/assets
+    path.join(process.cwd(), 'assets', name),
+  ];
+  return candidates.find((c) => fs.existsSync(c)) ?? null;
 }
 
 /** Set by bootDaemon so the module-level iconPath() knows the active profile. */

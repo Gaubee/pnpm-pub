@@ -175,23 +175,22 @@ export class TrayHost {
     this.log('release');
   }
 
+  /**
+   * Apply a stable "pending" badge to the tray title (a single dot prefix) and
+   * let KeepOnTop + the icon signal urgency. We deliberately do NOT toggle the
+   * title on a timer — rapid title flicker is jarring and not idiomatic for a
+   * tray; a steady badge plus a pinned window reads as "awaiting confirmation".
+   */
   private startFlash(): void {
     if (this.flashTimer || !this.tray) return;
-    const tray = this.tray;
-    const base = this.opts.title ?? 'pnpm-pub';
-    this.flashTimer = setInterval(() => {
-      this.flashOn = !this.flashOn;
-      void tray.setTitle(this.flashOn ? '● pending' : base).catch(() => {});
-    }, 600);
+    this.flashTimer = 1 as unknown as ReturnType<typeof setInterval>; // mark "badge applied"
+    this.safeCall('setTitle(pending)', this.tray.setTitle(`● ${this.opts.title ?? 'pnpm-pub'}`));
   }
 
   private stopFlash(): void {
-    if (this.flashTimer) {
-      clearInterval(this.flashTimer);
-      this.flashTimer = null;
-    }
+    if (this.flashTimer) this.flashTimer = null;
     this.flashOn = false;
-    this.tray?.setTitle(this.opts.title ?? 'pnpm-pub').catch(() => {});
+    this.safeCall('setTitle(idle)', this.tray?.setTitle(this.opts.title ?? 'pnpm-pub'));
   }
 
   /** Recompute pin/release from the current pending-event set. */

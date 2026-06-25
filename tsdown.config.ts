@@ -59,6 +59,25 @@ function copyKeytarPrebuilds(): Plugin {
   };
 }
 
+/** Copy bundled tray-icon assets into dist/assets (Chapter 9 build). */
+function copyAssets(): Plugin {
+  return {
+    name: 'pnpm-pub/assets',
+    apply: () => 'build',
+    closeBundle() {
+      const src = path.resolve(process.cwd(), 'assets');
+      if (!existsSync(src)) return;
+      const destDir = path.resolve(process.cwd(), 'dist', 'assets');
+      mkdirSync(destDir, { recursive: true });
+      for (const file of readdirSync(src)) {
+        if (file.endsWith('.png') || file.endsWith('.svg')) {
+          copyFileSync(path.join(src, file), path.join(destDir, file));
+        }
+      }
+    },
+  };
+}
+
 export default defineConfig({
   entry: {
     cli: 'src/cli/cli.ts',
@@ -74,7 +93,7 @@ export default defineConfig({
   deps: {
     neverBundle: ['opentray', '@opentray/ext-webview'],
   },
-  plugins: [copyKeytarPrebuilds()],
+  plugins: [copyKeytarPrebuilds(), copyAssets()],
   unbundle: false,
   minify: false,
   clean: true,
