@@ -38,7 +38,7 @@ export interface OpentrayWindow {
   hide(): Promise<unknown>;
   /** Restore visibility without replaying startup options (skill rule). */
   show(command?: unknown): Promise<unknown>;
-  setStyle(style: { frameless?: boolean; keepOnTop?: boolean; background?: unknown }): Promise<unknown>;
+  setStyle(style: { keepOnTop?: boolean; background?: unknown }): Promise<unknown>;
   /** Listen for a window lifecycle event; returns an unsubscribe. */
   listen(event: string, handler: () => void): () => void;
   destroy(): Promise<void>;

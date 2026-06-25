@@ -9,11 +9,12 @@
     "pnpm-pub": "./dist/cli.js"
   },
   "scripts": {
-    "build": "pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
+    "gen:icons": "node scripts/gen-icons.mjs",
+    "build": "pnpm run gen:icons && pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
     "build:webui": "pnpm --filter ./webui run build",
     "copy:webui": "rm -rf dist/webui && mkdir -p dist && cp -r webui/build dist/webui",
     "build:core": "tsdown",
-    "dev:webui": "pnpm run build:webui && pnpm run copy:webui",
+    "dev:webui": "pnpm run gen:icons && pnpm run build:webui && pnpm run copy:webui",
     "dev": "pnpm run dev:webui && bun run src/daemon/dev.ts",
     "dev:core": "bun run src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
@@ -50,6 +51,7 @@
   },
   "devDependencies": {
     "@opentray/ext-webview-darwin-arm64": "0.7.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.10.0",
     "@types/yargs": "^17.0.33",
     "fast-glob": "^3.3.3",

@@ -17,9 +17,9 @@
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconSun from '@lucide/svelte/icons/sun';
 	import IconMoon from '@lucide/svelte/icons/moon';
-	import IconNpm from '@lucide/svelte/icons/package';
 	import IconChevron from '@lucide/svelte/icons/chevrons-up-down';
 	import IconBackup from '@lucide/svelte/icons/database-backup';
+	import NpmMark from '$lib/components/npm-mark.svelte';
 
 	let menuOpen = $state(false);
 
@@ -40,11 +40,9 @@
 </script>
 
 <aside class="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-	<!-- Brand header (NPM logo mark — Chapter 1.3.2). -->
+	<!-- Brand header (NPM logo mark — Chapter 1.3.2), unified with the tray icon. -->
 	<div class="no-drag flex h-12 items-center gap-2 px-4">
-		<div class="flex h-7 w-7 items-center justify-center rounded-md bg-brand text-brand-foreground">
-			<IconNpm class="h-4 w-4" />
-		</div>
+		<NpmMark class="h-6 w-6 rounded-[5px]" />
 		<span class="text-sm font-semibold tracking-tight">pnpm-pub</span>
 	</div>
 	<Separator />

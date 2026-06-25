@@ -1,0 +1,11 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    macOS menubar template silhouette of the npm mark.
+    Menubar items render as single-color templates that auto-adapt to light/dark
+    bars, so this is a pure-black-on-transparent silhouette: the square is solid
+    black and the "n" is cut out (transparent) via fill-rule="evenodd" so it
+    reads as negative space in any menubar tint. Rasterized to a 64x64 rgba PNG
+    by scripts/gen-icons.mjs.
+  -->
+  <path fill="#000" fill-rule="evenodd" clip-rule="evenodd" d="M10.999 500.999v-490h490v490h-490zM102.874 102.874v306.25h61.25v-245h91.875v245h153.125v-306.25z"/>
+</svg>

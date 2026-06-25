@@ -118,6 +118,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   // unavailable (dev/headless) we still construct a TrayHost with null handles
   // so the KeepOnTop/flash state machine is observable via the daemon log.
   let trayHost: TrayHost | null = null;
+  let stopPlacement: (() => void) | undefined;
   if (opts.withTray !== false) {
     // Chapter 1.3.2 / 4.3: pre-fetch the active profile's avatar so the tray
     // icon is the NPM-logo + user-avatar merge (best-effort, cosmetic).
@@ -128,8 +129,8 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       const { fetchAndCacheAvatar } = await import('./avatar.js');
       await fetchAndCacheAvatar(defaultProfile, registry);
     }
-    const { tray, window } = await tryCreateTray(web.webUiUrl(port), (line) => log(line));
-    trayHost = new TrayHost(store, tray, window, {
+    const mounted = await tryCreateTray(web.webUiUrl(port), (line) => log(line));
+    trayHost = new TrayHost(store, mounted.tray, mounted.window, {
       title: 'pnpm-pub',
       log: (line) => log(line),
       // Chapter 6.2.2: closing the tray window with pending events rejects them
@@ -141,9 +142,10 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       baseIcon: iconPath(false) ?? undefined,
       pendingIcon: iconPath(true) ?? undefined,
       setIcon: (p) => {
-        tray?.setIcon?.({ type: 'file', path: p });
+        mounted.tray?.setIcon?.({ type: 'file', path: p });
       },
     });
+    stopPlacement = mounted.stopPlacement;
   }
   log(`WebUI available at ${web.webUiUrl(port)}`);
 
@@ -153,6 +155,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     stopping = true;
     const exit = opts.exit ?? true;
     scheduler.drainAll();
+    stopPlacement?.();
     await trayHost?.destroy();
     await web.stop();
     await ipc.stop();
@@ -217,20 +220,33 @@ export { keychain };
 /**
  * Mount the WebUI inside a real opentray WebView window (Chapter 6.4).
  *
- * Implements the opentray skill's "Tray-Launched WebView Surface" scenario card
- * verbatim:
+ * Implements the opentray skill's "Tray-Launched WebView Surface" +
+ * "Tray-Anchored Lightweight Panel" + "Overlay Native Controls" scenario cards:
  *   const tray = (await createTray({ menu, primaryEvent })).extend(WebviewExt);
- *   const window = tray.createWebviewWindow({ url, ... });
+ *   const window = tray.createWebviewWindow({ url, windowControlsOverlay, ... });
+ *   new WebviewPlacementKit({ tray, screen }).watch(window, { placement: "tray" });
  * and returns the real typed handles. The click→show wiring, KeepOnTop, blur
  * auto-hide, and flash live in TrayHost (the product behavior the skill leaves
  * to the app). This function owns only the opentray lifecycle: create tray,
- * extend, create ONE window session, keep the handle.
+ * extend, create ONE window session, keep the handle, anchor it to the tray.
+ *
+ * Window chrome choice: `windowControlsOverlay: true` keeps the OS
+ * min/max/close cluster while letting page content occupy the titlebar area.
+ * Per the skill (ext-webview.md "Overlay and Frameless Guidance") the page must
+ * read `navigator.opentrayWindow.overlay.getTitlebarAreaRect()` and bind native
+ * drag via `startAppRegionDrag()` itself — this host NEVER injects drag
+ * CSS/titlebars. The semantic-blur background is the native material; the page
+ * paints translucent so that blur shows through.
+ *
+ * Placement: `WebviewPlacementKit.watch(panel, { placement: "tray" })` anchors
+ * the panel to tray geometry and re-applies after the window settles (quiescent
+ * by design, so it never fights a user resize/move). The returned watch is
+ * stopped on daemon shutdown.
  *
  * Per the skill (ext-webview.md): createWebviewWindow bootstraps ONCE; repeated
  * activations restore via show()/hide() and must NOT replay startup options.
  * The `icon` is optional; native icon support is `rgba` (skill
- * troubleshooting), so only a real .png is passed. Drag is owned by the page
- * (startAppRegionDrag), never injected here.
+ * troubleshooting), so only a real .png is passed.
  *
  * Returns null handles when opentray/native webview is unavailable (headless /
  * CI) so TrayHost still runs observably against the log.
@@ -238,17 +254,36 @@ export { keychain };
 async function tryCreateTray(
   url: string,
   log: (line: string) => void,
-): Promise<{ tray: OpentrayTray | null; window: OpentrayWindow | null }> {
+): Promise<{
+  tray: OpentrayTray | null;
+  window: OpentrayWindow | null;
+  /** Stop the tray-placement watch (no-op when placement never started). */
+  stopPlacement: () => void;
+}> {
   try {
     const opentray = (await import('opentray')) as {
       createTray?: (options: unknown) => Promise<unknown>;
     };
     const ext = (await import('@opentray/ext-webview')) as {
       WebviewExt?: unknown;
+      WebviewPlacementKit?: new (deps: {
+        tray?: unknown;
+        screen?: unknown;
+      }) => {
+        watch: (
+          target: unknown,
+          options: {
+            placement: string;
+            width: number;
+            height: number;
+            placementMargin?: number;
+          },
+        ) => Promise<{ stop?: () => void; unwatch?: () => void }>;
+      };
     };
     if (typeof opentray.createTray !== 'function' || !ext.WebviewExt) {
       log('opentray/ext-webview not available — running headless');
-      return { tray: null, window: null };
+      return { tray: null, window: null, stopPlacement: () => {} };
     }
 
     const trayOptions: Record<string, unknown> = {
@@ -267,46 +302,116 @@ async function tryCreateTray(
         : baseTray
     ) as OpentrayTray & {
       createWebviewWindow?(options: unknown): OpentrayWindow;
+      getScreenDetails?(): Promise<unknown>;
     };
 
-    // Bootstrap the single tray-scoped window session ONCE. Glass-shell style
-    // uses the skill's canonical semantic-blur token, frameless + keepOnTop,
-    // nativeWindowApi so the page owns its chrome.
+    // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
+    // the OS control cluster while the page owns the titlebar drag area; the
+    // native semantic-blur material supplies the gaussian background, and
+    // nativeWindowApi exposes navigator.opentrayWindow for startAppRegionDrag.
     const panel = tray.createWebviewWindow?.({
       url,
-      width: 420,
-      height: 640,
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
       title: 'pnpm-pub',
       nativeWindowApi: true,
+      windowControlsOverlay: true,
       style: {
-        frameless: true,
         background: { kind: 'semantic', token: 'blur', state: 'active' },
       },
     });
 
     if (!panel) {
       log('createWebviewWindow unavailable — running headless');
-      return { tray, window: null };
+      return { tray, window: null, stopPlacement: () => {} };
     }
 
+    // Anchor the panel to the tray (skill "Tray-Anchored Lightweight Panel").
+    // The kit consumes logical desktop pixels for the full Rect; tray bounds +
+    // screen details come from the WebviewTrayCapability handle. watch() is
+    // quiescent by default — it yields to user drag/resize and only re-applies
+    // after the window settles, so it never fights a manual resize/move.
+    const stopPlacement = await startTrayPlacement(tray, panel, ext, log);
+
     log('opentray webview window mounted');
-    return { tray, window: panel };
+    return { tray, window: panel, stopPlacement };
   } catch (err) {
     log(`opentray mount failed (${(err as Error).message}) — running headless`);
-    return { tray: null, window: null };
+    return { tray: null, window: null, stopPlacement: () => {} };
+  }
+}
+
+/** Tray panel geometry (logical desktop pixels). */
+const WINDOW_WIDTH = 380;
+const WINDOW_HEIGHT = 560;
+
+/**
+ * Anchor a webview panel to the tray via WebviewPlacementKit. Returns a
+ * stop() closure (best-effort: placement is a UX nicety, never fatal). When the
+ * tray handle lacks placement authorities, or the watch rejects, we log and
+ * return a no-op so the window still shows unanchored.
+ */
+async function startTrayPlacement(
+  tray: {
+    getBounds?: () => Promise<unknown>;
+    getScreenDetails?: () => Promise<unknown>;
+  } & OpentrayTray,
+  panel: OpentrayWindow,
+  ext: {
+    WebviewPlacementKit?: new (deps: { tray?: unknown; screen?: unknown }) => {
+      watch: (
+        target: unknown,
+        options: {
+          placement: string;
+          width: number;
+          height: number;
+          placementMargin?: number;
+        },
+      ) => Promise<{ stop?: () => void; unwatch?: () => void }>;
+    };
+  },
+  log: (line: string) => void,
+): Promise<() => void> {
+  if (!ext.WebviewPlacementKit || typeof tray.getBounds !== 'function') {
+    log('placement kit / tray bounds unavailable — window unanchored');
+    return () => {};
+  }
+  try {
+    const kit = new ext.WebviewPlacementKit({ tray, screen: tray });
+    const watch = await kit.watch(panel, {
+      placement: 'tray',
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+      placementMargin: 8,
+    });
+    log('tray placement watch active');
+    return () => {
+      try {
+        if (typeof watch.stop === 'function') watch.stop();
+        else watch.unwatch?.();
+      } catch {
+        /* placement teardown must never crash shutdown */
+      }
+    };
+  } catch (err) {
+    log(`placement watch failed (${(err as Error).message}) — window unanchored`);
+    return () => {};
   }
 }
 
 /**
  * Resolve the tray icon.
  *
- * macOS tray items render as single-color template images, so we ship a black
- * outline version of the npm logo (transparent background) that composites well
- * in either light or dark menubars. Windows tray items are full-color, so we
- * ship the official npm red (#CB3837) version. Both are rasterized from the
- * simple-icons npm SVG into 64×64 rgba PNGs (opentray's required icon format).
+ * macOS menubar items render as single-color "template" images, so we ship a
+ * pure-black-on-transparent silhouette of the npm mark (`icon-macos.png`) that
+ * composites correctly in either a light or dark menubar — its "n" is a real
+ * alpha-0 cutout, not a white fill. Windows tray items are full-color, so we
+ * ship the official npm red (`#c12127`) square (`icon-windows.png`). Both are
+ * rasterized from the SVG source-of-truth in assets/ by `pnpm gen:icons`
+ * (scripts/gen-icons.mjs, @resvg/resvg-js) into 64×64 rgba PNGs — opentray's
+ * required icon format (@opentray/spec `Icon` type, `rgba`).
  *
- * A `pending` variant (same mark + a corner badge dot) is used to signal an
+ * A `pending` variant (same mark + a corner badge dot) signals an
  * awaiting-confirmation publish WITHOUT touching the title — opentray has no
  * native badge API, so we swap the icon file itself.
  *
@@ -324,7 +429,7 @@ function iconPath(pending = false): string | null {
     }
   }
   const plat = process.platform === 'darwin' ? 'macos' : 'windows';
-  const name = pending ? `tray-icon-${plat}-pending.png` : `tray-icon-${plat}.png`;
+  const name = pending ? `icon-${plat}-pending.png` : `icon-${plat}.png`;
   const candidates = [
     path.join(__dirname, 'assets', name), // dist/assets (bundled)
     path.join(__dirname, '..', 'assets', name), // dev: src/daemon → <root>/assets

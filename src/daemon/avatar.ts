@@ -68,40 +68,16 @@ export async function fetchAndCacheAvatar(username: string, registry = 'https://
  * `rgba` — a PNG. Pure-JS image compositing of the "NPM logo + avatar" merge
  * would need a native canvas dependency we deliberately avoid, so the avatar
  * alone (a real PNG fetched from NPM) is used as the tray icon base. When no
- * avatar PNG is cached, this returns null and the daemon creates a title-only
- * tray (the `icon` option is optional end-to-end).
+ * avatar PNG is cached, this returns null and the daemon falls back to the
+ * platform npm mark (assets/icon-{platform}.png).
  *
- * The SVG "NPM-logo + avatar" composite is still produced for the in-window
- * favicon/sidebar use (see compositeTrayFavicon), but NOT for the native tray
- * icon.
+ * The in-window favicon/sidebar brand uses the static npm mark
+ * (webui NpmMark / favicon.svg), NOT a per-profile composite, so no avatar
+ * overlay is produced here.
  */
 export function trayIconForProfile(username: string | undefined): string | null {
   if (!username || !hasCachedAvatar(username)) return null;
   // The cached avatar IS a real PNG (fetched from NPM), so it satisfies the
   // opentray rgba requirement for the native tray icon.
   return avatarCachePath(username);
-}
-
-/**
- * Produce an SVG merging the NPM mark over the avatar for in-window display
- * (favicon/sidebar). This is NOT the native tray icon (which must be rgba PNG).
- */
-export function compositeTrayFavicon(username: string | undefined): string | null {
-  if (!username || !hasCachedAvatar(username)) return null;
-  const composite = path.join(avatarCacheDir(), `${username}.favicon.svg`);
-  try {
-    if (!fs.existsSync(composite)) {
-      const b64 = fs.readFileSync(avatarCachePath(username)).toString('base64');
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <defs><clipPath id="c"><circle cx="32" cy="32" r="30"/></clipPath></defs>
-  <image href="data:image/png;base64,${b64}" x="2" y="2" width="60" height="60" clip-path="url(#c)"/>
-  <rect x="34" y="38" width="22" height="14" rx="2" fill="#000"/>
-  <text x="45" y="49" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#fff" text-anchor="middle">npm</text>
-</svg>`;
-      fs.writeFileSync(composite, svg, 'utf8');
-    }
-    return composite;
-  } catch {
-    return null;
-  }
 }

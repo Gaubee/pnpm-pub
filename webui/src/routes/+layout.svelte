@@ -8,6 +8,7 @@
 	import { page } from '$app/state';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import Toaster from '$lib/components/toaster.svelte';
+	import WindowDragRegion from '$lib/components/window-drag-region.svelte';
 
 	let { children } = $props();
 
@@ -32,9 +33,15 @@
 <!-- mode-watcher applies the .dark class based on system preference (Chapter 6.1.3). -->
 <ModeWatcher></ModeWatcher>
 
-<div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
-	<!-- Native frameless drag handle (Chapter 6.1.3). -->
-	<div class="drag-region h-8 shrink-0 border-b border-border bg-sidebar"></div>
+<!--
+	Translucent root: the opentray window paints a native gaussian-blur material
+	behind the page (semantic/blur). bg-background/70 + backdrop-blur lets that
+	desktop blur show through while keeping content legible — surfaces (sidebar,
+	cards) layer their own translucent fills on top.
+-->
+<div class="flex h-screen w-screen flex-col overflow-hidden bg-background/70 text-foreground backdrop-blur-xl">
+	<!-- Overlay-chrome titlebar: native drag via startAppRegionDrag (Chapter 6.1.3). -->
+	<WindowDragRegion />
 
 	<div class="flex min-h-0 flex-1">
 		<!-- Sidebar-07 shell: navigation + bottom-left profile switcher. -->

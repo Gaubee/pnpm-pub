@@ -9,6 +9,9 @@ coverage
 .pnpm-pub-test
 .pnpm-pub-dev
 
+# Tray icons are build artifacts: generated from assets/*.svg by gen:icons.
+assets/*.png
+
 # Personal IDE / agent configs (not project-shared)
 .agents
 .factory
