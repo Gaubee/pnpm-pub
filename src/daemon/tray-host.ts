@@ -6,43 +6,31 @@
  *   const panel = tray.createWebviewWindow({ url, ... });
  *   tray.onMenuClick(({ itemId }) => { if (itemId === OPEN_ID) panel.show(); });
  *
- * We keep the real typed handles (TrayHandle & WebviewTrayCapability +
- * WebviewWindowHandle) instead of inventing a parallel abstraction. The host
+ * We keep the real typed handles (`EventfulTrayHandle & WebviewTrayCapability` +
+ * `WebviewWindowHandle`) instead of inventing a parallel abstraction. The host
  * layering on top is purely the product behavior the skill leaves to the app:
  *   - blur auto-hide (reversible dismissal, NOT destroy)
  *   - pending-event KeepOnTop override + tray-title flash
  *   - reject pending publishes when the window is hidden with events outstanding
  *
- * opentray lifecycle rule (skill ext-webview.md): createWebviewWindow bootstraps
- * ONCE per session; repeated tray activations restore via show()/hide() and must
- * NOT replay startup width/height/style. So this host never re-creates the
- * panel — it toggles visibility and mutates style only when KeepOnTop changes.
+ * opentray 0.8 removed its broker daemon concept: the tray lifetime is now owned
+ * in-process by the caller (this daemon). createWebviewWindow bootstraps ONCE
+ * per session; repeated tray activations restore via show()/hide() and must NOT
+ * replay startup width/height/style. So this host never re-creates the panel —
+ * it toggles visibility and mutates style only when KeepOnTop changes.
  */
+import type { EventfulTrayHandle } from 'opentray';
+import type { WebviewTrayCapability, WebviewWindowHandle } from '@opentray/ext-webview';
 import type { DaemonStore } from './store.js';
 
 /**
- * The opentray surfaces this host drives. Typed loosely enough to compile
- * without a hard type-only dep on the SDK internals, but mirrors
- * `TrayHandle & WebviewTrayCapability` + `WebviewWindowHandle`.
+ * The opentray surfaces this host drives, typed against the real SDK types.
+ * `EventfulTrayHandle & WebviewTrayCapability` is what `tray.extend(WebviewExt)`
+ * returns; `WebviewWindowHandle` is what `createWebviewWindow` returns.
  */
-export interface OpentrayTray {
-  onMenuClick(handler: (e: { itemId?: number }) => void): () => void;
-  setTitle(title: string): Promise<void>;
-  setIcon?(icon: { type: 'file'; path: string }): Promise<void>;
-  setTooltip?(tooltip: string): Promise<void>;
-  destroy(): Promise<void>;
-}
+export type OpentrayTray = EventfulTrayHandle & WebviewTrayCapability;
 
-export interface OpentrayWindow {
-  show(): Promise<unknown>;
-  hide(): Promise<unknown>;
-  /** Restore visibility without replaying startup options (skill rule). */
-  show(command?: unknown): Promise<unknown>;
-  setStyle(style: { keepOnTop?: boolean; background?: unknown }): Promise<unknown>;
-  /** Listen for a window lifecycle event; returns an unsubscribe. */
-  listen(event: string, handler: () => void): () => void;
-  destroy(): Promise<void>;
-}
+export type OpentrayWindow = WebviewWindowHandle;
 
 export interface TrayHostOptions {
   /** Tray title (kept static; pending is NOT signaled via the title). */
@@ -83,10 +71,10 @@ export class TrayHost {
 
   /**
    * Run an opentray op, swallowing + logging any rejection. opentray commands
-   * route through the broker and can reject asynchronously (e.g. a stale
-   * SINGLE_SESSION, a capability gap); a window op failure must NEVER crash the
-   * daemon or propagate as an unhandled rejection — the IPC/HTTP/WS surfaces
-   * stay up and the WebUI remains reachable in a browser.
+   * route through the in-process runtime binding and can reject asynchronously
+   * (e.g. a native capability gap, a stale session); a window op failure must
+   * NEVER crash the daemon or propagate as an unhandled rejection — the
+   * IPC/HTTP/WS surfaces stay up and the WebUI remains reachable in a browser.
    */
   private safeCall(label: string, p: Promise<unknown> | undefined): void {
     if (!p) return;
@@ -152,7 +140,7 @@ export class TrayHost {
    *
    * Operations are sequenced (show THEN setStyle) because the webview extension
    * rejects setStyle if the window isn't fully shown yet; calling them in
-   * parallel races the broker.
+   * parallel races the runtime transport.
    */
   private pin(): void {
     if (this.visibility === 'pinned') return;

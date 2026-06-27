@@ -17,7 +17,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
-/** Fake WebviewWindowHandle: tracks visibility + keepOnTop + blur handler. */
+/**
+ * Fake WebviewWindowHandle: tracks visibility + keepOnTop + blur handler.
+ * Implements only the surface TrayHost drives; the rest of the SDK handle is
+ * irrelevant to this state-machine test.
+ */
 function makeWindow(): OpentrayWindow & {
   visible: boolean;
   keepOnTop: boolean;
@@ -50,30 +54,37 @@ function makeWindow(): OpentrayWindow & {
     },
     async destroy() {},
     blurHandler: undefined,
+  } as OpentrayWindow & {
+    visible: boolean;
+    keepOnTop: boolean;
+    blurHandler?: () => void;
   };
 }
 
-/** Fake TrayHandle: records title (for flash) and menu-click subscribers. */
-function makeTray(): OpentrayTray & { title: string; fireClick(itemId?: number): void } {
-  const s = { title: 'pnpm-pub', click: undefined as ((e: { itemId?: number }) => void) | undefined };
+/**
+ * Fake tray handle: records the icon path (for the pending-badge flash) and
+ * menu-click subscribers. TrayHost only uses onMenuClick/setIcon?/destroy, so
+ * the rest of EventfulTrayHandle & WebviewTrayCapability is stubbed away.
+ */
+function makeTray(): OpentrayTray & { icon: string; fireClick(itemId?: number): void } {
+  const s = { icon: 'base.png', click: undefined as ((e: { itemId: number }) => void) | undefined };
   return {
-    title: 'pnpm-pub',
+    icon: 'base.png',
     onMenuClick(handler) {
       s.click = handler;
       return () => {
         s.click = undefined;
       };
     },
-    async setTitle(t: string) {
-      s.title = t;
-      this.title = t;
+    async setIcon(icon: { type: 'file'; path: string }) {
+      s.icon = icon.path;
+      this.icon = icon.path;
     },
-    async setTooltip() {},
     async destroy() {},
     fireClick(itemId = 1) {
       s.click?.({ itemId });
     },
-  };
+  } as OpentrayTray & { icon: string; fireClick(itemId?: number): void };
 }
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-tray-${process.pid}-${Date.now()}`);
@@ -137,7 +148,7 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
-  it('swaps to the badged icon while pending and back to base on release (no title change)', async () => {
+  it('swaps to the badged icon while pending and back to base on release', async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: 'alice' });
@@ -154,9 +165,8 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
 
     const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
     await new Promise((r) => setTimeout(r, 10));
-    // Pending swaps to the badged icon; the title is NEVER mutated.
+    // Pending swaps to the badged icon.
     expect(icon).toBe('pending.png');
-    expect(tray.title).toBe('pnpm-pub');
     // Stable — no flicker back to base while still pending.
     await new Promise((r) => setTimeout(r, 50));
     expect(icon).toBe('pending.png');
@@ -174,7 +184,7 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     const window = makeWindow();
     const lines: string[] = [];
     window.show = async () => {
-      throw 'broker offline';
+      throw 'runtime binding offline';
     };
     const host = new TrayHost(store, makeTray(), window, {
       title: 'pnpm-pub',
@@ -185,8 +195,8 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     store.createEvent({ kind: 'publish', profile: 'alice' });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(lines).toContain('[tray] show failed: broker offline');
-    expect(lines).toContain('[tray] show failed during pin: broker offline');
+    expect(lines).toContain('[tray] show failed: runtime binding offline');
+    expect(lines).toContain('[tray] show failed during pin: runtime binding offline');
     await host.destroy();
   });
 });

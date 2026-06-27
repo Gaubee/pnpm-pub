@@ -45,13 +45,13 @@
   "license": "ISC",
   "dependencies": {
     "@github/keytar": "^7.0.0",
-    "@opentray/ext-webview": "^0.7.0",
-    "opentray": "^0.8.0",
+    "@opentray/ext-webview": "^0.7.1",
+    "opentray": "^0.8.1",
     "otplib": "^12.0.1",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
-    "@opentray/ext-webview-darwin-arm64": "0.7.0",
+    "@opentray/ext-webview-darwin-arm64": "^0.7.1",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.10.0",
     "@types/yargs": "^17.0.33",

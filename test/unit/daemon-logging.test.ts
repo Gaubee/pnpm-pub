@@ -33,6 +33,33 @@ vi.mock('@opentray/ext-webview', () => ({
   },
 }));
 
+/**
+ * A complete fake tray+window surface matching the SDK shape tryCreateTray
+ * drives: EventfulTrayHandle & WebviewTrayCapability + WebviewWindowHandle.
+ * Individual tests override the pieces they want to break.
+ */
+function makeHappyMount() {
+  const panel = {
+    show: async () => {},
+    hide: async () => {},
+    setStyle: async () => ({}),
+    listen: () => () => {},
+    destroy: async () => {},
+  };
+  return {
+    extend: () => ({
+      onMenuClick: () => () => {},
+      setIcon: async () => {},
+      setTooltip: async () => {},
+      setMenu: async () => {},
+      getBounds: async () => ({ kind: 'native', source: 'fake', rect: { x: 0, y: 0, width: 1, height: 1 } }),
+      getScreenDetails: async () => ({ currentScreen: null, screens: [], isExtended: false }),
+      destroy: async () => {},
+      createWebviewWindow: () => panel,
+    }),
+  };
+}
+
 const sandbox = path.join('/tmp', `ppdl-${process.pid}-${Date.now()}`);
 
 beforeEach(async () => {
@@ -68,8 +95,8 @@ describe('bootDaemon logging', () => {
     }
   });
 
-  it('Scenario: Given opentray mount rejects with a non-Error value, When daemon starts, Then the log preserves the source text', async () => {
-    trayMocks.createTray.mockRejectedValueOnce('native bridge offline');
+  it('Scenario: Given the runtime binding rejects with a non-Error value, When daemon starts, Then the log preserves the source text', async () => {
+    trayMocks.createTray.mockRejectedValueOnce('native binding offline');
 
     const handles = await bootDaemon({
       cliVersion: '0.1.0',
@@ -79,29 +106,14 @@ describe('bootDaemon logging', () => {
 
     try {
       const log = await fsp.readFile(daemonLogPath(), 'utf8');
-      expect(log).toContain('opentray mount failed (native bridge offline) — running headless');
+      expect(log).toContain('opentray mount failed (native binding offline) — running headless');
     } finally {
       await handles.stop({ exit: false });
     }
   });
 
   it('Scenario: Given tray placement rejects with a non-Error value, When daemon starts, Then the log preserves the source text', async () => {
-    trayMocks.createTray.mockResolvedValueOnce({
-      extend: () => ({
-        onMenuClick: () => () => {},
-        setTitle: async () => {},
-        destroy: async () => {},
-        createWebviewWindow: () => ({
-          show: async () => {},
-          hide: async () => {},
-          setStyle: async () => {},
-          listen: () => () => {},
-          destroy: async () => {},
-        }),
-        getBounds: async () => ({}),
-        getScreenDetails: async () => ({}),
-      }),
-    });
+    trayMocks.createTray.mockResolvedValueOnce(makeHappyMount());
     trayMocks.placementWatch.mockRejectedValueOnce('screen authority missing');
 
     const handles = await bootDaemon({
@@ -118,11 +130,22 @@ describe('bootDaemon logging', () => {
     }
   });
 
-  it('Scenario: Given opentray returns a malformed tray handle, When daemon starts, Then the daemon degrades to headless mode', async () => {
+  it('Scenario: Given the tray surface lacks placement authorities, When daemon starts, Then placement is skipped but the window still mounts', async () => {
     trayMocks.createTray.mockResolvedValueOnce({
       extend: () => ({
-        setTitle: async () => {},
+        onMenuClick: () => () => {},
+        setIcon: async () => {},
+        setTooltip: async () => {},
+        setMenu: async () => {},
         destroy: async () => {},
+        createWebviewWindow: () => ({
+          show: async () => {},
+          hide: async () => {},
+          setStyle: async () => ({}),
+          listen: () => () => {},
+          destroy: async () => {},
+        }),
+        // No getBounds / getScreenDetails → placement authorities unavailable.
       }),
     });
 
@@ -134,21 +157,24 @@ describe('bootDaemon logging', () => {
 
     try {
       const log = await fsp.readFile(daemonLogPath(), 'utf8');
-      expect(log).toContain('opentray tray handle invalid — running headless');
+      expect(log).toContain('placement authorities unavailable — window unanchored');
+      expect(log).toContain('opentray webview window mounted');
     } finally {
       await handles.stop({ exit: false });
     }
   });
 
-  it('Scenario: Given opentray returns a malformed WebView window, When daemon starts, Then the window handle is not trusted', async () => {
+  it('Scenario: Given createWebviewWindow throws, When daemon starts, Then the daemon degrades to headless mode', async () => {
     trayMocks.createTray.mockResolvedValueOnce({
       extend: () => ({
         onMenuClick: () => () => {},
-        setTitle: async () => {},
+        setIcon: async () => {},
+        setTooltip: async () => {},
+        setMenu: async () => {},
         destroy: async () => {},
-        createWebviewWindow: () => ({
-          show: async () => {},
-        }),
+        createWebviewWindow: () => {
+          throw 'native webview unavailable';
+        },
       }),
     });
 
@@ -160,7 +186,7 @@ describe('bootDaemon logging', () => {
 
     try {
       const log = await fsp.readFile(daemonLogPath(), 'utf8');
-      expect(log).toContain('createWebviewWindow unavailable — running headless');
+      expect(log).toContain('opentray mount failed (native webview unavailable) — running headless');
     } finally {
       await handles.stop({ exit: false });
     }

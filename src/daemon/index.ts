@@ -42,36 +42,23 @@ export interface DaemonHandles {
   stop: () => Promise<void>;
 }
 
-type OpentrayModule = {
-  createTray: (options: Record<string, unknown>) => Promise<unknown>;
-};
+/**
+ * The tray + webview-window surfaces tryCreateTray() returns. Null when the
+ * opentray runtime binding is unavailable (headless / CI / native addon
+ * missing) so the daemon degrades to an IPC/HTTP/WS-only server.
+ *
+ * `EventfulTrayHandle & WebviewTrayCapability` is exactly what
+ * `tray.extend(WebviewExt)` yields; `WebviewWindowHandle` is what
+ * `createWebviewWindow` yields. We alias them here so the mount result reads as
+ * product domain vocabulary rather than SDK internals.
+ */
+type MountedTray = OpentrayTray;
 
-type PlacementWatch = {
-  stop?: () => void;
-  unwatch?: () => void;
-};
-
-type WebviewPlacementKit = {
-  watch: (
-    target: OpentrayWindow,
-    options: {
-      placement: string;
-      width: number;
-      height: number;
-      placementMargin?: number;
-    },
-  ) => Promise<unknown>;
-};
-
-type WebviewExtModule = {
-  WebviewExt: unknown;
-  createPlacementKit?: (deps: { tray?: unknown; screen?: unknown }) => WebviewPlacementKit | null;
-};
-
-type MountedTray = OpentrayTray & {
-  createWebviewWindow?: (options: unknown) => unknown;
-  getBounds?: () => Promise<unknown>;
-  getScreenDetails?: () => Promise<unknown>;
+type TrayMount = {
+  tray: MountedTray | null;
+  window: OpentrayWindow | null;
+  /** Stop the tray-placement watch (no-op when placement never started). */
+  stopPlacement: () => void;
 };
 
 /** Resolve the directory holding the built SvelteKit SPA (Chapter 5.2.2 / 9.1.1). */
@@ -262,21 +249,18 @@ export { keychain };
 async function tryCreateTray(
   url: string,
   log: (line: string) => void,
-): Promise<{
-  tray: OpentrayTray | null;
-  window: OpentrayWindow | null;
-  /** Stop the tray-placement watch (no-op when placement never started). */
-  stopPlacement: () => void;
-}> {
+): Promise<TrayMount> {
   try {
-    const opentray = parseOpentrayModule(await import('opentray'));
-    const ext = parseWebviewExtModule(await import('@opentray/ext-webview'));
-    if (!opentray || !ext) {
-      log('opentray/ext-webview not available — running headless');
-      return { tray: null, window: null, stopPlacement: () => {} };
-    }
+    // Dynamic imports keep opentray external (tsdown neverBundle) and let the
+    // daemon degrade to headless when the native runtime binding is missing
+    // (headless CI, unsupported platform). opentray 0.8 owns the tray lifetime
+    // in-process — no separate broker daemon — so this process IS the host.
+    const opentray = await import('opentray');
+    const ext = await import('@opentray/ext-webview');
 
-    const trayOptions: Record<string, unknown> = {
+    // trayOptions is typed by createTray's own parameter (TrayOptions from
+    // @opentray/spec) via inference, so we don't need a direct spec dep.
+    const trayOptions: Parameters<typeof opentray.createTray>[0] = {
       trayId: 'pnpm-pub',
       title: 'pnpm-pub',
       menu: { items: [{ type: 'item', id: 1, title: 'Open pnpm-pub', primaryEvent: true }] },
@@ -284,38 +268,27 @@ async function tryCreateTray(
     const icon = iconPath();
     if (icon && fs.existsSync(icon)) trayOptions.icon = { type: 'file', path: icon };
 
-    // createTray → extend(WebviewExt) → TrayHandle & WebviewTrayCapability.
+    // createTray() loads the platform runtime binding (@opentray/<os>-<arch>)
+    // and returns an EventfulTrayHandle. extend(WebviewExt) widens it to also
+    // carry createWebviewWindow / getScreenDetails / getBounds.
     const baseTray = await opentray.createTray(trayOptions);
-    const mountedTray = hasExtend(baseTray) ? baseTray.extend(ext.WebviewExt) : baseTray;
-    if (!isMountedTray(mountedTray)) {
-      log('opentray tray handle invalid — running headless');
-      return { tray: null, window: null, stopPlacement: () => {} };
-    }
-    const tray = mountedTray;
+    const tray = baseTray.extend(ext.WebviewExt);
 
     // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
     // the OS control cluster while the page owns the titlebar drag area; the
     // native semantic-blur material supplies the gaussian background, and
     // nativeWindowApi exposes navigator.opentrayWindow for startAppRegionDrag.
-    const panel =
-      typeof tray.createWebviewWindow === 'function'
-        ? tray.createWebviewWindow({
-            url,
-            width: WINDOW_WIDTH,
-            height: WINDOW_HEIGHT,
-            title: 'pnpm-pub',
-            nativeWindowApi: true,
-            windowControlsOverlay: true,
-            style: {
-              background: { kind: 'semantic', token: 'blur', state: 'active' },
-            },
-          })
-        : null;
-
-    if (!isOpentrayWindow(panel)) {
-      log('createWebviewWindow unavailable — running headless');
-      return { tray, window: null, stopPlacement: () => {} };
-    }
+    const panel = tray.createWebviewWindow({
+      url,
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+      title: 'pnpm-pub',
+      nativeWindowApi: true,
+      windowControlsOverlay: true,
+      style: {
+        background: { kind: 'semantic', token: 'blur', state: 'active' },
+      },
+    });
 
     // Anchor the panel to the tray (skill "Tray-Anchored Lightweight Panel").
     // The kit consumes logical desktop pixels for the full Rect; tray bounds +
@@ -345,35 +318,28 @@ const WINDOW_HEIGHT = 560;
 async function startTrayPlacement(
   tray: MountedTray,
   panel: OpentrayWindow,
-  ext: WebviewExtModule,
+  ext: typeof import('@opentray/ext-webview'),
   log: (line: string) => void,
 ): Promise<() => void> {
-  if (!ext.createPlacementKit || typeof tray.getBounds !== 'function') {
-    log('placement kit / tray bounds unavailable — window unanchored');
+  // Capability gate: placement needs tray bounds + screen details authorities.
+  // Both come from the WebviewTrayCapability surface; if either is absent the
+  // tray was created without webview placement support, so we skip anchoring.
+  if (typeof tray.getBounds !== 'function' || typeof tray.getScreenDetails !== 'function') {
+    log('placement authorities unavailable — window unanchored');
     return () => {};
   }
   try {
-    const kit = ext.createPlacementKit({ tray, screen: tray });
-    if (!kit) {
-      log('placement kit / tray bounds unavailable — window unanchored');
-      return () => {};
-    }
-    const rawWatch = await kit.watch(panel, {
+    const kit = new ext.WebviewPlacementKit({ tray, screen: tray });
+    const watch = await kit.watch(panel, {
       placement: 'tray',
       width: WINDOW_WIDTH,
       height: WINDOW_HEIGHT,
       placementMargin: 8,
     });
-    const watch = parsePlacementWatch(rawWatch);
-    if (!watch) {
-      log('placement watch handle invalid — window unanchored');
-      return () => {};
-    }
     log('tray placement watch active');
     return () => {
       try {
-        if (typeof watch.stop === 'function') watch.stop();
-        else watch.unwatch?.();
+        watch.stop();
       } catch {
         /* placement teardown must never crash shutdown */
       }
@@ -382,95 +348,6 @@ async function startTrayPlacement(
     log(`placement watch failed (${errorToLogMessage(err)}) — window unanchored`);
     return () => {};
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function parseOpentrayModule(value: unknown): OpentrayModule | null {
-  if (!isRecord(value) || typeof value.createTray !== 'function') return null;
-  const createTray = value.createTray;
-  return {
-    createTray: async (options) => {
-      const result: unknown = Reflect.apply(createTray, value, [options]);
-      return await Promise.resolve(result);
-    },
-  };
-}
-
-function parseWebviewExtModule(value: unknown): WebviewExtModule | null {
-  if (!isRecord(value) || value.WebviewExt === undefined) return null;
-  const WebviewExt = value.WebviewExt;
-  const placementKitConstructor = value.WebviewPlacementKit;
-  return {
-    WebviewExt,
-    createPlacementKit:
-      typeof placementKitConstructor === 'function'
-        ? (deps) => {
-            const kit: unknown = Reflect.construct(placementKitConstructor, [deps]);
-            return isWebviewPlacementKit(kit) ? kit : null;
-          }
-        : undefined,
-  };
-}
-
-function hasExtend(value: unknown): value is { extend: (ext: unknown) => unknown } {
-  return isRecord(value) && typeof value.extend === 'function';
-}
-
-function isMountedTray(value: unknown): value is MountedTray {
-  if (!isRecord(value)) return false;
-  if (typeof value.onMenuClick !== 'function') return false;
-  if (typeof value.setTitle !== 'function') return false;
-  if (typeof value.destroy !== 'function') return false;
-  if (value.setIcon !== undefined && typeof value.setIcon !== 'function') return false;
-  if (value.setTooltip !== undefined && typeof value.setTooltip !== 'function') return false;
-  if (value.createWebviewWindow !== undefined && typeof value.createWebviewWindow !== 'function') {
-    return false;
-  }
-  if (value.getBounds !== undefined && typeof value.getBounds !== 'function') return false;
-  if (value.getScreenDetails !== undefined && typeof value.getScreenDetails !== 'function') {
-    return false;
-  }
-  return true;
-}
-
-function isOpentrayWindow(value: unknown): value is OpentrayWindow {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.show === 'function' &&
-    typeof value.hide === 'function' &&
-    typeof value.setStyle === 'function' &&
-    typeof value.listen === 'function' &&
-    typeof value.destroy === 'function'
-  );
-}
-
-function isWebviewPlacementKit(value: unknown): value is WebviewPlacementKit {
-  return isRecord(value) && typeof value.watch === 'function';
-}
-
-function parsePlacementWatch(value: unknown): PlacementWatch | null {
-  if (!isRecord(value)) return null;
-  const stop = value.stop;
-  const unwatch = value.unwatch;
-  if (stop !== undefined && typeof stop !== 'function') return null;
-  if (unwatch !== undefined && typeof unwatch !== 'function') return null;
-  return {
-    stop:
-      typeof stop === 'function'
-        ? () => {
-            Reflect.apply(stop, value, []);
-          }
-        : undefined,
-    unwatch:
-      typeof unwatch === 'function'
-        ? () => {
-            Reflect.apply(unwatch, value, []);
-          }
-        : undefined,
-  };
 }
 
 function errorToLogMessage(error: unknown): string {

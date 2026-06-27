@@ -18,15 +18,7 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-
-	type Rect = { x: number; y: number; width: number; height: number };
-
-	interface OverlayGeometry {
-		getTitlebarAreaRect(): Promise<Rect>;
-		addEventListener?(event: string, handler: (e: { titlebarAreaRect: Rect }) => void): void;
-		removeEventListener?(event: string, handler: (e: { titlebarAreaRect: Rect }) => void): void;
-		listen?(event: string, handler: (e: { titlebarAreaRect: Rect }) => void): Promise<() => Promise<void>>;
-	}
+	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
 
 	// Reserved right inset for the OS window-control cluster, in CSS px.
 	// Updated from the overlay geometry; falls back to a macOS-like 70px.
@@ -46,12 +38,12 @@
 	}
 
 	onMount(() => {
-		const overlay = ot()?.overlay;
-		if (!overlay || typeof overlay.getTitlebarAreaRect !== 'function') return;
+		const overlay: OpentrayWindowOverlay | undefined = ot()?.overlay;
+		if (!overlay) return;
 
 		const apply = async () => {
 			try {
-				const rect = await overlay.getTitlebarAreaRect!();
+				const rect: OpentrayRect = await overlay.getTitlebarAreaRect();
 				// The OS controls sit to the right of the titlebar area; the inset
 				// is how much of the window width the controls occupy.
 				controlInset = Math.max(0, Math.round(globalThis.innerWidth - rect.x - rect.width));
@@ -63,14 +55,14 @@
 
 		// Prefer listen() (opentray native), fall back to addEventListener.
 		let off: (() => void) | undefined;
-		if (typeof overlay.listen === 'function') {
+		if (overlay.listen) {
 			void overlay
-				.listen('geometrychange', (e: { titlebarAreaRect: Rect }) => {
+				.listen('geometrychange', (e) => {
 					controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));
 				})
-				.then((unsub: () => Promise<void>) => (off = () => void unsub?.()));
-		} else if (typeof overlay.addEventListener === 'function') {
-			const handler = (e: { titlebarAreaRect: Rect }) => {
+				.then((unsub) => (off = () => void unsub?.()));
+		} else if (overlay.addEventListener) {
+			const handler = (e: { titlebarAreaRect: OpentrayRect }) => {
 				controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));
 			};
 			overlay.addEventListener('geometrychange', handler);
