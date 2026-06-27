@@ -91,7 +91,7 @@ export class TrayHost {
   private safeCall(label: string, p: Promise<unknown> | undefined): void {
     if (!p) return;
     if (typeof p.catch === 'function') {
-      p.catch((err) => this.log(`${label} failed: ${(err as Error)?.message ?? err}`));
+      p.catch((error: unknown) => this.log(`${label} failed: ${errorToLogMessage(error)}`));
     }
   }
 
@@ -164,7 +164,7 @@ export class TrayHost {
     if (showP && typeof showP.then === 'function') {
       showP.then(
         () => this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true })),
-        (err) => this.log(`show failed during pin: ${(err as Error)?.message ?? err}`),
+        (error: unknown) => this.log(`show failed during pin: ${errorToLogMessage(error)}`),
       );
     } else {
       this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true }));
@@ -235,4 +235,8 @@ export class TrayHost {
   getVisibility(): Visibility {
     return this.visibility;
   }
+}
+
+function errorToLogMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

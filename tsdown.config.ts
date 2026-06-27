@@ -6,13 +6,13 @@
  *   - dist/daemon.js   (the spawned daemon main)
  *
  * Plus the keytar fat-package copy plugin (Chapter 9.2) which copies the
- * matching prebuilds into dist/prebuilds/keytar/. `opentray` is declared
+ * matching keytar package surface into dist/prebuilds/keytar/. `opentray` is declared
  * external (Chapter 9.2.1) so the host package manager installs its native
  * bits normally.
  */
 import { defineConfig, type Plugin } from 'tsdown';
 import path from 'node:path';
-import { existsSync, readdirSync, copyFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const TARGET_PLATFORMS = ['win32-x64', 'win32-arm64', 'darwin-x64', 'darwin-arm64'];
 
@@ -23,8 +23,8 @@ function copyKeytarPrebuilds(): Plugin {
     apply: () => 'build',
     closeBundle() {
       const outDir = path.resolve(process.cwd(), 'dist');
-      const destDir = path.join(outDir, 'prebuilds', 'keytar');
-      mkdirSync(destDir, { recursive: true });
+      const destRoot = path.join(outDir, 'prebuilds', 'keytar');
+      mkdirSync(destRoot, { recursive: true });
 
       // 1. Native prebuilds.
       const candidates = [
@@ -36,9 +36,11 @@ function copyKeytarPrebuilds(): Plugin {
         for (const platform of TARGET_PLATFORMS) {
           const dir = path.join(prebuildsRoot, platform);
           if (!existsSync(dir)) continue;
+          const destDir = path.join(destRoot, 'prebuilds', platform);
+          mkdirSync(destDir, { recursive: true });
           for (const file of readdirSync(dir)) {
             if (file.endsWith('.node')) {
-              copyFileSync(path.join(dir, file), path.join(destDir, `${platform}.node`));
+              copyFileSync(path.join(dir, file), path.join(destDir, file));
             }
           }
         }
@@ -50,9 +52,17 @@ function copyKeytarPrebuilds(): Plugin {
       const keytarRoot = path.join(process.cwd(), 'node_modules', '@github', 'keytar');
       if (existsSync(keytarRoot)) {
         const pkg = JSON.parse(readFileSync(path.join(keytarRoot, 'package.json'), 'utf8')) as { main?: string };
+        writeFileSync(
+          path.join(destRoot, 'package.json'),
+          JSON.stringify({ type: 'commonjs', main: pkg.main ?? 'index.js' }, null, 2),
+          'utf8',
+        );
         const jsEntry = pkg.main ? path.join(keytarRoot, pkg.main) : path.join(keytarRoot, 'index.js');
         if (existsSync(jsEntry)) {
-          copyFileSync(jsEntry, path.join(destDir, 'keytar.js'));
+          const relativeEntry = pkg.main ?? 'index.js';
+          const destEntry = path.join(destRoot, relativeEntry);
+          mkdirSync(path.dirname(destEntry), { recursive: true });
+          copyFileSync(jsEntry, destEntry);
         }
       }
     },

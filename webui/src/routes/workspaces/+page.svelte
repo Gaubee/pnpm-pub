@@ -15,6 +15,7 @@
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconShield from '@lucide/svelte/icons/shield-check';
 	import { goto } from '$app/navigation';
+	import type { PublishTarget } from '$lib/types.js';
 
 	let scanPath = $state('');
 
@@ -24,6 +25,15 @@
 	function doScan(): void {
 		const trimmed = scanPath.trim();
 		if (trimmed) actions.scanWorkspace(trimmed);
+	}
+
+	function publishPayload(pkg: PublishTarget): { source: { kind: 'directory'; path: string }; args: string[]; target: PublishTarget } {
+		return { source: { kind: 'directory', path: pkg.path }, args: [], target: pkg };
+	}
+
+	function oidcPayload(pkg: PublishTarget): { name: string; repo: string; path: string } | null {
+		if (!pkg.repository) return null;
+		return { name: pkg.name, repo: pkg.repository, path: pkg.path };
 	}
 
 	/** Toggle the pinned flag for a tracked workspace (Chapter 6.1.2 sidebar). */
@@ -124,15 +134,18 @@
 			{:else}
 				{#each scanned as pkg (pkg.path)}
 					<div class="group rounded-lg border border-border bg-card p-3.5">
-						<div class="flex items-start justify-between gap-3">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2">
-									<span class="truncate text-sm font-semibold">{pkg.name}</span>
-									<Badge variant="outline" class="font-mono text-[10px]">{pkg.version}</Badge>
-								</div>
-								{#if pkg.description}
-									<p class="mt-0.5 truncate text-xs text-muted-foreground">{pkg.description}</p>
-								{/if}
+					<div class="flex items-start justify-between gap-3">
+						<div class="min-w-0">
+							<div class="flex items-center gap-2">
+								<span class="truncate text-sm font-semibold">{pkg.name}</span>
+								<Badge variant="outline" class="font-mono text-[10px]">{pkg.version}</Badge>
+							</div>
+							{#if pkg.repository}
+								<p class="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{pkg.repository}</p>
+							{/if}
+							{#if pkg.description}
+								<p class="mt-0.5 truncate text-xs text-muted-foreground">{pkg.description}</p>
+							{/if}
 								<p class="mt-1 truncate font-mono text-[10px] text-muted-foreground/70">{pkg.path}</p>
 							</div>
 							<div class="flex shrink-0 gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
@@ -140,7 +153,7 @@
 									variant="brand"
 									size="sm"
 									onclick={() => {
-										actions.createEvent('publish', { cwd: pkg.path, args: [], target: { name: pkg.name, version: pkg.version, description: pkg.description, path: pkg.path } });
+										actions.createEvent('publish', publishPayload(pkg));
 										goto('/');
 									}}
 								>
@@ -149,9 +162,14 @@
 								<Button
 									variant="outline"
 									size="sm"
+									disabled={!pkg.repository}
+									title={pkg.repository ? 'Configure Trusted Publish' : 'Package repository metadata is required'}
 									onclick={() => {
-										actions.createEvent('setup-oidc', { name: pkg.name, repo: 'owner/name', path: pkg.path });
-										goto('/');
+										const payload = oidcPayload(pkg);
+										if (payload) {
+											actions.createEvent('setup-oidc', payload);
+											goto('/');
+										}
 									}}
 								>
 									<IconShield class="h-3.5 w-3.5" /> OIDC

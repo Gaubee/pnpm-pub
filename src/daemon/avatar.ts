@@ -46,8 +46,7 @@ export async function fetchAndCacheAvatar(username: string, registry = 'https://
     const url = `${registry.replace(/\/$/, '')}/-/user/${encodeURIComponent(username)}`;
     const res = await fetch(url, { headers: { accept: 'application/json' } });
     if (!res.ok) return null;
-    const json = (await res.json()) as { avatar?: string };
-    const avatarUrl = json.avatar;
+    const avatarUrl = readAvatarUrl(await res.json());
     if (!avatarUrl) return null;
 
     const imgRes = await fetch(avatarUrl);
@@ -80,4 +79,14 @@ export function trayIconForProfile(username: string | undefined): string | null 
   // The cached avatar IS a real PNG (fetched from NPM), so it satisfies the
   // opentray rgba requirement for the native tray icon.
   return avatarCachePath(username);
+}
+
+function readAvatarUrl(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const avatar = value.avatar;
+  return typeof avatar === 'string' && avatar.length > 0 ? avatar : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

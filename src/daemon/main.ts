@@ -6,10 +6,9 @@
  * process is signaled to exit.
  */
 import { bootDaemon } from './index.js';
+import { readPackageVersion } from '../shared/package-version.js';
 
-const pkg = { version: '0.1.0' };
-
-bootDaemon({ cliVersion: pkg.version, withTray: false })
+bootDaemon({ cliVersion: readPackageVersion() })
   .then((handles) => {
     if (!handles) {
       // Another daemon beat us to the single-instance lock (Chapter 5.1.3).

@@ -4,6 +4,7 @@
  */
 import path from 'node:path';
 import { Volume, createFsFromVolume } from 'memfs';
+import type { IFs } from 'memfs';
 import type { fs as FsAPI } from '../../src/daemon/fs-types.js';
 
 export const ROOT = '/proj';
@@ -19,16 +20,7 @@ export interface MemVolume {
 
 export function makeVolume(): MemVolume {
   const vol = new Volume();
-  const mem = createFsFromVolume(vol) as unknown as {
-    promises: {
-      readdir(p: string): Promise<string[]>;
-      readFile(p: string): Promise<string>;
-      stat(p: string): Promise<{ isDirectory(): boolean }>;
-    };
-    existsSync(p: string): boolean;
-    mkdirSync(p: string, opts?: unknown): void;
-    writeFileSync(p: string, data: string): void;
-  };
+  const mem: IFs = createFsFromVolume(vol);
 
   const fs: FsAPI = {
     join: (...parts: string[]) => path.posix.join(...parts),
@@ -52,7 +44,7 @@ export function makeVolume(): MemVolume {
       const data = await mem.promises.readFile(p);
       // memfs returns a Uint8Array; coerce to a UTF-8 string.
       if (typeof data === 'string') return data;
-      return Buffer.from(data as ArrayBufferLike).toString('utf8');
+      return Buffer.from(data).toString('utf8');
     },
   };
 

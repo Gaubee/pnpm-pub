@@ -3,9 +3,9 @@
  *
  * Uses `@github/keytar` for OS-level credential storage (macOS Keychain,
  * Windows Credential Manager). Per Chapter 9.2 the native `.node` binary is
- * copied into `dist/prebuilds/keytar/<plat>-<arch>.node` at build time and
- * dynamically required here — never statically imported — so tsdown can inline
- * the JS surface while leaving the binary out of the bundle.
+ * copied into `dist/prebuilds/keytar/` at build time and dynamically required
+ * here — never statically imported — so tsdown can inline the JS surface while
+ * leaving the binary out of the bundle graph.
  */
 import path from 'node:path';
 import fs from 'node:fs';
@@ -60,52 +60,52 @@ export function activeService(): string {
 }
 
 /**
- * Resolve the path to the platform's prebuilt binary. The location mirrors the
- * `tsdown` copy-plugin output (Chapter 9.2.2): `dist/prebuilds/keytar/...`.
- */
-function resolveBinaryPath(): string {
-  // __dirname points at dist/ (bundled) or src/daemon/ (dev). Both resolve to a
-  // `prebuilds/keytar` somewhere nearby; return the first that exists.
-  const candidates = [
-    path.join(__dirname, '..', 'prebuilds', 'keytar', `${process.platform}-${process.arch}.node`),
-    path.join(__dirname, '..', '..', 'prebuilds', 'keytar', `${process.platform}-${process.arch}.node`),
-    path.join(process.cwd(), 'prebuilds', 'keytar', `${process.platform}-${process.arch}.node`),
-  ];
-  return candidates.find((c) => fs.existsSync(c)) ?? candidates[0]!;
-}
-
-/**
  * Dynamically mount the native keytar binding (Chapter 9.2.3).
  *
- * The spec's hard rule is: keytar must be loaded via `require(keytarPath)`,
+ * The spec's hard rule is: keytar must be loaded at runtime via `require`,
  * never via a static `import`. We honour that literally:
- *   1. If a prebuilt `.node` exists at the copied fat-package path, require it.
+ *   1. If the copied fat-package keytar JS shim exists, require it.
  *   2. Otherwise (dev / not bundled) require the installed `@github/keytar`
  *      package through the same `createRequire` conduit — still a runtime
  *      require, never a static import that tsdown could inline.
  */
 export async function loadKeytar(): Promise<KeytarApi> {
   if (cached) return cached;
-  // 1. Bundled layout (Chapter 9.2.2): the inlined keytar JS shim sits next to
-  //    the copied prebuilds. Require it — it loads the platform .node binary.
-  const inlineJs = path.join(__dirname, 'prebuilds', 'keytar', 'keytar.js');
+  // 1. Bundled layout (Chapter 9.2.2): the copied keytar JS shim sits next to
+  //    its copied prebuilds. Require it — it loads the platform .node binary.
+  const inlineJs = path.join(__dirname, 'prebuilds', 'keytar', 'lib', 'keytar.js');
   if (fs.existsSync(inlineJs)) {
-    const mod = require(inlineJs) as { default?: KeytarApi } & KeytarApi;
-    cached = (mod.default ?? mod) as KeytarApi;
+    const mod: unknown = require(inlineJs);
+    cached = parseKeytarModule(mod);
     return cached;
   }
-  // 2. Direct native binary (legacy / explicit).
-  const binaryPath = resolveBinaryPath();
-  if (fs.existsSync(binaryPath)) {
-    cached = require(binaryPath) as KeytarApi;
-    return cached;
-  }
-  // 3. Dev fallback: resolve the package through createRequire so it is never a
+  // 2. Dev fallback: resolve the package through createRequire so it is never a
   //    static import (keeps keytar out of the bundle graph in production builds).
   const resolved = require.resolve('@github/keytar');
-  const mod = require(resolved) as { default?: KeytarApi } & KeytarApi;
-  cached = (mod.default ?? mod) as KeytarApi;
+  const mod: unknown = require(resolved);
+  cached = parseKeytarModule(mod);
   return cached;
+}
+
+function parseKeytarModule(value: unknown): KeytarApi {
+  if (isKeytarApi(value)) return value;
+  if (isRecord(value) && isKeytarApi(value.default)) return value.default;
+  throw new Error('Loaded @github/keytar module does not expose the required credential API.');
+}
+
+function isKeytarApi(value: unknown): value is KeytarApi {
+  return (
+    isRecord(value) &&
+    typeof value.setPassword === 'function' &&
+    typeof value.getPassword === 'function' &&
+    typeof value.deletePassword === 'function' &&
+    typeof value.findCredentials === 'function' &&
+    typeof value.findPassword === 'function'
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +115,11 @@ export async function loadKeytar(): Promise<KeytarApi> {
 export async function setToken(username: string, token: string): Promise<void> {
   const k = await loadKeytar();
   await k.setPassword(activeService(), tokenKey(username), token);
+}
+
+export async function deleteToken(username: string): Promise<void> {
+  const k = await loadKeytar();
+  await k.deletePassword(activeService(), tokenKey(username));
 }
 
 export async function getToken(username: string): Promise<string | null> {
@@ -127,15 +132,19 @@ export async function setTotpSecret(username: string, secret: string): Promise<v
   await k.setPassword(activeService(), totpKey(username), secret);
 }
 
+export async function deleteTotpSecret(username: string): Promise<void> {
+  const k = await loadKeytar();
+  await k.deletePassword(activeService(), totpKey(username));
+}
+
 export async function getTotpSecret(username: string): Promise<string | null> {
   const k = await loadKeytar();
   return k.getPassword(activeService(), totpKey(username));
 }
 
 export async function deleteProfile(username: string): Promise<void> {
-  const k = await loadKeytar();
-  await k.deletePassword(activeService(), tokenKey(username));
-  await k.deletePassword(activeService(), totpKey(username));
+  await deleteToken(username);
+  await deleteTotpSecret(username);
 }
 
 export async function listStoredAccounts(): Promise<string[]> {

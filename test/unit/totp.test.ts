@@ -1,16 +1,15 @@
 /**
  * TOTP conformance tests (Chapter 10.1.1).
  *
- * Validates against the RFC 6238 / RFC 4226 reference vectors. The RFC uses the
- * ASCII secret "12345678901234567890" which in base32 is
- * "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ". The expected 8-digit truncations at the
- * canonical T values (T = epoch / 30) are documented in RFC 6238 Appendix B.
+ * Validates two protocol facts:
+ * - RFC 4226 Appendix D pins HOTP truncation for the ASCII secret.
+ * - RFC 6238 Appendix B pins TOTP time-step semantics with an epoch-scoped
+ *   otplib clone configured for the RFC's SHA-1 8-digit vectors.
  *
- * otplib produces 6-digit codes, so we validate against the HOTP reference
- * counter values (RFC 4226 Appendix D) which otplib also honours.
+ * Runtime generation remains a 6-digit code for user-provided TOTP secrets.
  */
-import { describe, it, expect } from 'vitest';
-import { authenticator, hotp } from 'otplib';
+import { describe, it, expect, vi } from 'vitest';
+import { authenticator, hotp, totp } from 'otplib';
 import { generateTotp, generateTotpAt, computeClockOffset, parseHttpDate, totpAfterDrift } from '../../src/daemon/totp.js';
 
 describe('TOTP RFC conformance', () => {
@@ -32,8 +31,6 @@ describe('TOTP RFC conformance', () => {
 
   it('matches the RFC 6238 Appendix B TOTP reference table (SHA-1, 8-digit)', () => {
     // RFC 6238 Appendix B vectors for SHA-1, secret "12345678901234567890" (ASCII).
-    // The RFC table uses 8 digits; configure the HOTP instance to match.
-    hotp.options = { digits: 8, algorithm: 'sha1' };
     const secret = '12345678901234567890';
     // (unixTime, expected 8-digit code) pairs from the RFC table.
     const vectors: Array<[number, string]> = [
@@ -45,11 +42,9 @@ describe('TOTP RFC conformance', () => {
       [20000000000, '65353130'],
     ];
     for (const [t, expected] of vectors) {
-      const counter = Math.floor(t / 30);
-      expect(hotp.generate(secret, counter)).toBe(expected);
+      const code = totp.clone({ epoch: t * 1000, digits: 8, algorithm: 'sha1' }).generate(secret);
+      expect(code).toBe(expected);
     }
-    // Restore default for any subsequent HOTP assertions.
-    hotp.options = { digits: 6, algorithm: 'sha1' };
   });
 
   it('produces the same code for the same second within a step', () => {
@@ -57,6 +52,19 @@ describe('TOTP RFC conformance', () => {
     const a = generateTotpAt('JBSWY3DPEHPK3PXP', fixed);
     const b = generateTotpAt('JBSWY3DPEHPK3PXP', fixed);
     expect(a).toBe(b);
+  });
+
+  it('honors the requested offset when generating a TOTP', () => {
+    const secret = 'JBSWY3DPEHPK3PXP';
+    const local = Date.UTC(2024, 0, 1, 0, 0, 5);
+    const offset = 60_000;
+    const expected = generateTotpAt(secret, local + offset);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(local);
+    try {
+      expect(generateTotp(secret, offset)).toBe(expected);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('produces a different code across a step boundary', () => {

@@ -9,6 +9,9 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { parseBackupBundleJson } from '$lib/backup-bundle.js';
+	import { errorToMessage } from '$lib/error-projection.js';
+	import { parseExportResponse, parseImportResponse } from '$lib/rest-response.js';
 	import { readWebToken } from '$lib/store.js';
 	import IconDownload from '@lucide/svelte/icons/download';
 	import IconUpload from '@lucide/svelte/icons/upload';
@@ -35,51 +38,70 @@
 				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
 				body: JSON.stringify({ password: exportPassword }),
 			});
-			const json = (await res.json()) as { ok: boolean; bundle?: unknown; error?: string };
+			const json = parseExportResponse(await res.json());
+			exportPassword = '';
+			if (!json) {
+				exportError = 'Invalid daemon response.';
+				return;
+			}
 			if (json.ok) {
 				exportResult = JSON.stringify(json.bundle, null, 2);
 			} else {
 				exportError = json.error ?? 'Export failed.';
 			}
 		} catch (err) {
-			exportError = (err as Error).message;
+			exportError = errorToMessage(err);
 		}
 	}
 
 	function previewImport(): void {
 		importError = null;
 		importDone = null;
-		try {
-			const parsed = JSON.parse(importBundle) as { profiles?: string[] };
-			if (!Array.isArray(parsed.profiles)) {
-				importError = 'Not a pnpm-pub backup file (missing profiles list).';
+		const parsed = parseBackupBundleJson(importBundle);
+		if (!parsed.ok) {
+			if (parsed.reason === 'invalid-json') {
+				importError = 'Invalid JSON.';
 				return;
 			}
-			importPreview = { profiles: parsed.profiles };
-			importSelected = new Set(parsed.profiles);
-		} catch {
-			importError = 'Invalid JSON.';
+			importError = 'Not a pnpm-pub backup file (missing profiles list).';
+			return;
 		}
+		importPreview = { profiles: parsed.bundle.profiles };
+		importSelected = new Set(parsed.bundle.profiles);
 	}
 
 	async function doImport(): Promise<void> {
 		importError = null;
 		importDone = null;
+		const parsed = parseBackupBundleJson(importBundle);
+		if (!parsed.ok) {
+			if (parsed.reason === 'invalid-json') {
+				importError = 'Invalid JSON.';
+				return;
+			}
+			importError = 'Not a pnpm-pub backup file (missing profiles list).';
+			return;
+		}
 		try {
-			const bundle = JSON.parse(importBundle);
+			const bundle = parsed.bundle;
 			const res = await fetch('/api/import', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
 				body: JSON.stringify({ bundle, password: importPassword, usernames: [...importSelected] }),
 			});
-			const json = (await res.json()) as { ok: boolean; imported?: string[]; error?: string };
+			const json = parseImportResponse(await res.json());
+			importPassword = '';
+			if (!json) {
+				importError = 'Invalid daemon response.';
+				return;
+			}
 			if (json.ok) {
 				importDone = json.imported ?? [];
 			} else {
 				importError = json.error ?? 'Import failed.';
 			}
 		} catch (err) {
-			importError = (err as Error).message;
+			importError = errorToMessage(err);
 		}
 	}
 

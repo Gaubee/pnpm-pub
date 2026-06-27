@@ -166,4 +166,27 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     expect(icon).toBe('base.png'); // restored to base icon
     await host.destroy();
   });
+
+  it('logs non-Error opentray command rejections without erasing the source text', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice' });
+    const window = makeWindow();
+    const lines: string[] = [];
+    window.show = async () => {
+      throw 'broker offline';
+    };
+    const host = new TrayHost(store, makeTray(), window, {
+      title: 'pnpm-pub',
+      log: (line) => lines.push(line),
+    });
+
+    host.show();
+    store.createEvent({ kind: 'publish', profile: 'alice' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(lines).toContain('[tray] show failed: broker offline');
+    expect(lines).toContain('[tray] show failed during pin: broker offline');
+    await host.destroy();
+  });
 });

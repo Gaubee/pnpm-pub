@@ -18,16 +18,28 @@ export interface WorkspaceEntry {
 	addedAt: number;
 }
 
+export interface PublishConfig {
+	registry?: string;
+	tag?: string;
+	access?: string;
+}
+
 export interface PublishTarget {
 	name: string;
 	version: string;
 	previousVersion?: string;
 	description?: string;
 	path: string;
+	repository?: string;
+	publishConfig?: PublishConfig;
 }
 
+export type PublishSource =
+	| { kind: 'directory'; path: string }
+	| { kind: 'tarball'; path: string };
+
 export interface PublishContext {
-	cwd: string;
+	source: PublishSource;
 	args: string[];
 	target: PublishTarget;
 }
@@ -36,13 +48,12 @@ export interface OidcContext {
 	repo: string;
 	name: string;
 	branch?: string;
-	path?: string;
+	path: string;
 	force?: boolean;
 }
 
 export interface CreatePlaceholderContext {
 	name: string;
-	path: string;
 }
 
 export interface RefreshTokenContext {
@@ -53,17 +64,18 @@ export type EventKind =
 	| 'publish'
 	| 'setup-oidc'
 	| 'create-placeholder'
-	| 'refresh-token'
-	| 'import'
-	| 'export';
+	| 'refresh-token';
 
-export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'rejected';
+export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'action-required' | 'rejected';
 
 export type EventPayload =
 	| { kind: 'publish'; data: PublishContext }
 	| { kind: 'setup-oidc'; data: OidcContext }
 	| { kind: 'create-placeholder'; data: CreatePlaceholderContext }
 	| { kind: 'refresh-token'; data: RefreshTokenContext };
+
+/** Payload data shape for one concrete Event kind. */
+export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
 
 export interface PubEvent {
 	id: string;

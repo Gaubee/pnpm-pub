@@ -42,7 +42,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
-    exclude: ['test/e2e/**'],
+    exclude: ['test/e2e/**', 'test/browser/**'],
     globals: false,
     testTimeout: 15_000,
   },

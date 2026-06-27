@@ -115,6 +115,84 @@ describe('scanWorkspace (Chapter 5.3.4 / 6.3.1)', () => {
     expect(names).toEqual(['lib', 'plain']);
   });
 
+  it('Scenario: Given package.json metadata is not an object, When scanning, Then it is not promoted into package facts', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/malformed/package.json`, '[]');
+    v.write(`${ROOT}/malformed/packages/valid/package.json`, '{"name":"valid","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/malformed`, v.fs, { root: `${ROOT}/malformed` });
+    expect(pkgs.map((pkg) => pkg.name)).toEqual(['valid']);
+  });
+
+  it('preserves repository metadata from package.json', async () => {
+    const v = makeVolume();
+    v.write(
+      `${ROOT}/repo/package.json`,
+      '{"name":"repo","version":"1.0.0","repository":{"url":"https://github.com/acme/repo.git"}}',
+    );
+    const pkgs = await scanWorkspace(`${ROOT}/repo`, v.fs, { root: `${ROOT}/repo` });
+    expect(pkgs[0]?.repository).toBe('acme/repo');
+  });
+
+  it('Scenario: Given package publishConfig, When scanning, Then publish defaults remain package source facts', async () => {
+    const v = makeVolume();
+    v.write(
+      `${ROOT}/publish-config/package.json`,
+      JSON.stringify({
+        name: '@scope/pkg',
+        version: '1.0.0',
+        publishConfig: {
+          registry: 'http://package-registry.test/',
+          tag: 'beta',
+          access: 'public',
+        },
+      }),
+    );
+    const pkgs = await scanWorkspace(`${ROOT}/publish-config`, v.fs, { root: `${ROOT}/publish-config` });
+    expect(pkgs[0]?.publishConfig).toEqual({
+      registry: 'http://package-registry.test/',
+      tag: 'beta',
+      access: 'public',
+    });
+  });
+
+  it('Scenario: Given workspace dependency fields, When scanning, Then dependency names remain package source facts', async () => {
+    const v = makeVolume();
+    v.write(
+      `${ROOT}/dependency-facts/package.json`,
+      JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        dependencies: { leaf: 'workspace:*' },
+        devDependencies: { testkit: 'workspace:*' },
+        optionalDependencies: { optional: 'workspace:*' },
+        peerDependencies: { peer: '^1.0.0' },
+      }),
+    );
+    const pkgs = await scanWorkspace(`${ROOT}/dependency-facts`, v.fs, { root: `${ROOT}/dependency-facts` });
+    expect(pkgs[0]?.dependencyNames?.sort()).toEqual(['leaf', 'optional', 'peer', 'testkit']);
+    expect(pkgs[0]?.productionDependencyNames?.sort()).toEqual(['leaf', 'optional', 'peer']);
+  });
+
+  it('normalizes git+https repository URLs to a repo slug', async () => {
+    const v = makeVolume();
+    v.write(
+      `${ROOT}/repo/package.json`,
+      '{"name":"repo","version":"1.0.0","repository":"git+https://github.com/acme/repo.git"}',
+    );
+    const pkgs = await scanWorkspace(`${ROOT}/repo`, v.fs, { root: `${ROOT}/repo` });
+    expect(pkgs[0]?.repository).toBe('acme/repo');
+  });
+
+  it('skips Git worktree isolated admin trees', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/repo/package.json`, '{"name":"repo","version":"1.0.0"}');
+    v.write(`${ROOT}/repo/.git/worktrees/feature/package.json`, '{"name":"worktree-feature","version":"1.0.0"}');
+    v.write(`${ROOT}/repo/.git/worktrees/feature/src/package.json`, '{"name":"worktree-src","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/repo`, v.fs, { root: `${ROOT}/repo` });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['repo']);
+  });
+
   it('honors .gitignore entries at root', async () => {
     const v = makeVolume();
     v.write(`${ROOT}/gi/.gitignore`, 'build\ncoverage\n');
@@ -126,6 +204,95 @@ describe('scanWorkspace (Chapter 5.3.4 / 6.3.1)', () => {
     expect(names).toContain('gi');
     expect(names).not.toContain('built');
     expect(names).not.toContain('cov');
+  });
+
+  it('honors .gitignore entries in pnpm-workspace.yaml package globs', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/workspace/.gitignore`, 'packages/generated\n');
+    v.write(`${ROOT}/workspace/pnpm-workspace.yaml`, 'packages:\n  - packages/*\n');
+    v.write(`${ROOT}/workspace/packages/real/package.json`, '{"name":"real","version":"1.0.0"}');
+    v.write(`${ROOT}/workspace/packages/generated/package.json`, '{"name":"generated","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/workspace`, v.fs, {
+      root: `${ROOT}/workspace`,
+      respectGitignore: true,
+    });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['real']);
+  });
+
+  it('honors wildcard .gitignore directory patterns during fallback scans', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/wild/.gitignore`, 'packages/*/generated/\n');
+    v.write(`${ROOT}/wild/package.json`, '{"name":"wild","version":"1.0.0"}');
+    v.write(`${ROOT}/wild/packages/a/generated/package.json`, '{"name":"generated-a","version":"1.0.0"}');
+    v.write(`${ROOT}/wild/packages/a/real/package.json`, '{"name":"real-a","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/wild`, v.fs, { root: `${ROOT}/wild`, respectGitignore: true });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['real-a', 'wild']);
+  });
+
+  it('Scenario: Given a .gitignore name entry, When fallback scanning nested packages, Then matching directories are not package facts', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/named/.gitignore`, 'generated\n');
+    v.write(`${ROOT}/named/package.json`, '{"name":"named","version":"1.0.0"}');
+    v.write(`${ROOT}/named/packages/a/generated/package.json`, '{"name":"generated-a","version":"1.0.0"}');
+    v.write(`${ROOT}/named/packages/a/real/package.json`, '{"name":"real-a","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/named`, v.fs, { root: `${ROOT}/named`, respectGitignore: true });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['named', 'real-a']);
+  });
+
+  it('Scenario: Given a .gitignore negation entry, When fallback scanning nested packages, Then re-included directories remain package facts', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/negated/.gitignore`, 'packages/*\n!packages/keep\n');
+    v.write(`${ROOT}/negated/package.json`, '{"name":"negated","version":"1.0.0"}');
+    v.write(`${ROOT}/negated/packages/generated/package.json`, '{"name":"generated","version":"1.0.0"}');
+    v.write(`${ROOT}/negated/packages/keep/package.json`, '{"name":"keep","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/negated`, v.fs, { root: `${ROOT}/negated`, respectGitignore: true });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['keep', 'negated']);
+  });
+
+  it('honors wildcard .gitignore directory patterns in pnpm-workspace.yaml package globs', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/workspace-wild/.gitignore`, 'packages/*/generated/\n');
+    v.write(`${ROOT}/workspace-wild/pnpm-workspace.yaml`, 'packages:\n  - packages/*/*\n');
+    v.write(`${ROOT}/workspace-wild/packages/a/generated/package.json`, '{"name":"generated-a","version":"1.0.0"}');
+    v.write(`${ROOT}/workspace-wild/packages/a/real/package.json`, '{"name":"real-a","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/workspace-wild`, v.fs, {
+      root: `${ROOT}/workspace-wild`,
+      respectGitignore: true,
+    });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['real-a']);
+  });
+
+  it('Scenario: Given a .gitignore name entry, When pnpm-workspace globs match a package directory, Then that directory is skipped', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/workspace-named/.gitignore`, 'generated\n');
+    v.write(`${ROOT}/workspace-named/pnpm-workspace.yaml`, 'packages:\n  - packages/*\n');
+    v.write(`${ROOT}/workspace-named/packages/real/package.json`, '{"name":"real","version":"1.0.0"}');
+    v.write(`${ROOT}/workspace-named/packages/generated/package.json`, '{"name":"generated","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/workspace-named`, v.fs, {
+      root: `${ROOT}/workspace-named`,
+      respectGitignore: true,
+    });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['real']);
+  });
+
+  it('Scenario: Given a .gitignore negation entry, When pnpm-workspace globs match packages, Then re-included directories remain package facts', async () => {
+    const v = makeVolume();
+    v.write(`${ROOT}/workspace-negated/.gitignore`, 'packages/*\n!packages/keep\n');
+    v.write(`${ROOT}/workspace-negated/pnpm-workspace.yaml`, 'packages:\n  - packages/*\n');
+    v.write(`${ROOT}/workspace-negated/packages/generated/package.json`, '{"name":"generated","version":"1.0.0"}');
+    v.write(`${ROOT}/workspace-negated/packages/keep/package.json`, '{"name":"keep","version":"1.0.0"}');
+    const pkgs = await scanWorkspace(`${ROOT}/workspace-negated`, v.fs, {
+      root: `${ROOT}/workspace-negated`,
+      respectGitignore: true,
+    });
+    const names = pkgs.map((p) => p.name).sort();
+    expect(names).toEqual(['keep']);
   });
 });
 

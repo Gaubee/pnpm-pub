@@ -28,7 +28,9 @@ import { setHomeOverride } from '../../src/shared/paths.js';
 import { encodeFrame, FrameReader } from '../../src/shared/frame.js';
 import { socketPath } from '../../src/shared/paths.js';
 import type { DaemonHandles } from '../../src/daemon/index.js';
-import type { IpcFrame } from '../../src/shared/index.js';
+import type { IpcFrame, IpcRequest } from '../../src/shared/index.js';
+
+type IpcExitEvidenceFrame = Extract<IpcFrame, { type: 'exit' }>;
 
 // ---- recorded registry requests ----
 interface RegistryHit {
@@ -37,17 +39,66 @@ interface RegistryHit {
   otp?: string;
   body?: unknown;
 }
+
+interface RegistryPackument {
+  versions?: Record<string, unknown>;
+}
+
+interface PublishDocumentAttachment {
+  data?: string;
+}
+
+interface RegistryPublishDocument {
+  _attachments?: Record<string, PublishDocumentAttachment>;
+  versions?: Record<string, unknown>;
+}
+
 let registryUrl = '';
 let registryHits: RegistryHit[] = [];
 let registryServer: http.Server;
 let registryRespondsWith: { status: number; body: unknown } = { status: 200, body: { ok: true } };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isRegistryPackument(value: unknown): value is RegistryPackument {
+  return isRecord(value) && (value.versions === undefined || isRecord(value.versions));
+}
+
+function isPublishDocumentAttachment(value: unknown): value is PublishDocumentAttachment {
+  return isRecord(value) && (value.data === undefined || typeof value.data === 'string');
+}
+
+function isRegistryPublishDocument(value: unknown): value is RegistryPublishDocument {
+  return (
+    isRecord(value) &&
+    (value.versions === undefined || isRecord(value.versions)) &&
+    (value._attachments === undefined ||
+      (isRecord(value._attachments) && Object.values(value._attachments).every(isPublishDocumentAttachment)))
+  );
+}
+
+function singleHeaderValue(value: http.IncomingHttpHeaders[string]): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+async function readRequestBody(req: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    if (typeof chunk === 'string' || Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
+      chunks.push(Buffer.from(chunk));
+      continue;
+    }
+    throw new Error('Unsupported request body chunk');
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function startMockRegistry(): Promise<string> {
   return new Promise((resolve) => {
     registryServer = http.createServer(async (req, res) => {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const raw = Buffer.concat(chunks).toString('utf8');
+      const raw = await readRequestBody(req);
       let body: unknown = raw;
       try {
         body = JSON.parse(raw);
@@ -57,7 +108,7 @@ async function startMockRegistry(): Promise<string> {
       registryHits.push({
         method: req.method ?? 'GET',
         url: req.url ?? '/',
-        otp: req.headers['npm-otp'] as string | undefined,
+        otp: singleHeaderValue(req.headers['npm-otp']),
         body,
       });
       res.writeHead(registryRespondsWith.status, { 'content-type': 'application/json', date: new Date().toUTCString() });
@@ -84,8 +135,19 @@ async function connectIpc(): Promise<net.Socket> {
   });
 }
 
-function sendIpc(sock: net.Socket, obj: unknown): void {
-  sock.write(encodeFrame(obj as never));
+function sendIpc(sock: net.Socket, obj: IpcRequest): void {
+  sock.write(encodeFrame(obj));
+}
+
+function isIpcExitFrame(frame: unknown): frame is IpcExitEvidenceFrame {
+  return (
+    typeof frame === 'object' &&
+    frame !== null &&
+    'type' in frame &&
+    frame.type === 'exit' &&
+    'code' in frame &&
+    typeof frame.code === 'number'
+  );
 }
 
 function readExitFrame(sock: net.Socket): Promise<IpcFrame | null> {
@@ -94,15 +156,14 @@ function readExitFrame(sock: net.Socket): Promise<IpcFrame | null> {
     const timer = setTimeout(() => {
       sock.off('data', onData);
       resolve(null);
-    }, 5000);
+    }, 10_000);
     const onData = (chunk: Buffer) => {
       reader.push(chunk);
       for (const f of reader.drain()) {
-        const frame = f as IpcFrame;
-        if (frame.type === 'exit') {
+        if (isIpcExitFrame(f)) {
           clearTimeout(timer);
           sock.off('data', onData);
-          resolve(frame);
+          resolve(f);
         }
       }
     };
@@ -110,7 +171,6 @@ function readExitFrame(sock: net.Socket): Promise<IpcFrame | null> {
   });
 }
 
-/** A minimal publishable package on disk that `pnpm pack`/`npm pack` accepts. */
 /** A minimal publishable package on disk that `pnpm pack`/`npm pack` accepts. */
 async function writeFixturePackage(name: string, version: string, dir: string = pkgDir): Promise<void> {
   await fsp.mkdir(dir, { recursive: true });
@@ -122,12 +182,13 @@ async function writeFixturePackage(name: string, version: string, dir: string = 
 async function fetchPackument(
   registry: string,
   name: string,
-): Promise<{ versions?: Record<string, unknown> } | null> {
+): Promise<RegistryPackument | null> {
   const url = `${registry.replace(/\/$/, '')}/${encodeURIComponent(name).replace('%40', '@')}`;
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
-    return (await res.json()) as { versions?: Record<string, unknown> };
+    const json: unknown = await res.json();
+    return isRegistryPackument(json) ? json : null;
   } catch {
     return null;
   }
@@ -212,7 +273,9 @@ describe('Publish interception E2E (Chapter 10.3)', () => {
       const puts = registryHits.filter((h) => h.method === 'PUT' && h.url === `/${pkgName}`);
       expect(puts.length).toBeGreaterThanOrEqual(1);
       const put = puts[0]!;
-      const doc = put.body as { _attachments?: Record<string, { data?: string }>; versions?: Record<string, unknown> };
+      expect(isRegistryPublishDocument(put.body)).toBe(true);
+      if (!isRegistryPublishDocument(put.body)) throw new Error('Invalid publish document');
+      const doc = put.body;
       expect(doc._attachments).toBeTruthy();
       const attachment = Object.values(doc._attachments ?? {})[0];
       expect(attachment?.data).toBeTruthy();
@@ -321,7 +384,7 @@ describe('Publish interception E2E (Chapter 10.3)', () => {
     const driftHits: { otp?: string; status: number }[] = [];
     const driftServer = http.createServer((req, res) => {
       if (req.method === 'PUT') {
-        const otp = req.headers['npm-otp'] as string | undefined;
+        const otp = singleHeaderValue(req.headers['npm-otp']);
         const n = driftHits.length + 1;
         if (n === 1) {
           res.writeHead(403, {

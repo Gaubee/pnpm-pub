@@ -6,7 +6,7 @@
  * server time from the response `Date` header, compute the offset, and re-issue.
  */
 import { Buffer } from 'node:buffer';
-import { authenticator } from 'otplib';
+import { authenticator, totp } from 'otplib';
 
 authenticator.options = {
   // RFC 6238 defaults: 6 digits, 30s step, SHA-1.
@@ -17,29 +17,18 @@ authenticator.options = {
 
 /** Generate the current 6-digit TOTP for a base32 secret. */
 export function generateTotp(secret: string, offsetMs = 0): string {
-  if (offsetMs !== 0) {
-    // otplib exposes `authenticator.allOpts()` indirectly via its instance; we
-    // instead compute the token at an artificial epoch using the secret+time.
-    return authenticator.generate(secret);
-  }
-  return authenticator.generate(secret);
+  if (offsetMs === 0) return authenticator.generate(secret);
+  return totp.clone({ epoch: Date.now() + offsetMs }).generate(secret);
 }
 
 /**
  * Generate a TOTP as it would appear at a specific epoch (ms).
  *
- * otplib derives the counter from `Date.now()`; to honor a server-supplied time
- * (Chapter 8.4) we temporarily monkey-patch `Date.now` for the duration of the
- * call. This is intentional and localised.
+ * Chapter 8.4 needs a server-supplied time without mutating the process clock,
+ * so this uses a cloned otplib TOTP instance scoped to the requested epoch.
  */
 export function generateTotpAt(secret: string, epochMs: number): string {
-  const realNow = Date.now;
-  try {
-    (Date as unknown as { now: () => number }).now = () => epochMs;
-    return authenticator.generate(secret);
-  } finally {
-    (Date as unknown as { now: () => number }).now = realNow;
-  }
+  return totp.clone({ epoch: epochMs }).generate(secret);
 }
 
 /**
@@ -65,8 +54,7 @@ export function parseHttpDate(dateHeader: string | null): number | null {
  */
 export function totpAfterDrift(secret: string, serverEpochMs: number): string {
   const offset = computeClockOffset(serverEpochMs);
-  // Advance local time by the offset so otplib lands on the server's TOTP step.
-  return generateTotpAt(secret, Date.now() + offset);
+  return generateTotp(secret, offset);
 }
 
 /** Wipe a secret-bearing Buffer in place (Chapter 8.1 burn-after-read). */

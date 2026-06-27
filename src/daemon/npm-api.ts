@@ -34,14 +34,65 @@ export interface PublishResult {
   stderr: string;
 }
 
-/** Extract the human-readable error string from an NPM error response. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.trim().length > 0 ? value : undefined;
+}
+
+function parseNpmErrorLike(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const message = nonEmptyString(value.message);
+  if (message) return message;
+
+  const error = nonEmptyString(value.error);
+  const reason = nonEmptyString(value.reason);
+  if (error && reason && error !== reason) return `${error}: ${reason}`;
+  if (error) return error;
+  if (reason) return reason;
+
+  const summary = nonEmptyString(value.summary);
+  const detail = nonEmptyString(value.detail);
+  if (summary && detail && summary !== detail) return `${summary}: ${detail}`;
+  return summary ?? detail;
+}
+
+/** Extract the human-readable error string from a known NPM registry error body. */
 function parseNpmError(body: unknown): string | undefined {
-  if (body && typeof body === 'object') {
-    const rec = body as Record<string, unknown>;
-    if (typeof rec.error === 'string') return rec.error;
-    if (typeof rec.message === 'string') return rec.message;
+  const direct = parseNpmErrorLike(body);
+  if (direct) return direct;
+
+  if (!isRecord(body) || !Array.isArray(body.errors)) return undefined;
+  for (const entry of body.errors) {
+    const message = parseNpmErrorLike(entry);
+    if (message) return message;
   }
   return undefined;
+}
+
+function parseTokenResponse(body: unknown): { token?: string } {
+  if (!isRecord(body)) return {};
+  const token = nonEmptyString(body.token);
+  return token ? { token } : {};
+}
+
+function bodyToText(body: unknown): string {
+  if (typeof body === 'string') return body;
+  if (body === null || body === undefined) return '';
+  try {
+    return JSON.stringify(body) ?? '';
+  } catch {
+    return String(body);
+  }
+}
+
+function errorToMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return bodyToText(error);
 }
 
 const OTP_FAILED_PATTERNS = [
@@ -52,7 +103,7 @@ const OTP_FAILED_PATTERNS = [
 
 function isOtpFailure(body: unknown, status: number): boolean {
   if (status === 403 || status === 401) {
-    const text = typeof body === 'string' ? body : JSON.stringify(body);
+    const text = bodyToText(body);
     return OTP_FAILED_PATTERNS.some((re) => re.test(text));
   }
   return false;
@@ -79,20 +130,12 @@ export async function applyToken(opts: {
 }): Promise<{ ok: boolean; token?: string; needsManualToken?: boolean; error?: string }> {
   const { registry, username, totpSecret } = opts;
   const pwBuf = Buffer.from(opts.password, 'utf8');
+  let bodyBuf: Buffer | null = null;
   try {
     const otp = generateTotp(totpSecret);
     const url = `${registry.replace(/\/$/, '')}/-/npm/v1/tokens`;
-    // NOTE: spec Chapter 8.1 step 5 diagrams this as `PUT`; the real npm
-    // token-creation endpoint is `POST` (the spec's own footnote at 08.md:38
-    // confirms "直接构造... HTTP 请求", i.e. whatever verb the registry
-    // expects). POST is what npmjs.org/Verdaccio accept, so we honor that.
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'npm-auth-type': 'legacy',
-      },
-      body: JSON.stringify({
+    bodyBuf = Buffer.from(
+      JSON.stringify({
         name: username,
         password: pwBuf.toString('utf8'),
         otp,
@@ -100,28 +143,46 @@ export async function applyToken(opts: {
         cidr_whitelist: [],
         automation: true,
       }),
+      'utf8',
+    );
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'npm-auth-type': 'legacy',
+      },
+      body: bodyBuf,
     });
+    const responseBody = await readRegistryBody(res);
 
     if (res.ok) {
-      const json = (await res.json()) as { token?: string };
+      const json = parseTokenResponse(responseBody);
       if (json.token) return { ok: true, token: json.token };
     }
 
     // Fallback path: NPM refused the silent apply (Chapter 8.1 风控降级).
     if (res.status === 403 || res.status === 401 || res.status === 429) {
-      return { ok: false, needsManualToken: true, error: parseNpmError(await safeJson(res)) };
+      return { ok: false, needsManualToken: true, error: parseNpmError(responseBody) };
     }
-    return { ok: false, error: parseNpmError(await safeJson(res)) ?? `HTTP ${res.status}` };
+    return { ok: false, error: parseNpmError(responseBody) ?? `HTTP ${res.status}` };
   } catch (err) {
-    return { ok: false, error: (err as Error).message };
+    return { ok: false, error: errorToMessage(err) };
   } finally {
+    if (bodyBuf) burnBuffer(bodyBuf);
     burnBuffer(pwBuf); // burn-after-read (Chapter 8.1)
   }
 }
 
-async function safeJson(res: Response): Promise<unknown> {
+async function readRegistryBody(res: Response): Promise<unknown> {
   try {
-    return await res.json();
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      return parsed;
+    } catch {
+      return text;
+    }
   } catch {
     return null;
   }
@@ -151,11 +212,16 @@ export async function publishPackage(opts: {
   version: string;
   tarball: Buffer;
   metadata: Record<string, unknown>;
+  distTag?: string;
+  access?: string;
+  /** One-shot OTP supplied by the CLI for this publish request. */
+  otp?: string;
 }): Promise<PublishResult> {
   const { registry, token, totpSecret, name, tarball, metadata } = opts;
   const { createHash } = await import('node:crypto');
 
   const version = String(metadata.version ?? opts.version);
+  const distTag = opts.distTag ?? 'latest';
   const tarballB64 = tarball.toString('base64');
   const integrity = createHash('sha512').update(tarball).digest('base64');
   const tarballFilename = `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`;
@@ -178,8 +244,9 @@ export async function publishPackage(opts: {
     };
     return {
       name,
-      // `latest` tag points at the freshly published version.
-      'dist-tags': { latest: version },
+      // Dist-tag defaults to `latest`, matching npm publish when --tag is absent.
+      'dist-tags': { [distTag]: version },
+      ...(opts.access ? { access: opts.access } : {}),
       versions,
       _attachments: {
         [tarballFilename]: {
@@ -205,7 +272,7 @@ export async function publishPackage(opts: {
       },
       body: JSON.stringify(buildBody()),
     });
-    const body = await safeJson(res);
+    const body = await readRegistryBody(res);
     const dateHeader = res.headers.get('date');
     if (res.ok) {
       return {
@@ -225,15 +292,17 @@ export async function publishPackage(opts: {
         status: res.status,
         error: parseNpmError(body) ?? `HTTP ${res.status}`,
         stdout: '',
-        stderr: typeof body === 'string' ? body : JSON.stringify(body),
+        stderr: bodyToText(body),
       },
       dateHeader,
       body,
     };
   };
 
-  // First attempt with the current TOTP.
-  const first = await attempt(generateTotp(totpSecret), 'publish');
+  const explicitOtp = nonEmptyString(opts.otp);
+
+  // First attempt with an explicit command OTP when supplied, otherwise with the current TOTP.
+  const first = await attempt(explicitOtp ?? generateTotp(totpSecret), 'publish');
   if (first.result.ok) return first.result;
 
   const status = first.result.status;
@@ -245,6 +314,8 @@ export async function publishPackage(opts: {
   if (isExpiredToken(status, first.body)) {
     return { ...first.result, expired: true };
   }
+
+  if (explicitOtp) return first.result;
 
   // Clock-drift recovery branch (Chapter 8.4): retry ONLY on genuine OTP
   // failures (403 "OTP validation failed"), never on arbitrary 401/403.
@@ -313,13 +384,13 @@ export async function configureOidc(opts: {
       'npm-otp': generateTotp(totpSecret),
     },
   });
-  const body = await safeJson(res);
+  const body = await readRegistryBody(res);
   return {
     ok: res.ok,
     status: res.status,
     error: res.ok ? undefined : (parseNpmError(body) ?? `HTTP ${res.status}`),
     stdout: res.ok ? `[oidc] enabled provenance for ${name}` : '',
-    stderr: res.ok ? '' : JSON.stringify(body),
+    stderr: res.ok ? '' : bodyToText(body),
   };
 }
 
@@ -327,7 +398,7 @@ export async function configureOidc(opts: {
 export function isExpiredToken(status: number, body: unknown): boolean {
   if (status === 401) return true;
   if (status === 403) {
-    const text = typeof body === 'string' ? body : JSON.stringify(body);
+    const text = bodyToText(body);
     return /token.*(expired|invalid|revoked)|unauthor/i.test(text) && !isOtpFailure(body, status);
   }
   return false;

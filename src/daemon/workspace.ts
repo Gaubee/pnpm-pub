@@ -11,7 +11,9 @@
  * them against an in-memory `memfs` volume.
  */
 import path from 'node:path';
+import type { PublishConfig } from '../shared/index.js';
 import type { fs as FsAPI } from './fs-types.js';
+import { parsePackagePublishConfig } from './package-publish-config.js';
 
 /** Markers that identify a project root, in priority order (Chapter 5.3.1). */
 const ROOT_MARKERS = ['pnpm-workspace.yaml', '.git', 'package.json'] as const;
@@ -98,6 +100,12 @@ export interface ScannedPackage {
   name: string;
   version: string;
   description?: string;
+  repository?: string;
+  publishConfig?: PublishConfig;
+  /** Dependency graph edges from all package dependency fields. */
+  dependencyNames?: string[];
+  /** Dependency graph edges used by production-only recursive filters. */
+  productionDependencyNames?: string[];
   private?: boolean;
   /** Absolute path to the package directory. */
   path: string;
@@ -169,18 +177,66 @@ async function readPackageJson(
 ): Promise<ScannedPackage | null> {
   try {
     const text = await fs.readFile(file);
-    const pkg = JSON.parse(text) as Record<string, unknown>;
+    const pkg: unknown = JSON.parse(text);
+    if (!isRecord(pkg)) return null;
     if (typeof pkg.name !== 'string') return null;
+    const repository = parseRepository(pkg.repository);
     return {
       name: pkg.name,
       version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
       description: typeof pkg.description === 'string' ? pkg.description : undefined,
+      repository,
+      publishConfig: parsePackagePublishConfig(pkg.publishConfig),
+      dependencyNames: readDependencyNames(pkg),
+      productionDependencyNames: readProductionDependencyNames(pkg),
       private: pkg.private === true,
       path: fs.dirname(file),
     };
   } catch {
     return null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseRepository(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return normalizeRepository(value);
+  }
+  if (isRecord(value) && typeof value.url === 'string') {
+    return normalizeRepository(value.url);
+  }
+  return undefined;
+}
+
+function readDependencyNames(pkg: Record<string, unknown>): string[] | undefined {
+  return readDependencyNamesFromFields(pkg, ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']);
+}
+
+function readProductionDependencyNames(pkg: Record<string, unknown>): string[] | undefined {
+  return readDependencyNamesFromFields(pkg, ['dependencies', 'optionalDependencies', 'peerDependencies']);
+}
+
+function readDependencyNamesFromFields(pkg: Record<string, unknown>, fields: readonly string[]): string[] | undefined {
+  const names = new Set<string>();
+  for (const field of fields) {
+    const value = pkg[field];
+    if (!isRecord(value)) continue;
+    for (const name of Object.keys(value)) {
+      names.add(name);
+    }
+  }
+  return names.size > 0 ? [...names] : undefined;
+}
+
+function normalizeRepository(value: string): string | undefined {
+  const cleaned = value.trim().replace(/^git\+/, '');
+  if (!cleaned) return undefined;
+  const githubMatch = cleaned.match(/github\.com[:/](.+?)(?:\.git)?$/i);
+  if (!githubMatch?.[1]) return undefined;
+  return githubMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
 }
 
 /**
@@ -192,7 +248,7 @@ async function scanRecursive(
   dir: string,
   fs: FsAPI,
   onPackage: (pkg: ScannedPackage) => void,
-  opts: { maxDepth: number; depth: number; gitignore: Set<string> },
+  opts: { maxDepth: number; depth: number; gitignore: GitignoreRules },
 ): Promise<void> {
   if (opts.depth > opts.maxDepth) return;
   let entries: string[];
@@ -204,7 +260,7 @@ async function scanRecursive(
   for (const entry of entries) {
     if (EXCLUDE_DIRS.has(entry)) continue;
     const full = fs.join(dir, entry);
-    if (opts.gitignore.has(full)) continue;
+    if (isGitignoredPath(full, opts.gitignore)) continue;
     const isDir = await fs.isDirectory(full);
     if (isDir) {
       await scanRecursive(full, fs, onPackage, {
@@ -219,20 +275,71 @@ async function scanRecursive(
   }
 }
 
-/** Parse a .gitignore at root into a set of ignored absolute paths (best-effort). */
-async function readGitignoreSet(root: string, fs: FsAPI): Promise<Set<string>> {
+interface GitignoreRules {
+  root: string;
+  rules: GitignoreRule[];
+}
+
+type GitignoreRule =
+  | { negated: boolean; kind: 'exact'; path: string }
+  | { negated: boolean; kind: 'name'; name: string }
+  | { negated: boolean; kind: 'pattern'; pattern: RegExp };
+
+function emptyGitignoreRules(root: string): GitignoreRules {
+  return { root, rules: [] };
+}
+
+/** Parse a .gitignore at root into ordered directory rules. */
+async function readGitignoreRules(root: string, fs: FsAPI): Promise<GitignoreRules> {
   const file = fs.join(root, '.gitignore');
-  const set = new Set<string>();
-  if (!(await fs.exists(file))) return set;
+  const rules = emptyGitignoreRules(root);
+  if (!(await fs.exists(file))) return rules;
   const text = await fs.readFile(file);
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
-    // Only handle the simple directory form (e.g. `coverage/`, `build`).
-    const cleaned = line.replace(/\/+$/, '');
-    set.add(fs.join(root, cleaned));
+    const negated = line.startsWith('!');
+    const patternText = negated ? line.slice(1).trim() : line;
+    const rawPattern = patternText.replace(/\\/g, '/').replace(/\/+$/, '');
+    const cleaned = rawPattern.replace(/^\/+/, '');
+    if (!cleaned) continue;
+    if (cleaned.includes('*')) {
+      rules.rules.push({ negated, kind: 'pattern', pattern: gitignorePatternToRegExp(cleaned) });
+      continue;
+    }
+    if (!rawPattern.startsWith('/') && !cleaned.includes('/')) {
+      rules.rules.push({ negated, kind: 'name', name: cleaned });
+      continue;
+    }
+    rules.rules.push({ negated, kind: 'exact', path: fs.join(root, cleaned) });
   }
-  return set;
+  return rules;
+}
+
+function gitignorePatternToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '{{GLOBSTAR}}')
+    .replace(/\*/g, '[^/]*')
+    .replace(/{{GLOBSTAR}}/g, '.*');
+  const prefix = pattern.includes('/') ? '^' : '(^|.*/)';
+  return new RegExp(`${prefix}${escaped}($|/.*$)`);
+}
+
+function isGitignoredPath(target: string, ignored: GitignoreRules): boolean {
+  let isIgnored = false;
+  const rel = path.relative(ignored.root, target).replace(/\\/g, '/');
+  const parts = rel.split('/');
+  for (const rule of ignored.rules) {
+    const matches =
+      rule.kind === 'exact'
+        ? target === rule.path || target.startsWith(`${rule.path}${path.sep}`)
+        : rule.kind === 'name'
+          ? parts.some((part) => part === rule.name)
+          : rule.pattern.test(rel);
+    if (matches) isIgnored = !rule.negated;
+  }
+  return isIgnored;
 }
 
 /**
@@ -251,7 +358,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
     results.push(pkg);
   };
 
-  const gitignore = opts.respectGitignore ? await readGitignoreSet(root, fs) : new Set<string>();
+  const gitignore = opts.respectGitignore ? await readGitignoreRules(root, fs) : emptyGitignoreRules(root);
 
   // 1. pnpm-workspace.yaml-driven scan (priority).
   const globs = await readWorkspacePackages(root, fs);
@@ -271,6 +378,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
           const full = fs.join(baseDir, entry);
           if (!(await fs.isDirectory(full))) continue;
           if (EXCLUDE_DIRS.has(entry)) continue;
+          if (isGitignoredPath(full, gitignore)) continue;
           const pkgJson = fs.join(full, 'package.json');
           if (await fs.exists(pkgJson)) {
             const pkg = await readPackageJson(pkgJson, fs);
@@ -290,6 +398,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
               if (EXCLUDE_DIRS.has(sub)) continue;
               const subFull = fs.join(full, sub);
               if (!(await fs.isDirectory(subFull))) continue;
+              if (isGitignoredPath(subFull, gitignore)) continue;
               const subPkgJson = fs.join(subFull, 'package.json');
               if (await fs.exists(subPkgJson)) {
                 const pkg = await readPackageJson(subPkgJson, fs);

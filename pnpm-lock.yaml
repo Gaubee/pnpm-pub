@@ -36,6 +36,9 @@ importers:
       '@types/yargs':
         specifier: ^17.0.33
         version: 17.0.35
+      agent-browser:
+        specifier: 0.31.1
+        version: 0.31.1
       fast-glob:
         specifier: ^3.3.3
         version: 3.3.3
@@ -51,6 +54,9 @@ importers:
       typescript:
         specifier: ^5.7.2
         version: 5.9.3
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@22.20.0)(lightningcss@1.32.0)
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(lightningcss@1.32.0)
@@ -1381,6 +1387,11 @@ packages:
   acorn@8.17.0:
     resolution: {integrity: sha512-xRQbDb9BnwDafYNn6Vwl839DYVjqXYb1XVGtWAZ1kcDc6iwAL4hg3B1dZlRiuENFeO2H53gFG3in621AdERVAg==}
     engines: {node: '>=0.4.0'}
+    hasBin: true
+
+  agent-browser@0.31.1:
+    resolution: {integrity: sha512-RjgfT0EsHe1oZQbwzUqJTPb7w3sU8DGbbAjMxLNI5dW1y0cc81TbVsqgjqQJmsy3GEbEcKe/ryARwmWGqJAXXQ==}
+    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
     hasBin: true
 
   ansi-regex@5.0.1:
@@ -3201,6 +3212,8 @@ snapshots:
       tinyrainbow: 1.2.0
 
   acorn@8.17.0: {}
+
+  agent-browser@0.31.1: {}
 
   ansi-regex@5.0.1: {}
 

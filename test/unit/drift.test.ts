@@ -18,9 +18,13 @@ let baseUrl = '';
 let attempts: { otp: string | undefined; status: number }[] = [];
 let mode: 'drift' | 'expired' = 'drift';
 
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 beforeAll(async () => {
   server = http.createServer(async (req, res) => {
-    const otp = req.headers['npm-otp'] as string | undefined;
+    const otp = firstHeaderValue(req.headers['npm-otp']);
     if (req.method === 'PUT') {
       attempts.push({ otp, status: 0 });
       const n = attempts.length;

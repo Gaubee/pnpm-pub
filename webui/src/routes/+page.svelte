@@ -7,6 +7,8 @@
 	import { pendingEvents, historyEvents, daemon } from '$lib/store.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import { Label } from '$lib/components/ui/label/index.js';
 	import { actions } from '$lib/store.js';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
@@ -14,6 +16,30 @@
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
 
 	let showActions = $state(false);
+	let placeholderName = $state('');
+	let oidcName = $state('');
+	let oidcRepo = $state('');
+	let oidcPath = $state('');
+
+	function createPlaceholder(): void {
+		const name = placeholderName.trim();
+		if (!name) return;
+		actions.createEvent('create-placeholder', { name });
+		showActions = false;
+		placeholderName = '';
+	}
+
+	function createOidc(): void {
+		const name = oidcName.trim();
+		const repo = oidcRepo.trim();
+		const path = oidcPath.trim();
+		if (!name || !repo || !path) return;
+		actions.createEvent('setup-oidc', { name, repo, path });
+		showActions = false;
+		oidcName = '';
+		oidcRepo = '';
+		oidcPath = '';
+	}
 </script>
 
 <svelte:head><title>Events · pnpm-pub</title></svelte:head>
@@ -31,43 +57,41 @@
 			{#if showActions}
 				<div
 					role="menu"
-					class="absolute right-0 top-10 z-20 w-52 overflow-hidden rounded-md border border-border bg-popover p-1 text-sm shadow-lg"
+					class="absolute right-0 top-10 z-20 w-72 overflow-hidden rounded-md border border-border bg-popover p-3 text-sm shadow-lg"
 				>
-					<button
-						class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-						onclick={() => {
-							actions.createEvent('create-placeholder', { name: 'new-package', path: '/' });
-							showActions = false;
-						}}
-					>
-						<IconPackage class="h-3.5 w-3.5" /> Create placeholder (v0.0.0)
-					</button>
-					<button
-						class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-						onclick={() => {
-							actions.createEvent('setup-oidc', { name: 'pkg', repo: 'owner/name' });
-							showActions = false;
-						}}
-					>
-						<IconShield class="h-3.5 w-3.5" /> Configure Trusted Publish
-					</button>
-					<button
-						class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-						onclick={() => {
-							if ($daemon.defaultProfile) {
-								actions.createEvent('refresh-token', { username: $daemon.defaultProfile });
-							}
-							showActions = false;
-						}}
-					>
-						<IconRefresh class="h-3.5 w-3.5" /> Force-refresh token
-					</button>
-					<button
-						class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-muted-foreground hover:bg-accent"
-						onclick={() => (showActions = false)}
-					>
-						Close
-					</button>
+					<div class="space-y-3">
+						<div class="space-y-1.5">
+							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconPackage class="h-3.5 w-3.5" /> Placeholder</div>
+							<Input bind:value={placeholderName} placeholder="reserved-name" onkeydown={(e) => e.key === 'Enter' && createPlaceholder()} />
+							<Button variant="outline" size="sm" class="w-full" onclick={createPlaceholder}>Create placeholder</Button>
+						</div>
+						<div class="space-y-1.5 border-t border-border pt-3">
+							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> Trusted Publish</div>
+							<Label class="sr-only" for="oidc-name">Package name</Label>
+							<Input id="oidc-name" bind:value={oidcName} placeholder="@scope/pkg" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Input bind:value={oidcRepo} placeholder="owner/repo" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Input bind:value={oidcPath} placeholder="/path/to/package" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Button variant="brand" size="sm" class="w-full" onclick={createOidc}>Configure Trusted Publish</Button>
+						</div>
+						<div class="space-y-1.5 border-t border-border pt-3">
+							<Button
+								variant="ghost"
+								size="sm"
+								class="w-full justify-start px-0 text-muted-foreground hover:bg-transparent"
+								onclick={() => {
+									if ($daemon.defaultProfile) {
+										actions.createEvent('refresh-token', { username: $daemon.defaultProfile });
+									}
+									showActions = false;
+								}}
+							>
+								<IconRefresh class="h-3.5 w-3.5" /> Force-refresh token
+							</Button>
+							<Button variant="ghost" size="sm" class="w-full justify-start px-0 text-muted-foreground hover:bg-transparent" onclick={() => (showActions = false)}>
+								Close
+							</Button>
+						</div>
+					</div>
 				</div>
 			{/if}
 		</div>

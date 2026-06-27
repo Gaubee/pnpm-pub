@@ -15,7 +15,12 @@ import type {
 	Profile,
 	WorkspaceEntry,
 	PublishTarget,
+	EventKind,
+	EventPayloadData,
 } from './types';
+import { filterVisibleEvents, sortEvents } from './event-projection.js';
+import { parseOkResponse } from './rest-response.js';
+import { parseWsServerMessage } from './ws-message.js';
 
 /** Exposed so pages can build authenticated REST requests (Chapter 3.2.2). */
 export function readWebToken(): string {
@@ -94,12 +99,8 @@ export function connect(): void {
 		send({ type: 'auth', webToken: token });
 	};
 	socket.onmessage = (ev) => {
-		let msg: WsServerMessage;
-		try {
-			msg = JSON.parse(ev.data as string) as WsServerMessage;
-		} catch {
-			return;
-		}
+		const msg = parseWsServerMessage(ev.data);
+		if (!msg) return;
 		handleServerMessage(msg);
 	};
 	socket.onclose = () => {
@@ -158,14 +159,11 @@ function handleServerMessage(msg: WsServerMessage): void {
 	}
 }
 
-function sortEvents(events: PubEvent[]): PubEvent[] {
-	return [...events].sort((a, b) => b.createdAt - a.createdAt);
-}
-
 // ----- Derived selectors -----
 
-export const pendingEvents = derived(daemon, ($d) => $d.events.filter((e) => e.status === 'pending'));
-export const historyEvents = derived(daemon, ($d) => $d.events.filter((e) => e.status !== 'pending'));
+export const visibleEvents = derived(daemon, ($d) => filterVisibleEvents($d.events, $d.defaultProfile));
+export const pendingEvents = derived(visibleEvents, ($events) => $events.filter((e) => e.status === 'pending'));
+export const historyEvents = derived(visibleEvents, ($events) => $events.filter((e) => e.status !== 'pending'));
 export const activeProfile = derived(daemon, ($d) =>
 	$d.profiles.find((p) => p.username === $d.defaultProfile) ?? null,
 );
@@ -176,9 +174,8 @@ export const actions = {
 	selectProfile(username: string): void {
 			// Chapter 6.1.1: switching identity clears the client store and
 			// re-fetches the target profile's data so workspaces/packages are
-			// re-scoped (profile isolation). Events stay global (a CLI publish
-			// from another profile can still surface as a context-override card),
-			// but the profile-scoped views reset.
+			// re-scoped (profile isolation). A pending CLI profile override can
+			// still surface through the visible-events projection.
 			daemon.update((s) => ({
 				...s,
 				defaultProfile: username,
@@ -205,9 +202,9 @@ export const actions = {
 			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
 			body: JSON.stringify({ token }),
 		});
-		const json = (await res.json()) as { ok: boolean };
-		if (json.ok) daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
-		return json.ok;
+		const json = parseOkResponse(await res.json());
+		if (json?.ok) daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
+		return json?.ok ?? false;
 	},
 	/** Cancel a staged risky-workspace add (Chapter 5.3.2). */
 	cancelRiskyWorkspace(token: string): Promise<void> {
@@ -218,7 +215,7 @@ export const actions = {
 			body: JSON.stringify({ token }),
 		}).then(() => undefined, () => undefined);
 	},
-	createEvent(kind: Extract<WsClientMessage, { type: 'create-event' }>['kind'], payload: unknown): void {
+	createEvent<K extends EventKind>(kind: K, payload: EventPayloadData<K>): void {
 		send({ type: 'create-event', kind, payload });
 	},
 	// import/export are handled via REST (/api/export, /api/import), not WS.

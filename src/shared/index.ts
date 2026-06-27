@@ -139,17 +139,24 @@ export type EventKind =
   | 'publish' // Chapter 8.3 — terminal publish
   | 'setup-oidc' // Chapter 8.5 — Trusted Publish config
   | 'create-placeholder' // v0.0.0 placeholder publish
-  | 'refresh-token' // force token refresh
-  | 'import' // Chapter 8.2 import
-  | 'export'; // Chapter 8.2 export
+  | 'refresh-token'; // force token refresh
 
-export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'rejected';
+export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'action-required' | 'rejected';
 
 /**
  * An Event is the central unit of the Events Hub. Every action — whether CLI
  * triggered or GUI triggered — materialises as an Event that must be confirmed
  * before the daemon performs any write against the NPM registry (Chapter 3.3).
  */
+export interface PublishConfig {
+  /** Package-scoped publish registry default from package.json publishConfig. */
+  registry?: string;
+  /** Package-scoped dist-tag default from package.json publishConfig. */
+  tag?: string;
+  /** Package-scoped access default from package.json publishConfig. */
+  access?: string;
+}
+
 export interface PublishTarget {
   name: string;
   version: string;
@@ -157,10 +164,18 @@ export interface PublishTarget {
   previousVersion?: string;
   description?: string;
   path: string;
+  /** GitHub repo slug derived from source metadata when available. */
+  repository?: string;
+  /** Package-scoped publish defaults derived from package.json publishConfig. */
+  publishConfig?: PublishConfig;
 }
 
+export type PublishSource =
+  | { kind: 'directory'; path: string }
+  | { kind: 'tarball'; path: string };
+
 export interface PublishContext {
-  cwd: string;
+  source: PublishSource;
   args: string[];
   target: PublishTarget;
 }
@@ -172,14 +187,14 @@ export interface OidcContext {
   name: string;
   branch?: string;
   /** Absolute path to the package directory (workflow is written here). */
-  path?: string;
+  path: string;
   /** When true, overwrite an existing publish.yml (Chapter 1.2.3 --force). */
   force?: boolean;
 }
 
 export interface CreatePlaceholderContext {
+  /** Package name to reserve by publishing a generated v0.0.0 artifact. */
   name: string;
-  path: string;
 }
 
 export interface RefreshTokenContext {
@@ -191,6 +206,9 @@ export type EventPayload =
   | { kind: 'setup-oidc'; data: OidcContext }
   | { kind: 'create-placeholder'; data: CreatePlaceholderContext }
   | { kind: 'refresh-token'; data: RefreshTokenContext };
+
+/** Payload data shape for one concrete Event kind. */
+export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
 
 export interface PubEvent {
   /** Unique task id (Chapter 3.3.1). */
@@ -242,26 +260,6 @@ export type WsClientMessage =
   | { type: 'reject-event'; id: string }
   | { type: 'scan-workspace'; root: string }
   | { type: 'create-event'; kind: EventKind; payload: unknown };
-
-// ---------------------------------------------------------------------------
-// Chapter 8.1 — Onboarding: automated token apply
-// ---------------------------------------------------------------------------
-
-/** Submitted by the WebUI during [Add Profile]. Password is burned after use. */
-export interface AddProfilePayload {
-  username: string;
-  password: string;
-  totpSecret: string;
-  registry?: string;
-}
-
-/** Result of the automated token apply flow. */
-export interface AddProfileResult {
-  ok: boolean;
-  /** Set when NPM silently rejected the auto-apply and the manual-paste fallback is required. */
-  needsManualToken?: boolean;
-  error?: string;
-}
 
 // ---------------------------------------------------------------------------
 // Misc

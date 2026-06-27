@@ -10,12 +10,35 @@
  * Promise and the WebUI's WS confirm/reject messages.
  */
 import { Buffer } from 'node:buffer';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
+import { promisify } from 'node:util';
 import type { DaemonStore } from './store.js';
-import type { IpcPublishRequest, PubEvent } from '../shared/index.js';
+import type {
+  CreatePlaceholderContext,
+  EventKind,
+  EventPayload,
+  IpcPublishRequest,
+  OidcContext,
+  PublishConfig,
+  PublishContext,
+  PublishSource,
+  PublishTarget,
+  PubEvent,
+  RefreshTokenContext,
+} from '../shared/index.js';
+import type { PackageTarballFile } from './packer.js';
 import { publishPackage, configureOidc } from './npm-api.js';
 import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
 import { promises as fsp } from 'node:fs';
+import { realFs } from './real-fs.js';
+import { findProjectRoot, isRiskyRoot, scanWorkspace } from './workspace.js';
+import { parsePackagePublishConfig } from './package-publish-config.js';
+import { checkPublishGitState } from './publish-git-checks.js';
+
+const execFileAsync = promisify(execFile);
 
 /** Handle given to an IPC client so it can be resolved/rejected later. */
 export interface PendingClient {
@@ -25,20 +48,51 @@ export interface PendingClient {
   exit(code: number, message?: string): void;
 }
 
-/** Resolved metadata about a publish target (parsed from the CWD's package.json). */
-async function readPublishTarget(cwd: string): Promise<{ name: string; version: string; description?: string }> {
+export type ProactiveEventResult =
+  | { ok: true; event: PubEvent }
+  | { ok: false; error: string };
+
+const DETACHED_CLIENT: PendingClient = {
+  log: () => {},
+  exit: () => {},
+};
+
+/** Resolved metadata about a publish target from a directory or tarball source. */
+async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTarget, 'path'>> {
   try {
-    const pkgPath = path.join(cwd, 'package.json');
-    const text = await fsp.readFile(pkgPath, 'utf8');
-    const pkg = JSON.parse(text) as { name?: string; version?: string; description?: string };
+    let metadata: unknown;
+    if (source.kind === 'directory') {
+      metadata = JSON.parse(await fsp.readFile(path.join(source.path, 'package.json'), 'utf8'));
+    } else {
+      const { readPackageTarball } = await import('./packer.js');
+      metadata = (await readPackageTarball(source.path)).metadata;
+    }
+    const pkg = parsePackageMetadata(metadata);
     return {
       name: pkg.name ?? '(unknown)',
       version: pkg.version ?? '0.0.0',
       description: pkg.description,
+      ...(pkg.publishConfig ? { publishConfig: pkg.publishConfig } : {}),
     };
   } catch {
     return { name: '(unknown)', version: '0.0.0' };
   }
+}
+
+function parsePackageMetadata(value: unknown): {
+  name?: string;
+  version?: string;
+  description?: string;
+  publishConfig?: PublishConfig;
+} {
+  if (!isRecord(value)) return {};
+  const metadata: { name?: string; version?: string; description?: string; publishConfig?: PublishConfig } = {};
+  if (typeof value.name === 'string') metadata.name = value.name;
+  if (typeof value.version === 'string') metadata.version = value.version;
+  if (typeof value.description === 'string') metadata.description = value.description;
+  const publishConfig = parsePackagePublishConfig(value.publishConfig);
+  if (publishConfig) metadata.publishConfig = publishConfig;
+  return metadata;
 }
 
 /** Resolve which profile a request should use, honoring overrides (Chapter 5.4.5). */
@@ -50,11 +104,948 @@ function resolveProfile(store: DaemonStore, override: string | undefined): strin
   return first ?? '';
 }
 
+function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload | null {
+  switch (kind) {
+    case 'publish': {
+      const data = parsePublishContext(payload);
+      return data ? { kind, data } : null;
+    }
+    case 'setup-oidc': {
+      const data = parseOidcContext(payload);
+      return data ? { kind, data } : null;
+    }
+    case 'create-placeholder': {
+      const data = parseCreatePlaceholderContext(payload);
+      return data ? { kind, data } : null;
+    }
+    case 'refresh-token': {
+      const data = parseRefreshTokenContext(payload);
+      return data ? { kind, data } : null;
+    }
+  }
+}
+
+function parsePublishContext(value: unknown): PublishContext | null {
+  if (!isRecord(value)) return null;
+  const source = parsePublishSource(value.source);
+  const target = parsePublishTarget(value.target);
+  if (!source || !target) return null;
+  const rawArgs = value.args;
+  const args = Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === 'string') ? rawArgs : [];
+  return { source, args, target };
+}
+
+function parsePublishSource(value: unknown): PublishSource | null {
+  if (!isRecord(value)) return null;
+  const kind = value.kind;
+  const pathValue = readString(value, 'path');
+  if ((kind !== 'directory' && kind !== 'tarball') || !pathValue) return null;
+  return { kind, path: pathValue };
+}
+
+function parsePublishTarget(value: unknown): PublishTarget | null {
+  if (!isRecord(value)) return null;
+  const name = readString(value, 'name');
+  const version = readString(value, 'version');
+  const pathValue = readString(value, 'path');
+  if (!name || !version || !pathValue) return null;
+  const previousVersion = readString(value, 'previousVersion');
+  const description = readString(value, 'description');
+  const repository = readString(value, 'repository');
+  const publishConfig = parsePackagePublishConfig(value.publishConfig);
+  return {
+    name,
+    version,
+    path: pathValue,
+    ...(previousVersion ? { previousVersion } : {}),
+    ...(description ? { description } : {}),
+    ...(repository ? { repository } : {}),
+    ...(publishConfig ? { publishConfig } : {}),
+  };
+}
+
+function isDryRunPublish(args: string[]): boolean {
+  let dryRun = false;
+  for (const arg of args) {
+    if (arg === '--dry-run') dryRun = true;
+    if (arg === '--no-dry-run') dryRun = false;
+    if (arg.startsWith('--dry-run=')) dryRun = arg.slice('--dry-run='.length) !== 'false';
+  }
+  return dryRun;
+}
+
+function isRecursivePublish(args: string[]): boolean {
+  let recursive = false;
+  for (const arg of args) {
+    if (arg === '-r' || arg === '--recursive') recursive = true;
+    if (arg === '--no-recursive') recursive = false;
+    if (arg.startsWith('--recursive=')) recursive = arg.slice('--recursive='.length) !== 'false';
+  }
+  return recursive;
+}
+
+function isReportSummaryPublish(args: string[]): boolean {
+  let reportSummary = false;
+  for (const arg of args) {
+    if (arg === '--report-summary') reportSummary = true;
+    if (arg === '--no-report-summary') reportSummary = false;
+    if (arg.startsWith('--report-summary=')) reportSummary = arg.slice('--report-summary='.length) !== 'false';
+  }
+  return reportSummary;
+}
+
+function isIgnoreScriptsPublish(args: string[]): boolean {
+  let ignoreScripts = false;
+  for (const arg of args) {
+    if (arg === '--ignore-scripts') ignoreScripts = true;
+    if (arg === '--no-ignore-scripts') ignoreScripts = false;
+    if (arg.startsWith('--ignore-scripts=')) ignoreScripts = arg.slice('--ignore-scripts='.length) !== 'false';
+  }
+  return ignoreScripts;
+}
+
+function isJsonPublish(args: string[]): boolean {
+  let json = false;
+  for (const arg of args) {
+    if (arg === '--json') json = true;
+    if (arg === '--no-json') json = false;
+    if (arg.startsWith('--json=')) json = arg.slice('--json='.length) !== 'false';
+  }
+  return json;
+}
+
+function isFailIfNoMatchPublish(args: string[]): boolean {
+  let failIfNoMatch = false;
+  for (const arg of args) {
+    if (arg === '--fail-if-no-match') failIfNoMatch = true;
+    if (arg === '--no-fail-if-no-match') failIfNoMatch = false;
+    if (arg.startsWith('--fail-if-no-match=')) failIfNoMatch = arg.slice('--fail-if-no-match='.length) !== 'false';
+  }
+  return failIfNoMatch;
+}
+
+function resolvePublishRegistry(args: string[], defaultRegistry: string): string {
+  let registry = defaultRegistry;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--registry') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) registry = next;
+      continue;
+    }
+    if (arg.startsWith('--registry=')) {
+      const value = arg.slice('--registry='.length);
+      if (value.length > 0) registry = value;
+    }
+  }
+  return registry;
+}
+
+function resolvePublishDistTag(args: string[], defaultDistTag?: string): string | undefined {
+  let distTag = defaultDistTag;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--tag') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) distTag = next;
+      continue;
+    }
+    if (arg.startsWith('--tag=')) {
+      const value = arg.slice('--tag='.length);
+      if (value.length > 0) distTag = value;
+    }
+  }
+  return distTag;
+}
+
+function resolvePublishAccess(args: string[], defaultAccess?: string): string | undefined {
+  let access = defaultAccess;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--access') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) access = next;
+      continue;
+    }
+    if (arg.startsWith('--access=')) {
+      const value = arg.slice('--access='.length);
+      if (value.length > 0) access = value;
+    }
+  }
+  return access;
+}
+
+function resolvePublishOtp(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--otp') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) return next;
+      continue;
+    }
+    if (arg.startsWith('--otp=')) {
+      const value = arg.slice('--otp='.length);
+      if (value.length > 0) return value;
+    }
+  }
+  return undefined;
+}
+
+const PUBLISH_OPTIONS_WITH_VALUE = new Set([
+  '--access',
+  '--changed-files-ignore-pattern',
+  '--filter',
+  '--filter-prod',
+  '--otp',
+  '--publish-branch',
+  '--registry',
+  '--tag',
+  '--test-pattern',
+]);
+
+const PUBLISH_BOOLEAN_OPTIONS = new Set([
+  '--dry-run',
+  '--no-dry-run',
+  '--fail-if-no-match',
+  '--no-fail-if-no-match',
+  '--force',
+  '--ignore-scripts',
+  '--no-ignore-scripts',
+  '--json',
+  '--no-json',
+  '--no-git-checks',
+  '--recursive',
+  '--no-recursive',
+  '-r',
+  '--report-summary',
+  '--no-report-summary',
+]);
+
+class PublishArgumentError extends Error {}
+
+function unknownPublishOptionMessage(option: string): string {
+  return `ERROR Unknown option: '${option.replace(/^-+/, '')}'`;
+}
+
+function isNativeUnknownCliConfigOption(arg: string): boolean {
+  return arg.startsWith('--config.');
+}
+
+function formatNativeUnknownCliConfigWarning(arg: string): string {
+  const optionName = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+  return `npm warn Unknown cli config "${optionName}". This will stop working in the next major version of npm.\n`;
+}
+
+function formatNativeUnknownCliConfigWarnings(args: string[]): string {
+  return args.filter(isNativeUnknownCliConfigOption).map(formatNativeUnknownCliConfigWarning).join('');
+}
+
+function assertSupportedPublishArgs(args: string[]): void {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--') return;
+    if (PUBLISH_OPTIONS_WITH_VALUE.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (PUBLISH_BOOLEAN_OPTIONS.has(arg)) continue;
+    if (arg.startsWith('--')) {
+      const optionName = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+      if (isNativeUnknownCliConfigOption(optionName)) continue;
+      if (PUBLISH_OPTIONS_WITH_VALUE.has(optionName) || PUBLISH_BOOLEAN_OPTIONS.has(optionName)) continue;
+      throw new PublishArgumentError(unknownPublishOptionMessage(optionName));
+    }
+    if (arg.startsWith('-')) {
+      throw new PublishArgumentError(unknownPublishOptionMessage(arg));
+    }
+  }
+}
+
+function findPublishPositionalArg(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--') {
+      return args.slice(index + 1).find((value) => value.length > 0);
+    }
+    if (PUBLISH_OPTIONS_WITH_VALUE.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith('-')) continue;
+    return arg;
+  }
+  return undefined;
+}
+
+async function resolvePublishSource(cwd: string, args: string[]): Promise<PublishSource> {
+  if (isRecursivePublish(args)) return { kind: 'directory', path: cwd };
+  const positional = findPublishPositionalArg(args);
+  if (!positional) return { kind: 'directory', path: cwd };
+  const candidate = path.resolve(cwd, positional);
+  const stat = await fsp
+    .stat(candidate)
+    .catch(() => null);
+  return stat?.isDirectory()
+    ? { kind: 'directory', path: candidate }
+    : { kind: 'tarball', path: candidate };
+}
+
+async function loadPublishSource(
+  source: PublishSource,
+  opts: { ignoreScripts?: boolean } = {},
+): Promise<{ tarball: Buffer; metadata: Record<string, unknown> }> {
+  const { packPackage, readPackageTarball } = await import('./packer.js');
+  if (source.kind === 'tarball') return readPackageTarball(source.path);
+  return opts.ignoreScripts ? packPackage(source.path, { ignoreScripts: true }) : packPackage(source.path);
+}
+
+interface PublishedPackageSummary {
+  name: string;
+  version: string;
+}
+
+async function writePublishSummaryFile(summaryDir: string, publishedPackages: readonly PublishedPackageSummary[]): Promise<void> {
+  await fsp.writeFile(
+    path.join(summaryDir, 'pnpm-publish-summary.json'),
+    JSON.stringify({ publishedPackages }, null, 2) + '\n',
+    'utf8',
+  );
+}
+
+async function writePublishSummary(source: PublishSource, name: string, version: string): Promise<void> {
+  const summaryDir = source.kind === 'directory' ? source.path : path.dirname(source.path);
+  await writePublishSummaryFile(summaryDir, [{ name, version }]);
+}
+
+function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function publishTarballFilename(name: string, version: string): string {
+  return `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`;
+}
+
+function formatNpmNoticeLine(text?: string): string {
+  return text ? `npm notice ${text}\n` : 'npm notice\n';
+}
+
+function formatNpmSize(bytes: number): string {
+  if (bytes < 1000) return `${bytes}B`;
+  if (bytes < 1000 * 1000) return `${(bytes / 1000).toFixed(1)}kB`;
+  return `${(bytes / (1000 * 1000)).toFixed(1)}MB`;
+}
+
+function shortenIntegrity(integrity: string): string {
+  if (integrity.length <= 46) return integrity;
+  return `${integrity.slice(0, 20)}[...]${integrity.slice(-18)}`;
+}
+
+function normalizeRegistryForNotice(registry: string): string {
+  return registry.endsWith('/') ? registry : `${registry}/`;
+}
+
+function formatDryRunPublishDestinationNotice(params: {
+  registry: string;
+  distTag?: string;
+  access?: string;
+}): string {
+  const accessText = params.access ? `${params.access} access` : 'default access';
+  return formatNpmNoticeLine(
+    `Publishing to ${normalizeRegistryForNotice(params.registry)} with tag ${params.distTag ?? 'latest'} and ${accessText} (dry-run)`,
+  );
+}
+
+interface PublishJsonProjection {
+  id: string;
+  name: string;
+  version: string;
+  size: number;
+  unpackedSize?: number;
+  shasum: string;
+  integrity: string;
+  filename: string;
+  files?: PackageTarballFile[];
+  entryCount?: number;
+  bundled?: string[];
+}
+
+async function buildPublishJsonProjection(name: string, version: string, tarball: Buffer): Promise<PublishJsonProjection> {
+  const { summarizePackageTarball } = await import('./packer.js');
+  const summary = await summarizePackageTarball(tarball).catch(() => null);
+  return {
+    id: `${name}@${version}`,
+    name,
+    version,
+    size: tarball.length,
+    ...(summary
+      ? {
+          unpackedSize: summary.unpackedSize,
+        }
+      : {}),
+    shasum: createHash('sha1').update(tarball).digest('hex'),
+    integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}`,
+    filename: publishTarballFilename(name, version),
+    ...(summary
+      ? {
+          files: summary.files,
+          entryCount: summary.entryCount,
+          bundled: summary.bundled,
+        }
+      : {}),
+  };
+}
+
+async function formatPublishJson(name: string, version: string, tarball: Buffer): Promise<string> {
+  const projection = await buildPublishJsonProjection(name, version, tarball);
+  return JSON.stringify(projection, null, 2) + '\n';
+}
+
+async function formatDryRunNpmNotice(params: {
+  name: string;
+  version: string;
+  tarball: Buffer;
+  registry: string;
+  distTag?: string;
+  access?: string;
+}): Promise<string> {
+  const { summarizePackageTarball } = await import('./packer.js');
+  const summary = await summarizePackageTarball(params.tarball).catch(() => null);
+  if (!summary) return '';
+  const shasum = createHash('sha1').update(params.tarball).digest('hex');
+  const integrity = `sha512-${createHash('sha512').update(params.tarball).digest('base64')}`;
+  const bundledLines =
+    summary.bundled.length > 0
+      ? [
+          formatNpmNoticeLine('Bundled Dependencies'),
+          ...summary.bundled.map((dependency) => formatNpmNoticeLine(dependency)),
+        ]
+      : [];
+  const bundledDetailLines =
+    summary.bundled.length > 0
+      ? [
+          formatNpmNoticeLine(`bundled deps: ${summary.bundled.length}`),
+          formatNpmNoticeLine('bundled files: 0'),
+          formatNpmNoticeLine(`own files: ${summary.entryCount}`),
+        ]
+      : [];
+  const lines: string[] = [
+    formatNpmNoticeLine(),
+    formatNpmNoticeLine(`\u{1F4E6}  ${params.name}@${params.version}`),
+    formatNpmNoticeLine('Tarball Contents'),
+    ...summary.files.map((file) => formatNpmNoticeLine(`${formatNpmSize(file.size)} ${file.path}`)),
+    ...bundledLines,
+    formatNpmNoticeLine('Tarball Details'),
+    formatNpmNoticeLine(`name: ${params.name}`),
+    formatNpmNoticeLine(`version: ${params.version}`),
+    formatNpmNoticeLine(`filename: ${publishTarballFilename(params.name, params.version)}`),
+    formatNpmNoticeLine(`package size: ${formatNpmSize(params.tarball.length).replace(/([A-Za-z]+)$/, ' $1')}`),
+    formatNpmNoticeLine(`unpacked size: ${formatNpmSize(summary.unpackedSize).replace(/([A-Za-z]+)$/, ' $1')}`),
+    formatNpmNoticeLine(`shasum: ${shasum}`),
+    formatNpmNoticeLine(`integrity: ${shortenIntegrity(integrity)}`),
+    ...bundledDetailLines,
+    formatNpmNoticeLine(`total files: ${summary.entryCount}`),
+    formatNpmNoticeLine(),
+    formatDryRunPublishDestinationNotice(params),
+  ];
+  return lines.join('');
+}
+
+type RecursiveFilterEdgeKind = 'all' | 'production';
+
+interface RecursiveFilter {
+  value: string;
+  edgeKind: RecursiveFilterEdgeKind;
+}
+
+function readRecursiveFilters(args: string[]): RecursiveFilter[] {
+  const filters: RecursiveFilter[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--filter') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) {
+        filters.push({ value: next, edgeKind: 'all' });
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('--filter=')) {
+      const value = arg.slice('--filter='.length);
+      if (value.length > 0) filters.push({ value, edgeKind: 'all' });
+      continue;
+    }
+    if (arg === '--filter-prod') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) {
+        filters.push({ value: next, edgeKind: 'production' });
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('--filter-prod=')) {
+      const value = arg.slice('--filter-prod='.length);
+      if (value.length > 0) filters.push({ value, edgeKind: 'production' });
+    }
+  }
+  return filters;
+}
+
+function readChangedFilesIgnorePatterns(args: string[]): string[] {
+  const patterns: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '--changed-files-ignore-pattern') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) {
+        patterns.push(next);
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('--changed-files-ignore-pattern=')) {
+      const value = arg.slice('--changed-files-ignore-pattern='.length);
+      if (value.length > 0) patterns.push(value);
+    }
+  }
+  return patterns;
+}
+
+interface RecursiveSelectorParts {
+  packageSelector?: string;
+  directorySelector?: string;
+  changedSinceRef?: string;
+}
+
+interface RecursiveFilterContext<T extends { path: string }> {
+  root: string;
+  packages: T[];
+  changedPathsByRef: Map<string, Promise<Set<string>>>;
+  changedFilesIgnorePatterns: readonly string[];
+  currentPackagePath?: string;
+}
+
+function parseRecursiveSelector(value: string): RecursiveSelectorParts {
+  const trimmed = value.trim();
+  const changedSince = parseChangedSinceSuffix(trimmed);
+  const selectorText = changedSince.selector;
+  const openIndex = selectorText.lastIndexOf('{');
+  if (openIndex >= 0 && selectorText.endsWith('}') && openIndex < selectorText.length - 2) {
+    const packageSelector = selectorText.slice(0, openIndex);
+    const directorySelector = selectorText.slice(openIndex + 1, -1);
+    return {
+      ...(packageSelector ? { packageSelector } : {}),
+      directorySelector,
+      ...(changedSince.ref ? { changedSinceRef: changedSince.ref } : {}),
+    };
+  }
+  return {
+    ...(selectorText ? { packageSelector: selectorText } : {}),
+    ...(changedSince.ref ? { changedSinceRef: changedSince.ref } : {}),
+  };
+}
+
+function parseChangedSinceSuffix(value: string): { selector: string; ref?: string } {
+  const openIndex = value.lastIndexOf('[');
+  if (openIndex >= 0 && value.endsWith(']') && openIndex < value.length - 2) {
+    return {
+      selector: value.slice(0, openIndex),
+      ref: value.slice(openIndex + 1, -1),
+    };
+  }
+  return { selector: value };
+}
+
+function normalizeRelativeFilter(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+}
+
+function filterToRegExp(value: string): RegExp {
+  const escaped = normalizeRelativeFilter(value)
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '{{GLOBSTAR}}')
+    .replace(/\*/g, '[^/]*')
+    .replace(/{{GLOBSTAR}}/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+function selectorTextMatches(selector: string, value: string): boolean {
+  const normalized = normalizeRelativeFilter(selector);
+  if (!normalized) return false;
+  if (value === selector || value === normalized) return true;
+  if (!normalized.includes('*')) return false;
+  return filterToRegExp(normalized).test(value);
+}
+
+function packageContainsRelativeFile(root: string, pkgPath: string, file: string): boolean {
+  const relativePackagePath = path.relative(root, pkgPath).replace(/\\/g, '/');
+  return relativePackagePath.length === 0 || file === relativePackagePath || file.startsWith(`${relativePackagePath}/`);
+}
+
+function findCurrentPackagePath<T extends { path: string }>(root: string, packages: T[], currentPath: string): string | undefined {
+  const relativeCurrentPath = path.relative(root, currentPath).replace(/\\/g, '/');
+  const packageOrder = [...packages].sort((left, right) => {
+    const leftRelative = path.relative(root, left.path);
+    const rightRelative = path.relative(root, right.path);
+    return rightRelative.length - leftRelative.length;
+  });
+  return packageOrder.find((pkg) => packageContainsRelativeFile(root, pkg.path, relativeCurrentPath))?.path;
+}
+
+function changedFileIsIgnored(file: string, patterns: readonly string[]): boolean {
+  return patterns.some((pattern) => selectorTextMatches(pattern, file));
+}
+
+async function readChangedPackagePaths<T extends { path: string }>(
+  root: string,
+  packages: T[],
+  ref: string,
+  ignorePatterns: readonly string[],
+): Promise<Set<string>> {
+  let stdout = '';
+  try {
+    const result = await execFileAsync('git', ['-C', root, 'diff', '--name-only', ref, '--'], {
+      maxBuffer: 1024 * 1024,
+    });
+    stdout = result.stdout;
+  } catch {
+    return new Set();
+  }
+  const packageOrder = [...packages].sort((left, right) => {
+    const leftRelative = path.relative(root, left.path);
+    const rightRelative = path.relative(root, right.path);
+    return rightRelative.length - leftRelative.length;
+  });
+  const changed = new Set<string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const file = normalizeRelativeFilter(line);
+    if (!file) continue;
+    if (changedFileIsIgnored(file, ignorePatterns)) continue;
+    const owner = packageOrder.find((pkg) => packageContainsRelativeFile(root, pkg.path, file));
+    if (owner) changed.add(owner.path);
+  }
+  return changed;
+}
+
+async function getChangedPackagePaths<T extends { path: string }>(context: RecursiveFilterContext<T>, ref: string): Promise<Set<string>> {
+  const existing = context.changedPathsByRef.get(ref);
+  if (existing) return existing;
+  const pending = readChangedPackagePaths(context.root, context.packages, ref, context.changedFilesIgnorePatterns);
+  context.changedPathsByRef.set(ref, pending);
+  return pending;
+}
+
+function selectorMatchesPackage<T extends { path: string }>(
+  selector: string,
+  pkg: T,
+  context: RecursiveFilterContext<T>,
+): boolean {
+  if (selector.trim() === '.' || selector.trim() === './') {
+    return context.currentPackagePath === pkg.path;
+  }
+  return selectorTextMatches(selector, 'name' in pkg && typeof pkg.name === 'string' ? pkg.name : '');
+}
+
+async function recursiveFilterMatches<T extends { name: string; path: string }>(
+  filter: string,
+  pkg: T,
+  context: RecursiveFilterContext<T>,
+): Promise<boolean> {
+  const selector = parseRecursiveSelector(filter);
+  const changedMatches = selector.changedSinceRef
+    ? (await getChangedPackagePaths(context, selector.changedSinceRef)).has(pkg.path)
+    : true;
+  if (!changedMatches) return false;
+  const relativePath = path.relative(context.root, pkg.path).replace(/\\/g, '/');
+  if (selector.directorySelector) {
+    const directoryMatches = selectorTextMatches(selector.directorySelector, relativePath);
+    if (!directoryMatches) return false;
+    return selector.packageSelector ? selectorMatchesPackage(selector.packageSelector, pkg, context) : true;
+  }
+  return selector.packageSelector
+    ? selectorMatchesPackage(selector.packageSelector, pkg, context) || selectorTextMatches(selector.packageSelector, relativePath)
+    : Boolean(selector.changedSinceRef);
+}
+
+function appendUniquePackage<T extends { name: string }>(out: T[], seen: Set<string>, pkg: T): void {
+  if (seen.has(pkg.name)) return;
+  seen.add(pkg.name);
+  out.push(pkg);
+}
+
+interface RecursiveGraphPackage {
+  name: string;
+  path: string;
+  dependencyNames?: string[];
+  productionDependencyNames?: string[];
+}
+
+function readGraphDependencyNames(pkg: RecursiveGraphPackage, edgeKind: RecursiveFilterEdgeKind): readonly string[] {
+  return edgeKind === 'production' ? pkg.productionDependencyNames ?? [] : pkg.dependencyNames ?? [];
+}
+
+function appendDependencyClosure<T extends RecursiveGraphPackage>(
+  out: T[],
+  seen: Set<string>,
+  pkg: T,
+  byName: Map<string, T>,
+  includeSelf: boolean,
+  visiting: Set<string>,
+  edgeKind: RecursiveFilterEdgeKind,
+): void {
+  if (visiting.has(pkg.name)) return;
+  visiting.add(pkg.name);
+  for (const dependencyName of readGraphDependencyNames(pkg, edgeKind)) {
+    const dependency = byName.get(dependencyName);
+    if (dependency) appendDependencyClosure(out, seen, dependency, byName, true, visiting, edgeKind);
+  }
+  visiting.delete(pkg.name);
+  if (includeSelf) appendUniquePackage(out, seen, pkg);
+}
+
+function appendDependentClosure<T extends RecursiveGraphPackage>(
+  out: T[],
+  seen: Set<string>,
+  pkg: T,
+  packages: T[],
+  includeSelf: boolean,
+  visiting: Set<string>,
+  edgeKind: RecursiveFilterEdgeKind,
+): void {
+  if (includeSelf) appendUniquePackage(out, seen, pkg);
+  if (visiting.has(pkg.name)) return;
+  visiting.add(pkg.name);
+  for (const candidate of packages) {
+    if (!readGraphDependencyNames(candidate, edgeKind).includes(pkg.name)) continue;
+    appendDependentClosure(out, seen, candidate, packages, true, visiting, edgeKind);
+  }
+  visiting.delete(pkg.name);
+}
+
+async function matchingPackages<T extends RecursiveGraphPackage>(
+  packages: T[],
+  filter: string,
+  context: RecursiveFilterContext<T>,
+): Promise<T[]> {
+  const matched: T[] = [];
+  for (const pkg of packages) {
+    if (await recursiveFilterMatches(filter, pkg, context)) matched.push(pkg);
+  }
+  return matched;
+}
+
+class RecursiveSelectorError extends Error {}
+
+function unsupportedBareGraphSelectorDescriptor(value: string, edgeKind: RecursiveFilterEdgeKind): string | undefined {
+  const followProdDepsOnly = edgeKind === 'production' ? 'true' : 'false';
+  switch (value) {
+    case '...':
+      return `{"exclude":false,"excludeSelf":false,"includeDependencies":true,"includeDependents":false,"followProdDepsOnly":${followProdDepsOnly}}`;
+    case '^...':
+      return `{"exclude":false,"excludeSelf":true,"includeDependencies":true,"includeDependents":false,"followProdDepsOnly":${followProdDepsOnly}}`;
+    case '...^':
+      return `{"exclude":false,"excludeSelf":true,"includeDependencies":false,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
+    case '......':
+      return `{"exclude":false,"excludeSelf":false,"includeDependencies":true,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
+    case '...^...':
+      return `{"exclude":false,"excludeSelf":true,"includeDependencies":true,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
+    default:
+      return undefined;
+  }
+}
+
+function assertSupportedRecursiveSelector(filter: RecursiveFilter): void {
+  const descriptor = unsupportedBareGraphSelectorDescriptor(filter.value, filter.edgeKind);
+  if (!descriptor) return;
+  throw new RecursiveSelectorError(`ERROR Unsupported package selector: ${descriptor}`);
+}
+
+function normalizeCombinedGraphSeedFilter(value: string): string {
+  let seed = value;
+  if (seed.startsWith('^')) seed = seed.slice(1);
+  if (seed.endsWith('^')) seed = seed.slice(0, -1);
+  return seed;
+}
+
+function isCurrentProjectGraphSelector(value: string): boolean {
+  return value === './...' || value === '....' || value === '.^...' || value === './^...' || value === '...^.' || value === '...^./';
+}
+
+async function expandRecursiveFilter<T extends RecursiveGraphPackage>(
+  packages: T[],
+  filter: RecursiveFilter,
+  context: RecursiveFilterContext<T>,
+): Promise<T[]> {
+  const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const out: T[] = [];
+  const seen = new Set<string>();
+  assertSupportedRecursiveSelector(filter);
+  if (isCurrentProjectGraphSelector(filter.value)) {
+    return matchingPackages(packages, '.', context);
+  }
+  if (filter.value.startsWith('...') && filter.value.endsWith('...') && filter.value.length > '......'.length) {
+    const seedFilter = normalizeCombinedGraphSeedFilter(filter.value.slice('...'.length, filter.value.length - '...'.length));
+    for (const seed of await matchingPackages(packages, seedFilter, context)) {
+      appendDependencyClosure(out, seen, seed, byName, true, new Set(), filter.edgeKind);
+      appendDependentClosure(out, seen, seed, packages, false, new Set(), filter.edgeKind);
+    }
+    return out;
+  }
+  if (filter.value.startsWith('...^')) {
+    const seedFilter = filter.value.slice('...^'.length);
+    for (const seed of await matchingPackages(packages, seedFilter, context)) {
+      appendDependentClosure(out, seen, seed, packages, false, new Set(), filter.edgeKind);
+    }
+    return out;
+  }
+  if (filter.value.startsWith('...')) {
+    const seedFilter = filter.value.slice('...'.length);
+    for (const seed of await matchingPackages(packages, seedFilter, context)) {
+      appendDependentClosure(out, seen, seed, packages, true, new Set(), filter.edgeKind);
+    }
+    return out;
+  }
+  if (filter.value.endsWith('^...')) {
+    const seedFilter = filter.value.slice(0, filter.value.length - '^...'.length);
+    for (const seed of await matchingPackages(packages, seedFilter, context)) {
+      appendDependencyClosure(out, seen, seed, byName, false, new Set(), filter.edgeKind);
+    }
+    return out;
+  }
+  if (filter.value.endsWith('...')) {
+    const seedFilter = filter.value.slice(0, filter.value.length - '...'.length);
+    for (const seed of await matchingPackages(packages, seedFilter, context)) {
+      appendDependencyClosure(out, seen, seed, byName, true, new Set(), filter.edgeKind);
+    }
+    return out;
+  }
+  return matchingPackages(packages, filter.value, context);
+}
+
+function splitRecursiveFilters(filters: RecursiveFilter[]): { include: RecursiveFilter[]; exclude: RecursiveFilter[] } {
+  const include: RecursiveFilter[] = [];
+  const exclude: RecursiveFilter[] = [];
+  for (const filter of filters) {
+    if (filter.value.startsWith('!')) {
+      const value = filter.value.slice(1);
+      if (value.length > 0) exclude.push({ value, edgeKind: filter.edgeKind });
+      continue;
+    }
+    include.push(filter);
+  }
+  return { include, exclude };
+}
+
+async function applyRecursiveFilters<T extends RecursiveGraphPackage>(
+  packages: T[],
+  root: string,
+  filters: RecursiveFilter[],
+  changedFilesIgnorePatterns: readonly string[] = [],
+  currentPath?: string,
+): Promise<T[]> {
+  if (filters.length === 0) return packages;
+  const { include, exclude } = splitRecursiveFilters(filters);
+  const context: RecursiveFilterContext<T> = {
+    root,
+    packages,
+    changedPathsByRef: new Map(),
+    changedFilesIgnorePatterns,
+    ...(currentPath ? { currentPackagePath: findCurrentPackagePath(root, packages, currentPath) } : {}),
+  };
+  const included: T[] = [];
+  const includedSeen = new Set<string>();
+  if (include.length === 0) {
+    for (const pkg of packages) appendUniquePackage(included, includedSeen, pkg);
+  } else {
+    for (const filter of include) {
+      for (const pkg of await expandRecursiveFilter(packages, filter, context)) appendUniquePackage(included, includedSeen, pkg);
+    }
+  }
+  const excluded = new Set<string>();
+  for (const filter of exclude) {
+    for (const pkg of await expandRecursiveFilter(packages, filter, context)) excluded.add(pkg.name);
+  }
+  return exclude.length === 0
+    ? included
+    : included.filter((pkg) => !excluded.has(pkg.name));
+}
+
+async function resolveRecursivePublishRoot(source: PublishSource): Promise<string> {
+  const start = source.kind === 'directory' ? source.path : path.dirname(source.path);
+  const found = await findProjectRoot(start, realFs);
+  return found.root ?? start;
+}
+
+function parseOidcContext(value: unknown): OidcContext | null {
+  if (!isRecord(value)) return null;
+  const repo = readString(value, 'repo');
+  const name = readString(value, 'name');
+  const pathValue = readString(value, 'path');
+  if (!repo || !name || !pathValue) return null;
+  const branch = readString(value, 'branch');
+  const force = typeof value.force === 'boolean' ? value.force : undefined;
+  return {
+    repo,
+    name,
+    path: pathValue,
+    ...(branch ? { branch } : {}),
+    ...(force !== undefined ? { force } : {}),
+  };
+}
+
+function parseCreatePlaceholderContext(value: unknown): CreatePlaceholderContext | null {
+  if (!isRecord(value)) return null;
+  const name = readString(value, 'name');
+  if (!name) return null;
+  return { name };
+}
+
+function parseRefreshTokenContext(value: unknown): RefreshTokenContext | null {
+  if (!isRecord(value)) return null;
+  const username = readString(value, 'username');
+  return username ? { username } : null;
+}
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class PublishScheduler {
   /** taskId -> { event, client } */
   private pending = new Map<string, { event: PubEvent; client: PendingClient }>();
 
   constructor(private store: DaemonStore) {}
+
+  private async collectWorkspaceFromCwd(cwd: string, client: PendingClient): Promise<void> {
+    try {
+      const found = await findProjectRoot(cwd, realFs);
+      if (!found.root || isRiskyRoot(found.root, realFs)) {
+        client.log('stderr', `[workspace] skipped auto-collect for risky path: ${found.root ?? cwd}\n`);
+        return;
+      }
+      await this.store.addWorkspace({ path: found.root, pinned: false, addedAt: Date.now() });
+    } catch (error: unknown) {
+      const message = errorToMessage(error);
+      client.log('stderr', `[workspace] failed to auto-collect ${cwd}: ${message}\n`);
+    }
+  }
 
   /**
    * Step 1 (Chapter 3.3.1 / 8.3.5): a CLI publish intent arrives. We freeze it
@@ -79,7 +1070,19 @@ export class PublishScheduler {
       client.exit(1, 'No profile');
       return;
     }
-    const target = await readPublishTarget(req.cwd);
+    try {
+      assertSupportedPublishArgs(req.args);
+    } catch (error: unknown) {
+      if (error instanceof PublishArgumentError) {
+        client.log('stderr', error.message + '\n');
+        client.exit(1, error.message);
+        return;
+      }
+      throw error;
+    }
+    await this.collectWorkspaceFromCwd(req.cwd, client);
+    const source = await resolvePublishSource(req.cwd, req.args);
+    const target = await readPublishTarget(source);
     const event = this.store.createEvent({
       kind: 'publish',
       profile,
@@ -87,9 +1090,9 @@ export class PublishScheduler {
       payload: {
         kind: 'publish',
         data: {
-          cwd: req.cwd,
+          source,
           args: req.args,
-          target: { ...target, path: req.cwd },
+          target: { ...target, path: source.path },
         },
       },
     });
@@ -97,34 +1100,103 @@ export class PublishScheduler {
     // The WS bridge listens on the store and will notify every WebUI client.
   }
 
+  /**
+   * GUI-originated actions use the same pending-wall law as CLI publishes:
+   * create the Event through the store, then register it in the executable
+   * pending map before any confirm action can reach NPM or the filesystem.
+   */
+  createProactiveEvent(kind: EventKind, profile: string, payload: unknown): ProactiveEventResult {
+    if (!this.store.getProfile(profile)) {
+      return { ok: false, error: `Profile "${profile}" not found. Add it via the tray GUI first.` };
+    }
+    const parsed = parseProactivePayload(kind, payload);
+    if (!parsed) {
+      return { ok: false, error: `Invalid or unsupported payload for ${kind}.` };
+    }
+    const event = this.store.createEvent({ kind, profile, payload: parsed });
+    this.pending.set(event.id, { event, client: DETACHED_CLIENT });
+    return { ok: true, event };
+  }
+
   /** Step 2 (Chapter 3.3.3 / 8.3.8): WebUI confirmed. Execute the write. */
   async confirm(taskId: string): Promise<boolean> {
     const entry = this.pending.get(taskId);
     if (!entry) return false;
     const { event, client } = entry;
+    if (event.payload?.kind === 'refresh-token') {
+      const msg = `Token refresh for ${event.payload.data.username} requires credential re-apply.`;
+      this.store.resolveEvent(taskId, 'action-required', msg);
+      client.log('stdout', msg + '\n');
+      client.exit(0);
+      this.pending.delete(taskId);
+      return true;
+    }
+
+    if (event.payload?.kind === 'publish') {
+      const recursive = isRecursivePublish(event.payload.data.args);
+      const dryRun = isDryRunPublish(event.payload.data.args);
+      if (recursive && !dryRun) {
+        const msg = 'Recursive publish is not yet supported by pnpm-pub; no registry write performed.';
+        this.store.resolveEvent(taskId, 'failed', msg);
+        client.log('stderr', msg + '\n');
+        client.exit(1, msg);
+        this.pending.delete(taskId);
+        return true;
+      }
+      const gitCheckPath = recursive
+        ? await resolveRecursivePublishRoot(event.payload.data.source)
+        : event.payload.data.source.kind === 'directory'
+          ? event.payload.data.source.path
+          : path.dirname(event.payload.data.source.path);
+      const gitCheck = await checkPublishGitState(gitCheckPath, event.payload.data.args);
+      if (!gitCheck.ok) {
+        this.store.resolveEvent(taskId, 'failed', gitCheck.error);
+        client.log('stderr', gitCheck.error + '\n');
+        client.exit(1, gitCheck.error);
+        this.pending.delete(taskId);
+        return true;
+      }
+      if (recursive && dryRun) {
+        await this.runRecursivePublishDryRun(event, client);
+        this.pending.delete(taskId);
+        return true;
+      }
+    }
+
+    if (event.payload?.kind === 'publish' && isDryRunPublish(event.payload.data.args)) {
+      await this.runPublishDryRun(event, client);
+      this.pending.delete(taskId);
+      return true;
+    }
+
     const creds = this.store.getCredentials(event.profile);
     if (!creds) {
-      this.store.resolveEvent(taskId, 'failed', 'Missing credentials for profile');
-      client.log('stderr', `Credentials not loaded for ${event.profile}\n`);
-      client.exit(1, 'Missing credentials');
+      const msg = `Credentials for ${event.profile} are missing. Re-apply them in the tray.`;
+      this.store.resolveEvent(taskId, 'action-required', msg);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
       this.pending.delete(taskId);
       return true;
     }
 
     const profile = this.store.getProfile(event.profile);
-    const registry = profile?.registry ?? 'https://registry.npmjs.org/';
+    const profileRegistry = profile?.registry ?? 'https://registry.npmjs.org/';
 
     // Resolve the publish payload.
     if (event.payload?.kind === 'publish') {
-      await this.runPublish(event, client, creds.token, creds.totpSecret, registry);
+      const packagePublishConfig = event.payload.data.target.publishConfig;
+      const registry = resolvePublishRegistry(event.payload.data.args, packagePublishConfig?.registry ?? profileRegistry);
+      const distTag = resolvePublishDistTag(event.payload.data.args, packagePublishConfig?.tag);
+      const access = resolvePublishAccess(event.payload.data.args, packagePublishConfig?.access);
+      const otp = resolvePublishOtp(event.payload.data.args);
+      const reportSummary = isReportSummaryPublish(event.payload.data.args);
+      const ignoreScripts = isIgnoreScriptsPublish(event.payload.data.args);
+      const json = isJsonPublish(event.payload.data.args);
+      await this.runPublish(event, client, creds.token, creds.totpSecret, registry, distTag, access, otp, reportSummary, ignoreScripts, json);
     } else if (event.payload?.kind === 'setup-oidc') {
-      await this.runOidc(event, client, creds.token, creds.totpSecret, registry);
+      await this.runOidc(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === 'create-placeholder') {
-      await this.runPublish(event, client, creds.token, creds.totpSecret, registry);
-    } else if (event.payload?.kind === 'refresh-token') {
-      this.store.resolveEvent(taskId, 'success', 'Token refresh requested');
-      client.log('stdout', 'Token refresh acknowledged.\n');
-      client.exit(0);
+      await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
     }
     this.pending.delete(taskId);
     return true;
@@ -148,34 +1220,52 @@ export class PublishScheduler {
     token: string,
     totpSecret: string,
     registry: string,
+    distTag: string | undefined,
+    access: string | undefined,
+    otp: string | undefined,
+    reportSummary: boolean,
+    ignoreScripts: boolean,
+    json: boolean,
   ): Promise<void> {
-    if (event.payload?.kind !== 'publish' && event.payload?.kind !== 'create-placeholder') return;
-    // Both 'publish' and 'create-placeholder' carry a context with target + cwd.
-    const ctx = event.payload.data as { name?: string; version?: string; path: string; target?: { name: string; version: string }; cwd?: string };
-    const name = ctx.target?.name ?? ctx.name ?? '(unknown)';
-    const version = ctx.target?.version ?? ctx.version ?? '0.0.0';
-    const cwd = ctx.cwd ?? ctx.path;
+    if (event.payload?.kind !== 'publish') return;
+    const ctx = event.payload.data;
+    const name = ctx.target.name;
+    const version = ctx.target.version;
+    const source = ctx.source;
     try {
       // Build the real tarball via `pnpm pack` (fallback `npm pack`) from the
       // package directory (Chapter 1.3.1 / 7.1.2). This replaces the previous
       // Buffer.alloc(0) placeholder with the actual publishable artifact.
-      client.log('stdout', `packing ${name}...\n`);
-      const { packPackage } = await import('./packer.js');
-      const packed = await packPackage(cwd);
-      client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+      if (!json) {
+        client.log('stdout', `${source.kind === 'directory' ? 'packing' : 'reading tarball'} ${name}...\n`);
+      }
+      const packed = await loadPublishSource(source, { ignoreScripts });
+      if (!json) {
+        client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+      }
+      const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
+      const publishedVersion = readMetadataString(packed.metadata, 'version') ?? version;
 
       const result = await publishPackage({
         registry,
         token,
         totpSecret,
-        name,
-        version,
+        name: publishedName,
+        version: publishedVersion,
         tarball: packed.tarball,
         metadata: packed.metadata,
+        ...(distTag ? { distTag } : {}),
+        ...(access ? { access } : {}),
+        ...(otp ? { otp } : {}),
       });
-      if (result.stdout) client.log('stdout', result.stdout + '\n');
+      if (result.stdout && !json) client.log('stdout', result.stdout + '\n');
       if (result.stderr) client.log('stderr', result.stderr + '\n');
       if (result.ok) {
+        if (reportSummary) {
+          await writePublishSummary(source, publishedName, publishedVersion);
+        }
+        const successOutput = json ? await formatPublishJson(publishedName, publishedVersion, packed.tarball) : result.stdout;
+        if (json) client.log('stdout', successOutput);
         this.store.resolveEvent(event.id, 'success', result.stdout, {
           clockDriftRecovered: result.clockDriftRecovered,
         });
@@ -191,11 +1281,181 @@ export class PublishScheduler {
         this.store.resolveEvent(event.id, 'failed', result.error);
         client.exit(1, result.error);
       }
-    } catch (err) {
-      const msg = (err as Error).message;
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
       this.store.resolveEvent(event.id, 'failed', msg);
       client.log('stderr', msg + '\n');
       client.exit(1, msg);
+    }
+  }
+
+  private async runPublishDryRun(event: PubEvent, client: PendingClient): Promise<void> {
+    if (event.payload?.kind !== 'publish') return;
+    const ctx = event.payload.data;
+    const name = ctx.target.name;
+    const source = ctx.source;
+    const json = isJsonPublish(ctx.args);
+    const configWarnings = formatNativeUnknownCliConfigWarnings(ctx.args);
+    try {
+      const packed = await loadPublishSource(source, { ignoreScripts: isIgnoreScriptsPublish(ctx.args) });
+      const msg = 'Dry run complete; no registry write performed.';
+      const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
+      const publishedVersion = readMetadataString(packed.metadata, 'version') ?? ctx.target.version;
+      const profileRegistry = this.store.getProfile(event.profile)?.registry ?? 'https://registry.npmjs.org/';
+      const noticeTarget = {
+        registry: resolvePublishRegistry(ctx.args, ctx.target.publishConfig?.registry ?? profileRegistry),
+        distTag: resolvePublishDistTag(ctx.args, ctx.target.publishConfig?.tag),
+        access: resolvePublishAccess(ctx.args, ctx.target.publishConfig?.access),
+      };
+      if (json) {
+        client.log('stdout', await formatPublishJson(publishedName, publishedVersion, packed.tarball));
+        client.log('stderr', configWarnings + formatDryRunPublishDestinationNotice(noticeTarget));
+      } else {
+        const notice = await formatDryRunNpmNotice({
+          name: publishedName,
+          version: publishedVersion,
+          tarball: packed.tarball,
+          ...noticeTarget,
+        });
+        if (notice || configWarnings) client.log('stderr', configWarnings + notice);
+        client.log('stdout', `+ ${publishedName}@${publishedVersion}\n`);
+      }
+      this.store.resolveEvent(event.id, 'success', msg);
+      client.exit(0);
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, 'failed', msg);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
+    }
+  }
+
+  private async runRecursivePublishDryRun(event: PubEvent, client: PendingClient): Promise<void> {
+    if (event.payload?.kind !== 'publish') return;
+    const ctx = event.payload.data;
+    const ignoreScripts = isIgnoreScriptsPublish(ctx.args);
+    const filters = readRecursiveFilters(ctx.args);
+    const changedFilesIgnorePatterns = readChangedFilesIgnorePatterns(ctx.args);
+    const failIfNoMatch = isFailIfNoMatchPublish(ctx.args);
+    try {
+      const profileRegistry = this.store.getProfile(event.profile)?.registry ?? 'https://registry.npmjs.org/';
+      const root = await resolveRecursivePublishRoot(ctx.source);
+      const packages = await scanWorkspace(root, realFs, { root, respectGitignore: true });
+      const currentPath = ctx.source.kind === 'directory' ? ctx.source.path : path.dirname(ctx.source.path);
+      const selected = await applyRecursiveFilters(packages, root, filters, changedFilesIgnorePatterns, currentPath);
+      if (selected.length === 0) {
+        const msg = `No projects matched the filters in "${root}"`;
+        this.store.resolveEvent(event.id, failIfNoMatch ? 'failed' : 'success', msg);
+        client.log('stdout', msg + '\n');
+        if (failIfNoMatch) {
+          client.exit(1, msg);
+        } else {
+          client.exit(0);
+        }
+        return;
+      }
+
+      const publishedPackages: PublishedPackageSummary[] = [];
+      for (const pkg of selected) {
+        const packed = await loadPublishSource({ kind: 'directory', path: pkg.path }, { ignoreScripts });
+        const publishedName = readMetadataString(packed.metadata, 'name') ?? pkg.name;
+        const publishedVersion = readMetadataString(packed.metadata, 'version') ?? pkg.version;
+        publishedPackages.push({ name: publishedName, version: publishedVersion });
+        const notice = await formatDryRunNpmNotice({
+          name: publishedName,
+          version: publishedVersion,
+          tarball: packed.tarball,
+          registry: resolvePublishRegistry(ctx.args, pkg.publishConfig?.registry ?? profileRegistry),
+          distTag: resolvePublishDistTag(ctx.args, pkg.publishConfig?.tag),
+          access: resolvePublishAccess(ctx.args, pkg.publishConfig?.access),
+        });
+        if (notice) client.log('stderr', notice);
+        client.log('stdout', `+ ${publishedName}@${publishedVersion}\n`);
+      }
+
+      if (isReportSummaryPublish(ctx.args)) {
+        await writePublishSummaryFile(root, publishedPackages);
+      }
+      const msg = `Recursive dry run complete; ${selected.length} package${selected.length === 1 ? '' : 's'} packed; no registry write performed.`;
+      this.store.resolveEvent(event.id, 'success', msg);
+      client.exit(0);
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, 'failed', msg);
+      client.log(error instanceof RecursiveSelectorError ? 'stdout' : 'stderr', msg + '\n');
+      client.exit(1, msg);
+    }
+  }
+
+  private async runPlaceholder(
+    event: PubEvent,
+    client: PendingClient,
+    token: string,
+    totpSecret: string,
+    registry: string,
+  ): Promise<void> {
+    if (event.payload?.kind !== 'create-placeholder') return;
+    const ctx = event.payload.data;
+    const version = '0.0.0';
+    let tempDir: string | null = null;
+    try {
+      tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pnpm-pub-placeholder-'));
+      await fsp.writeFile(
+        path.join(tempDir, 'package.json'),
+        JSON.stringify(
+          {
+            name: ctx.name,
+            version,
+            description: 'Generated placeholder package reserved by pnpm-pub.',
+            main: 'index.js',
+            files: ['index.js'],
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+      await fsp.writeFile(path.join(tempDir, 'index.js'), 'module.exports = {};\n', 'utf8');
+
+      client.log('stdout', `packing placeholder ${ctx.name}@${version}...\n`);
+      const { packPackage } = await import('./packer.js');
+      const packed = await packPackage(tempDir);
+      client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+
+      const result = await publishPackage({
+        registry,
+        token,
+        totpSecret,
+        name: ctx.name,
+        version,
+        tarball: packed.tarball,
+        metadata: packed.metadata,
+      });
+      if (result.stdout) client.log('stdout', result.stdout + '\n');
+      if (result.stderr) client.log('stderr', result.stderr + '\n');
+      if (result.ok) {
+        this.store.resolveEvent(event.id, 'success', result.stdout, {
+          clockDriftRecovered: result.clockDriftRecovered,
+        });
+        client.exit(0);
+      } else if (result.expired) {
+        const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
+        this.store.resolveEvent(event.id, 'expired', msg);
+        client.log('stderr', msg + '\n');
+        client.exit(1, msg);
+      } else {
+        this.store.resolveEvent(event.id, 'failed', result.error);
+        client.exit(1, result.error);
+      }
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, 'failed', msg);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
+    } finally {
+      if (tempDir) {
+        await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }
 
@@ -209,13 +1469,10 @@ export class PublishScheduler {
     if (event.payload?.kind !== 'setup-oidc') return;
     const ctx = event.payload.data;
     try {
-      // Chapter 8.5 step 9: registry-side OIDC prerequisite (2FA-required).
-      const result = await configureOidc({ registry, token, totpSecret, name: ctx.name });
-
       // Chapter 8.5 step 10 / 1.2.3: write the reference workflow INTO THE
       // PACKAGE DIRECTORY (never the daemon's cwd), and never blindly overwrite
       // an existing publish.yml unless --force was set.
-      const targetDir = ctx.path && ctx.path.length > 0 ? ctx.path : process.cwd();
+      const targetDir = ctx.path;
       const workflowFile = path.join(targetDir, OIDC_WORKFLOW_PATH);
       const exists = await fsp
         .access(workflowFile)
@@ -228,12 +1485,20 @@ export class PublishScheduler {
         client.exit(1, blockReason);
         return;
       }
+
+      // Chapter 8.5 step 9: registry-side OIDC prerequisite (2FA-required).
+      const result = await configureOidc({ registry, token, totpSecret, name: ctx.name });
+
       try {
         await fsp.mkdir(path.dirname(workflowFile), { recursive: true });
         await fsp.writeFile(workflowFile, renderPublishWorkflow(ctx), 'utf8');
         client.log('stdout', `[oidc] wrote ${OIDC_WORKFLOW_PATH}\n`);
-      } catch (err) {
-        client.log('stderr', `[oidc] could not write workflow: ${(err as Error).message}\n`);
+      } catch (error: unknown) {
+        const msg = `[oidc] could not write workflow: ${errorToMessage(error)}`;
+        client.log('stderr', msg + '\n');
+        this.store.resolveEvent(event.id, 'failed', msg);
+        client.exit(1, msg);
+        return;
       }
       if (result.stdout) client.log('stdout', result.stdout + '\n');
       if (result.stderr) client.log('stderr', result.stderr + '\n');
@@ -244,8 +1509,8 @@ export class PublishScheduler {
         this.store.resolveEvent(event.id, 'failed', result.error);
         client.exit(1, result.error);
       }
-    } catch (err) {
-      const msg = (err as Error).message;
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
       this.store.resolveEvent(event.id, 'failed', msg);
       client.log('stderr', msg + '\n');
       client.exit(1, msg);

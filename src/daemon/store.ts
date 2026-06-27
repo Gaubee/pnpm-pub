@@ -24,6 +24,8 @@ import { profilesPath, workspacesPath, ensureAppDirs } from '../shared/paths.js'
 const DEFAULT_CONFIG: PnpmPubConfig = { default: '', profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
 
+type EventResolutionMetadata = Pick<PubEvent, 'clockDriftRecovered'>;
+
 /** In-memory credential pool (Chapter 3.1 runtime phase). */
 export interface CredentialPool {
   token: string;
@@ -45,16 +47,17 @@ export class DaemonStore extends EventEmitter {
 
   async load(): Promise<void> {
     ensureAppDirs();
-    this.config = await this.readJson(profilesPath(), DEFAULT_CONFIG);
-    this.workspaces = await this.readJson(workspacesPath(), DEFAULT_WORKSPACES);
+    this.config = parsePnpmPubConfig(await this.readJson(profilesPath())) ?? structuredClone(DEFAULT_CONFIG);
+    this.workspaces = parseWorkspacesConfig(await this.readJson(workspacesPath())) ?? structuredClone(DEFAULT_WORKSPACES);
   }
 
-  private async readJson<T>(file: string, fallback: T): Promise<T> {
+  private async readJson(file: string): Promise<unknown> {
     try {
       const text = await fsp.readFile(file, 'utf8');
-      return JSON.parse(text) as T;
+      const parsed: unknown = JSON.parse(text);
+      return parsed;
     } catch {
-      return structuredClone(fallback);
+      return null;
     }
   }
 
@@ -82,10 +85,12 @@ export class DaemonStore extends EventEmitter {
     return this.config.profiles.find((p) => p.username === username);
   }
 
-  async setDefault(username: string): Promise<void> {
+  async setDefault(username: string): Promise<boolean> {
+    if (!this.getProfile(username)) return false;
     this.config.default = username;
     await this.writeJson(profilesPath(), this.config);
     this.emit('profiles', this.snapshotProfiles());
+    return true;
   }
 
   async upsertProfile(profile: Profile): Promise<void> {
@@ -97,7 +102,8 @@ export class DaemonStore extends EventEmitter {
     this.emit('profiles', this.snapshotProfiles());
   }
 
-  async removeProfile(username: string): Promise<void> {
+  async removeProfile(username: string): Promise<boolean> {
+    if (!this.getProfile(username)) return false;
     this.config.profiles = this.config.profiles.filter((p) => p.username !== username);
     if (this.config.default === username) {
       this.config.default = this.config.profiles[0]?.username ?? '';
@@ -114,6 +120,7 @@ export class DaemonStore extends EventEmitter {
     }
     await this.writeJson(profilesPath(), this.config);
     this.emit('profiles', this.snapshotProfiles());
+    return true;
   }
 
   private snapshotProfiles() {
@@ -134,6 +141,10 @@ export class DaemonStore extends EventEmitter {
     this.credentials.clear();
   }
 
+  deleteCredentials(username: string): void {
+    this.credentials.delete(username);
+  }
+
   // ----- workspaces -----
 
   getWorkspaces(): WorkspaceEntry[] {
@@ -143,9 +154,10 @@ export class DaemonStore extends EventEmitter {
   async addWorkspace(entry: WorkspaceEntry): Promise<void> {
     const existing = this.workspaces.paths.find((w) => w.path === entry.path);
     if (existing) {
-      Object.assign(existing, entry);
+      existing.pinned = entry.pinned;
+      existing.addedAt = entry.addedAt;
     } else {
-      this.workspaces.paths.push(entry);
+      this.workspaces.paths.push({ path: entry.path, pinned: entry.pinned, addedAt: entry.addedAt });
     }
     await this.writeJson(workspacesPath(), this.workspaces);
     this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
@@ -160,10 +172,11 @@ export class DaemonStore extends EventEmitter {
    */
   private riskyPending = new Map<string, WorkspaceEntry>();
 
-  /** Stage a risky workspace for confirmation. Returns a confirmation token. */
+  /** Stage a risky workspace for confirmation. Returns an opaque confirmation token. */
   stageRiskyWorkspace(entry: WorkspaceEntry): string {
-    this.riskyPending.set(entry.path, entry);
-    return entry.path;
+    const token = randomUUID();
+    this.riskyPending.set(token, entry);
+    return token;
   }
 
   /** List currently-staged (unconfirmed) risky workspaces. */
@@ -224,14 +237,80 @@ export class DaemonStore extends EventEmitter {
     return evt;
   }
 
-  resolveEvent(id: string, status: PubEvent['status'], result?: string, extra?: Partial<PubEvent>): PubEvent | undefined {
+  resolveEvent(
+    id: string,
+    status: PubEvent['status'],
+    result?: string,
+    metadata?: EventResolutionMetadata,
+  ): PubEvent | undefined {
     const evt = this.events.find((e) => e.id === id);
     if (!evt) return undefined;
     evt.status = status;
     evt.resolvedAt = Date.now();
     if (result !== undefined) evt.result = result;
-    if (extra) Object.assign(evt, extra);
+    if (metadata?.clockDriftRecovered !== undefined) {
+      evt.clockDriftRecovered = metadata.clockDriftRecovered;
+    }
     this.emit('event', { type: 'event' as const, event: evt });
     return evt;
   }
+}
+
+function parsePnpmPubConfig(value: unknown): PnpmPubConfig | null {
+  if (!isRecord(value) || typeof value.default !== 'string' || !Array.isArray(value.profiles)) return null;
+  const profiles: Profile[] = [];
+  const usernames = new Set<string>();
+  for (const profile of value.profiles) {
+    const parsed = parseProfile(profile);
+    if (!parsed) return null;
+    if (usernames.has(parsed.username)) return null;
+    usernames.add(parsed.username);
+    profiles.push(parsed);
+  }
+  const defaultProfile = profiles.some((profile) => profile.username === value.default)
+    ? value.default
+    : (profiles[0]?.username ?? '');
+  return { default: defaultProfile, profiles };
+}
+
+function parseProfile(value: unknown): Profile | null {
+  if (!isRecord(value) || typeof value.username !== 'string' || value.username.length === 0) return null;
+  if (!isOptionalString(value.registry) || !isOptionalString(value.avatarUrl)) return null;
+  if (value.ciPreferences !== undefined && !isRecord(value.ciPreferences)) return null;
+  return {
+    username: value.username,
+    registry: value.registry,
+    avatarUrl: value.avatarUrl,
+    ciPreferences: value.ciPreferences,
+  };
+}
+
+function parseWorkspacesConfig(value: unknown): WorkspacesConfig | null {
+  if (!isRecord(value) || !Array.isArray(value.paths)) return null;
+  const paths: WorkspaceEntry[] = [];
+  const roots = new Set<string>();
+  for (const entry of value.paths) {
+    const parsed = parseWorkspaceEntry(entry);
+    if (!parsed) return null;
+    if (roots.has(parsed.path)) return null;
+    roots.add(parsed.path);
+    paths.push(parsed);
+  }
+  return { paths };
+}
+
+function parseWorkspaceEntry(value: unknown): WorkspaceEntry | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.path !== 'string' || value.path.length === 0 || !path.isAbsolute(value.path)) return null;
+  if (typeof value.pinned !== 'boolean') return null;
+  if (typeof value.addedAt !== 'number' || !Number.isInteger(value.addedAt) || value.addedAt < 0) return null;
+  return { path: value.path, pinned: value.pinned, addedAt: value.addedAt };
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

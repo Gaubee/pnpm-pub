@@ -8,6 +8,8 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui/card/index.js';
+	import { errorToMessage } from '$lib/error-projection.js';
+	import { parseTokenApplyResponse } from '$lib/rest-response.js';
 	import { daemon, readWebToken } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -32,8 +34,14 @@
 				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
 				body: JSON.stringify({ username, password, totpSecret, registry, manualToken: manualToken || undefined }),
 			});
-			const json = (await res.json()) as { ok: boolean; needsManualToken?: boolean; error?: string };
+			const json = parseTokenApplyResponse(await res.json());
+			if (!json) {
+				error = 'Invalid daemon response.';
+				return;
+			}
 			if (json.ok) {
+				totpSecret = '';
+				manualToken = '';
 				goto('/');
 				return;
 			}
@@ -44,7 +52,7 @@
 				error = json.error ?? 'Failed to add profile.';
 			}
 		} catch (err) {
-			error = (err as Error).message;
+			error = errorToMessage(err);
 		} finally {
 			busy = false;
 			// Best-effort: clear the password fields from the DOM (burn-after-read is

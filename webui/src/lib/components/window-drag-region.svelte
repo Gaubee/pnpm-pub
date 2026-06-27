@@ -32,10 +32,8 @@
 	// Updated from the overlay geometry; falls back to a macOS-like 70px.
 	let controlInset = $state(70);
 
-	const ot = (): { overlay?: OverlayGeometry; startAppRegionDrag?(opts?: { x?: number; y?: number; pointerId?: number }): Promise<unknown> } | undefined =>
-		(navigator as unknown as { opentrayWindow?: { overlay?: OverlayGeometry } }).opentrayWindow ??
-		(navigator as unknown as { opentray?: { window?: { overlay?: OverlayGeometry } } }).opentray?.window ??
-		undefined;
+	const ot = (): Navigator['opentrayWindow'] | NonNullable<Navigator['opentray']>['window'] | undefined =>
+		navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
 
 	/** Begin a native window drag when the user grabs the titlebar strip. */
 	function onPointerDown(e: PointerEvent) {
@@ -67,10 +65,10 @@
 		let off: (() => void) | undefined;
 		if (typeof overlay.listen === 'function') {
 			void overlay
-				.listen('geometrychange', (e) => {
+				.listen('geometrychange', (e: { titlebarAreaRect: Rect }) => {
 					controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));
 				})
-				.then((unsub) => (off = () => void unsub?.()));
+				.then((unsub: () => Promise<void>) => (off = () => void unsub?.()));
 		} else if (typeof overlay.addEventListener === 'function') {
 			const handler = (e: { titlebarAreaRect: Rect }) => {
 				controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));

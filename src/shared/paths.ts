@@ -42,7 +42,7 @@ export function workspacesPath(): string {
   return path.join(appDir(), WORKSPACES_FILE);
 }
 
-/** ~/.pnpm-pub/run/pnpm-pub.sock (macOS) — see socketPath(). */
+/** Directory containing the Unix socket on macOS / Linux — see socketPath(). */
 export function runDir(): string {
   return path.join(appDir(), 'run');
 }

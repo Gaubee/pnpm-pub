@@ -11,13 +11,14 @@ import { promises as fsp, existsSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import type { DaemonStore } from './store.js';
 import type { PublishScheduler } from './scheduler.js';
-import { acceptWebSocket, WebSocketConnection } from './ws.js';
-import type { WsServerMessage, WsClientMessage, PubEvent } from '../shared/index.js';
+import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
+import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage } from '../shared/index.js';
 import { findProjectRoot, scanWorkspace, filterByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken } from './npm-api.js';
-import { setToken, setTotpSecret } from './keychain.js';
+import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
+import { burnBuffer } from './totp.js';
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -42,6 +43,8 @@ const MIME: Record<string, string> = {
   '.webmanifest': 'application/manifest+json',
 };
 
+type JsonObject = Record<string, unknown>;
+
 export class WebServer {
   private server?: http.Server;
   private sockets = new Set<WebSocketConnection>();
@@ -57,7 +60,7 @@ export class WebServer {
   async start(port = 0): Promise<number> {
     return new Promise<number>((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleHttp(req, res));
-      server.on('upgrade', (req, socket) => this.handleUpgrade(req, socket as import('net').Socket));
+      server.on('upgrade', (req, socket) => this.handleUpgrade(req, socket));
       server.on('error', reject);
       server.listen(port, '127.0.0.1', () => {
         this.server = server;
@@ -93,43 +96,54 @@ export class WebServer {
         return json(res, 401, { ok: false, error: 'Unauthorized' });
       }
       try {
-        const body = method !== 'GET' && method !== 'DELETE' ? await readJson(req) : {};
+        const body = method !== 'GET' ? await readJson(req) : {};
         if (url === '/api/add-profile' && method === 'POST') {
-          const result = await this.addProfile(body);
+          const result = await this.addProfile(parseAddProfileBody(body));
           return json(res, 200, result);
         }
         if (url === '/api/renew' && method === 'POST') {
-          const result = await this.addProfile(body);
+          const result = await this.renewProfile(parseRenewProfileBody(body));
           return json(res, 200, result);
         }
         if (url === '/api/export' && method === 'POST') {
-          const result = await this.exportBundle(body.password);
+          const result = await this.exportBundle(readString(body, 'password'));
           return json(res, 200, result);
         }
         if (url === '/api/import' && method === 'POST') {
-          const result = await this.importBundle(body.bundle, body.password, body.usernames);
+          const result = await this.importBundle(
+            readBackupBundle(body, 'bundle'),
+            readString(body, 'password'),
+            readStringArray(body, 'usernames'),
+          );
           return json(res, 200, result);
         }
         if (url === '/api/profiles' && method === 'DELETE') {
-          await this.deps.store.removeProfile(body.username);
-          return json(res, 200, { ok: true });
+          const username = readString(body, 'username');
+          const ok = await this.deps.store.removeProfile(username);
+          return json(
+            res,
+            ok ? 200 : 404,
+            ok ? { ok: true } : { ok: false, error: `Profile ${username} not found.` },
+          );
         }
         if (url === '/api/workspace/pin' && method === 'POST') {
-          await this.deps.store.pinWorkspace(body.path, !!body.pinned);
+          await this.deps.store.pinWorkspace(readString(body, 'path'), readBoolean(body, 'pinned'));
           return json(res, 200, { ok: true });
         }
         if (url === '/api/workspace/confirm' && method === 'POST') {
           // Chapter 5.3.2: persist a previously-staged risky workspace.
-          const ok = await this.deps.store.confirmRiskyWorkspace(body.token);
+          const ok = await this.deps.store.confirmRiskyWorkspace(readString(body, 'token'));
           return json(res, ok ? 200 : 404, { ok });
         }
         if (url === '/api/workspace/cancel' && method === 'POST') {
-          this.deps.store.cancelRiskyWorkspace(body.token);
+          this.deps.store.cancelRiskyWorkspace(readString(body, 'token'));
           return json(res, 200, { ok: true });
         }
         return json(res, 404, { ok: false, error: 'not found' });
       } catch (err) {
-        return json(res, 500, { ok: false, error: (err as Error).message });
+        const message = err instanceof Error ? err.message : 'Unknown error.';
+        const status = message.startsWith('Invalid ') || message === 'Invalid backup bundle.' ? 400 : 500;
+        return json(res, status, { ok: false, error: message });
       }
     }
 
@@ -161,8 +175,7 @@ export class WebServer {
     }
     try {
       const data = await fsp.readFile(file);
-      const ext = path.extname(file) as keyof typeof MIME;
-      res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' });
+      res.writeHead(200, { 'content-type': contentTypeFor(file) });
       res.end(data);
     } catch {
       res.writeHead(404);
@@ -181,7 +194,7 @@ export class WebServer {
 
   // ----- WebSocket upgrade -----
 
-  private handleUpgrade(req: http.IncomingMessage, socket: import('net').Socket): void {
+  private handleUpgrade(req: http.IncomingMessage, socket: SocketLike): void {
     const accept = acceptWebSocket(req);
     if (!accept) {
       socket.destroy();
@@ -204,7 +217,7 @@ export class WebServer {
         'Connection: Upgrade\r\n' +
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
-    const ws = new WebSocketConnection(socket as unknown as import('net').Socket, {
+    const ws = new WebSocketConnection(socket, {
       onOpen: (send) => {
         // Token already validated at upgrade time — mark authed immediately so
         // the eager state snapshot (events/profiles/workspaces) is only ever
@@ -219,7 +232,7 @@ export class WebServer {
         });
         send({ type: 'workspaces', workspaces: this.deps.store.getWorkspaces() });
       },
-      onMessage: (msg, send) => this.onMessage(msg as WsClientMessage, ws, send),
+      onMessage: (msg, send) => this.handleClientMessage(msg, ws, send),
       onClose: () => {
         this.sockets.delete(ws);
         this.authedSockets.delete(ws);
@@ -229,11 +242,15 @@ export class WebServer {
     ws.ready();
   }
 
-  private async onMessage(
-    msg: WsClientMessage,
+  private async handleClientMessage(
+    msg: unknown,
     ws: WebSocketConnection,
     send: (data: unknown) => void,
   ): Promise<void> {
+    if (!isWsClientMessage(msg)) {
+      send({ type: 'toast', level: 'error', message: 'Invalid WebSocket message.' });
+      return;
+    }
     // Every action requires the WebToken (Chapter 3.2.2 强鉴权).
     if (msg.type === 'auth') {
       if (msg.webToken === this.deps.webToken) {
@@ -250,7 +267,12 @@ export class WebServer {
     }
     switch (msg.type) {
       case 'select-profile': {
-        await this.deps.store.setDefault(msg.username);
+        const selected = await this.deps.store.setDefault(msg.username);
+        if (!selected) {
+          send({ type: 'toast', level: 'error', message: `Profile "${msg.username}" not found.` });
+          return;
+        }
+        this.broadcast({ type: 'workspaces', workspaces: this.deps.store.getWorkspaces() });
         break;
       }
       case 'confirm-event': {
@@ -259,7 +281,8 @@ export class WebServer {
         break;
       }
       case 'reject-event': {
-        this.deps.scheduler.reject(msg.id);
+        const ok = this.deps.scheduler.reject(msg.id);
+        if (!ok) send({ type: 'toast', level: 'error', message: 'No such pending event.' });
         break;
       }
       case 'scan-workspace': {
@@ -269,10 +292,6 @@ export class WebServer {
       case 'create-event': {
         this.createProactiveEvent(msg.kind, msg.payload, send);
         break;
-      }
-      default: {
-        // import/export are handled via REST-ish JSON endpoints (below).
-        send({ type: 'toast', level: 'error', message: `Unsupported action: ${(msg as { type: string }).type}` });
       }
     }
   }
@@ -310,11 +329,17 @@ export class WebServer {
     // Chapter 5.3.4: honor .gitignore so build/coverage outputs etc. are excluded.
     const pkgs = await scanWorkspace(found.root, realFs, { root: found.root, respectGitignore: true });
     const scoped = filterByProfile(pkgs, store.getDefault());
-    send({
-      type: 'packages',
-      root: found.root,
-      packages: scoped.map((p) => ({ name: p.name, version: p.version, description: p.description, path: p.path })),
-    });
+      send({
+        type: 'packages',
+        root: found.root,
+        packages: scoped.map((p) => ({
+          name: p.name,
+          version: p.version,
+          description: p.description,
+          path: p.path,
+          ...(p.repository ? { repository: p.repository } : {}),
+        })),
+      });
   }
 
   private createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void): void {
@@ -323,8 +348,12 @@ export class WebServer {
       send({ type: 'toast', level: 'error', message: 'Select a profile first.' });
       return;
     }
-    const evt = this.deps.store.createEvent({ kind, profile, payload: payload as never });
-    send({ type: 'event', event: evt });
+    const result = this.deps.scheduler.createProactiveEvent(kind, profile, payload);
+    if (!result.ok) {
+      send({ type: 'toast', level: 'error', message: result.error });
+      return;
+    }
+    send({ type: 'event', event: result.event });
     send({ type: 'toast', level: 'info', message: 'Pending event created — review it under Events.' });
   }
 
@@ -338,6 +367,11 @@ export class WebServer {
   /** URL hash the opentray host should load to inject the WebToken (Chapter 3.2.2). */
   webUiUrl(port: number): string {
     return `http://127.0.0.1:${port}/#token=${this.deps.webToken}`;
+  }
+
+  /** Log-safe WebUI URL: never serialize the lifecycle WebToken to disk. */
+  webUiUrlRedacted(port: number): string {
+    return `http://127.0.0.1:${port}/#token=<redacted>`;
   }
 
   // ----- JSON API handlers (Chapter 8.1 onboarding, 8.2 import/export, 6.2.4 renew) -----
@@ -374,14 +408,87 @@ export class WebServer {
         username: body.username,
         registry,
       });
-    } catch (err) {
+    } catch (error: unknown) {
       const { deleteProfile } = await import('./keychain.js');
       await deleteProfile(body.username).catch(() => {});
-      return { ok: false, error: `Failed to persist profile: ${(err as Error).message}` };
+      return { ok: false, error: `Failed to persist profile: ${errorToMessage(error)}` };
     }
     // Populate the in-memory credential pool immediately.
     this.deps.store.setCredentials(body.username, { token: token!, totpSecret: body.totpSecret });
     return { ok: true };
+  }
+
+  /** Renew flow: reuse the stored TOTP secret instead of accepting an empty one. */
+  private async renewProfile(body: {
+    username: string;
+    password: string;
+    registry?: string;
+    manualToken?: string;
+    totpSecret?: string;
+  }): Promise<{ ok: boolean; needsManualToken?: boolean; error?: string }> {
+    const profile = this.deps.store.getProfile(body.username);
+    if (!profile) {
+      return { ok: false, error: `Profile ${body.username} not found.` };
+    }
+    const creds = this.deps.store.getCredentials(body.username);
+    const previousToken = creds?.token ?? null;
+    const previousTotpSecret = creds?.totpSecret ?? ((await getTotpSecret(body.username)) ?? null);
+    const incomingTotpSecret = body.totpSecret?.trim() || undefined;
+    const totpSecret = previousTotpSecret ?? incomingTotpSecret;
+    if (!totpSecret) {
+      return { ok: false, error: `No TOTP secret loaded for ${body.username}.` };
+    }
+    const registry = body.registry ?? profile.registry ?? 'https://registry.npmjs.org/';
+    let token = body.manualToken;
+    if (!token) {
+      const res = await applyToken({
+        registry,
+        username: body.username,
+        password: body.password,
+        totpSecret,
+      });
+      if (!res.ok) {
+        return { ok: false, needsManualToken: res.needsManualToken, error: res.error };
+      }
+      token = res.token;
+    }
+    try {
+      await setToken(body.username, token!);
+      if (incomingTotpSecret && incomingTotpSecret !== previousTotpSecret) {
+        await setTotpSecret(body.username, incomingTotpSecret);
+      }
+      await this.deps.store.upsertProfile({
+        ...profile,
+        registry,
+      });
+    } catch (error: unknown) {
+      await this.restoreRenewCredentialState(body.username, previousToken, previousTotpSecret);
+      return { ok: false, error: `Failed to renew profile: ${errorToMessage(error)}` };
+    }
+    this.deps.store.setCredentials(body.username, { token: token!, totpSecret });
+    return { ok: true };
+  }
+
+  private async restoreRenewCredentialState(
+    username: string,
+    token: string | null,
+    totpSecret: string | null,
+  ): Promise<void> {
+    if (token) {
+      await Promise.resolve().then(() => setToken(username, token)).catch(() => {});
+    } else {
+      await Promise.resolve().then(() => deleteToken(username)).catch(() => {});
+    }
+    if (totpSecret) {
+      await Promise.resolve().then(() => setTotpSecret(username, totpSecret)).catch(() => {});
+    } else {
+      await Promise.resolve().then(() => deleteTotpSecret(username)).catch(() => {});
+    }
+    if (token && totpSecret) {
+      this.deps.store.setCredentials(username, { token, totpSecret });
+    } else {
+      this.deps.store.deleteCredentials(username);
+    }
   }
 
   /** Export all profile secrets to an encrypted bundle (Chapter 8.2). */
@@ -392,13 +499,18 @@ export class WebServer {
     const skipped: string[] = [];
     for (const profile of this.deps.store.getProfiles()) {
       const creds = this.deps.store.getCredentials(profile.username);
-      if (creds) {
-        secrets[profile.username] = { token: creds.token, totp: creds.totpSecret };
-      } else {
-        // Chapter 8.2: warn when a configured profile has no loaded credentials
-        // (e.g. keychain read failed at boot) instead of silently omitting it.
-        skipped.push(profile.username);
+      const token = creds?.token ?? (await getToken(profile.username));
+      const totpSecret = creds?.totpSecret ?? (await getTotpSecret(profile.username));
+      if (token && totpSecret) {
+        secrets[profile.username] = { token, totp: totpSecret };
+        if (!creds) {
+          this.deps.store.setCredentials(profile.username, { token, totpSecret });
+        }
+        continue;
       }
+      // Chapter 8.2: warn when a configured profile has no complete credential
+      // pair in either memory or OS keychain instead of silently omitting it.
+      skipped.push(profile.username);
     }
     if (Object.keys(secrets).length === 0) {
       return { ok: false, error: 'No credentials loaded to export.' };
@@ -409,23 +521,36 @@ export class WebServer {
 
   /** Import selected profiles from an encrypted bundle (Chapter 8.2). */
   private async importBundle(
-    bundle: unknown,
+    bundle: BackupBundle,
     password: string,
     usernames: string[],
   ): Promise<{ ok: boolean; imported?: string[]; error?: string }> {
-    const decoded = importBundle(bundle as Parameters<typeof importBundle>[0], password);
+    const decoded = importBundle(bundle, password);
     if (!decoded) return { ok: false, error: 'Decryption failed — wrong password or tampered file.' };
     const imported: string[] = [];
     for (const username of usernames) {
       const entry = decoded[username];
       if (!entry) continue;
-      await setToken(username, entry.token);
-      await setTotpSecret(username, entry.totp);
-      await this.deps.store.upsertProfile({ username });
-      this.deps.store.setCredentials(username, { token: entry.token, totpSecret: entry.totp });
-      imported.push(username);
+      try {
+        await setToken(username, entry.token);
+        await setTotpSecret(username, entry.totp);
+        await this.deps.store.upsertProfile({ username });
+        this.deps.store.setCredentials(username, { token: entry.token, totpSecret: entry.totp });
+        imported.push(username);
+      } catch (error: unknown) {
+        await this.rollbackImportedProfiles([...imported, username]);
+        return { ok: false, error: `Failed to import profile ${username}: ${errorToMessage(error)}` };
+      }
     }
     return { ok: true, imported };
+  }
+
+  private async rollbackImportedProfiles(usernames: string[]): Promise<void> {
+    for (const username of usernames) {
+      await Promise.resolve().then(() => deleteToken(username)).catch(() => {});
+      await Promise.resolve().then(() => deleteTotpSecret(username)).catch(() => {});
+      this.deps.store.deleteCredentials(username);
+    }
   }
 }
 
@@ -436,13 +561,151 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req: http.IncomingMessage): Promise<any> {
+async function readJson(req: http.IncomingMessage): Promise<JsonObject> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  if (chunks.length === 0) return {};
+  let bodyBuf: Buffer | null = null;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    for await (const chunk of req) {
+      if (typeof chunk === 'string') {
+        chunks.push(Buffer.from(chunk));
+        continue;
+      }
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    if (chunks.length === 0) return {};
+    bodyBuf = Buffer.concat(chunks);
+    const parsed: unknown = JSON.parse(bodyBuf.toString('utf8'));
+    return isJsonObject(parsed) ? parsed : {};
   } catch {
     return {};
+  } finally {
+    if (bodyBuf) burnBuffer(bodyBuf);
+    for (const chunk of chunks) burnBuffer(chunk);
   }
+}
+
+function parseAddProfileBody(body: JsonObject): {
+  username: string;
+  password: string;
+  totpSecret: string;
+  registry?: string;
+  manualToken?: string;
+} {
+  return {
+    username: readString(body, 'username'),
+    password: readString(body, 'password'),
+    totpSecret: readString(body, 'totpSecret'),
+    registry: readOptionalString(body, 'registry'),
+    manualToken: readOptionalString(body, 'manualToken'),
+  };
+}
+
+function parseRenewProfileBody(body: JsonObject): {
+  username: string;
+  password: string;
+  registry?: string;
+  manualToken?: string;
+  totpSecret?: string;
+} {
+  return {
+    username: readString(body, 'username'),
+    password: readString(body, 'password'),
+    registry: readOptionalString(body, 'registry'),
+    manualToken: readOptionalString(body, 'manualToken'),
+    totpSecret: readOptionalString(body, 'totpSecret'),
+  };
+}
+
+function readString(body: JsonObject, key: string): string {
+  const value = body[key];
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Invalid or missing ${key}.`);
+  }
+  return value;
+}
+
+function readOptionalString(body: JsonObject, key: string): string | undefined {
+  const value = body[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Invalid ${key}.`);
+  }
+  return value;
+}
+
+function readBoolean(body: JsonObject, key: string): boolean {
+  const value = body[key];
+  if (typeof value !== 'boolean') {
+    throw new Error(`Invalid or missing ${key}.`);
+  }
+  return value;
+}
+
+function readStringArray(body: JsonObject, key: string): string[] {
+  const value = body[key];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.length === 0)) {
+    throw new Error(`Invalid or missing ${key}.`);
+  }
+  return value;
+}
+
+function readBackupBundle(body: JsonObject, key: string): BackupBundle {
+  const value = body[key];
+  if (!isBackupBundle(value)) {
+    throw new Error('Invalid backup bundle.');
+  }
+  return value;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function contentTypeFor(filePath: string): string {
+  return MIME[path.extname(filePath)] ?? 'application/octet-stream';
+}
+
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const EVENT_KINDS: readonly string[] = [
+  'publish',
+  'setup-oidc',
+  'create-placeholder',
+  'refresh-token',
+];
+
+function isWsClientMessage(value: unknown): value is WsClientMessage {
+  if (!isJsonObject(value) || typeof value.type !== 'string') return false;
+  switch (value.type) {
+    case 'auth':
+      return typeof value.webToken === 'string';
+    case 'select-profile':
+      return typeof value.username === 'string';
+    case 'confirm-event':
+    case 'reject-event':
+      return typeof value.id === 'string';
+    case 'scan-workspace':
+      return typeof value.root === 'string';
+    case 'create-event':
+      return isEventKind(value.kind);
+    default:
+      return false;
+  }
+}
+
+function isEventKind(value: unknown): value is PubEvent['kind'] {
+  return typeof value === 'string' && EVENT_KINDS.includes(value);
+}
+
+function isBackupBundle(value: unknown): value is BackupBundle {
+  return (
+    isJsonObject(value) &&
+    Array.isArray(value.profiles) &&
+    value.profiles.every((profile) => typeof profile === 'string' && profile.length > 0) &&
+    typeof value.salt === 'string' &&
+    typeof value.iv === 'string' &&
+    typeof value.ciphertext === 'string'
+  );
 }
