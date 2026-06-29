@@ -1,18 +1,18 @@
 /**
  * Release daemon entrypoint test.
  *
- * Verifies that the packaged daemon boots the tray path by default instead of
- * forcing the headless test flag.
+ * Verifies that the packaged daemon (main.ts) boots bootDaemon with the
+ * package version and dev webview URL. bootDaemon itself is mocked here so no
+ * native opentray runtime is actually spawned.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { DaemonOptions } from '../../src/daemon/index.js';
 import { readExpectedPackageVersion } from '../helpers/package-version.js';
 
 const mocks = vi.hoisted(() => ({
-  bootDaemon: vi.fn(async (_opts: DaemonOptions) => ({ booted: true })),
+  bootDaemon: vi.fn(async () => ({} as never)),
 }));
 
-vi.mock('../../src/daemon/index.js', () => mocks);
+vi.mock('../../src/daemon/index.js', () => ({ bootDaemon: mocks.bootDaemon }));
 
 describe('src/daemon/main.ts', () => {
   beforeEach(() => {
@@ -24,7 +24,7 @@ describe('src/daemon/main.ts', () => {
     vi.restoreAllMocks();
   });
 
-  it('Scenario: Given the release daemon entrypoint, When it boots, Then it passes the package version without forcing headless tray mode', async () => {
+  it('Scenario: Given the release daemon entrypoint, When it boots, Then it delegates to bootDaemon with the package version', async () => {
     await import('../../src/daemon/main.js');
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -34,6 +34,6 @@ describe('src/daemon/main.ts', () => {
     if (!firstCall) throw new Error('bootDaemon was not called');
     const [opts] = firstCall;
     expect(opts.cliVersion).toBe(readExpectedPackageVersion());
-    expect(opts.withTray).not.toBe(false);
+    expect(opts.webviewUrl).toBeUndefined();
   });
 });

@@ -10,10 +10,13 @@ native window.
 
 ## The WebUI container: opentray + ext-webview
 
-The WebUI is NOT opened in a plain browser in production — it is mounted inside
-a real native window via [`opentray`](https://www.npmjs.com/package/opentray) and
-its `@opentray/ext-webview` extension (Chapter 6.4). The canonical recipe from
-the opentray README is wired up in `src/daemon/index.ts` → `tryCreateTray`:
+The WebUI is NOT opened in a plain browser in production on supported desktop
+hosts — it is mounted inside a real native window via
+[`opentray`](https://www.npmjs.com/package/opentray) `0.10.2` and its
+`@opentray/ext-webview` extension (Chapter 6.4). On unsupported hosts, `pnpm
+dev` falls back to the printed WebUI URL so the app remains usable. The
+canonical recipe from the opentray README is wired up in `src/daemon/index.ts`
+→ `tryCreateTray`:
 
 ```ts
 import { WebviewExt } from "@opentray/ext-webview";
@@ -35,40 +38,36 @@ The window uses opentray's tray-panel glass-shell style:
 ### Native binary requirement
 
 `createWebviewWindow` needs the platform-specific native webview binary
-(`@opentray/ext-webview-darwin-arm64` etc., an optional dependency) **and** the
-opentray daemon (`opentray ≥ 0.8.0`, where `createTray`/icon deserialization was
-fixed). When both are present, `tryCreateTray` logs
-`opentray webview window mounted` and a real native window opens.
+(`@opentray/ext-webview-darwin-arm64` etc., an optional dependency) **and** a
+current OpenTray 0.10.x release line. When both are present, `tryCreateTray`
+logs `opentray webview window mounted` and a real native window opens.
 
-If the native binary or broker isn't available, `tryCreateTray` logs
+If the native binary or runtime binding isn't available, `tryCreateTray` logs
 `opentray mount failed (...) — running headless` and the daemon still serves the
 WebUI over HTTP so you can open the printed URL in a browser. To get the real
 native window, consult the **`opentray` skill** (or the opentray README) for
-native-runtime setup, then:
+native-runtime setup, then run the app normally:
 
 ```bash
-opentray daemon start   # ensure the opentray broker is running
-opentray daemon health  # → "opentray daemon running" + endpoint
-pnpm dev                # the daemon mounts the WebUI in a native window
+pnpm dev                # mounts the tray on supported hosts, otherwise serves the WebUI URL
 ```
 
 #### Verified flow
 
-Under opentray 0.8.0 with the native webview binary installed, the daemon log
+Under opentray 0.10.2 with the native webview binary installed, the daemon log
 shows the full mount:
 
 ```
 opentray webview window mounted
 WebUI available at http://127.0.0.1:<port>/#token=<webtoken>
-[tray] pin (keepOnTop + flash)   ← TrayHost reacts to the seeded pending event
+[tray] pin (keepOnTop + flash)   ← TrayHost reacts to a pending publish event
 ```
 
 
 ## Prerequisites
 
-- [bun](https://bun.sh) ≥ 1.3 — used to run TypeScript source directly during
-  development (no build step for the daemon/CLI).
-- Node.js ≥ 20 (for the production bundle + `vitest`).
+- [bun](https://bun.sh) ≥ 1.3 — used by source CLI helper scripts.
+- Node.js ≥ 20 (for the production bundle, `tsx`, and `vitest`).
 - pnpm ≥ 10 (`corepack enable` or `npm i -g pnpm@10`).
 
 ```bash
@@ -77,10 +76,10 @@ pnpm install
 
 ## Launching for development (no `dist` build)
 
-Everything below runs the **TypeScript source directly via bun**. Only the
-WebUI is pre-built once into `dist/webui/` (SvelteKit can't run from raw source).
+Everything below runs TypeScript source directly. The WebUI is served by Vite
+with HMR; `pnpm dev` does not build or copy `dist/webui/`.
 
-### One-shot: boot the daemon and seed a mock profile
+### One-shot: boot the live dev runtime
 
 ```bash
 pnpm dev
@@ -88,17 +87,16 @@ pnpm dev
 
 This:
 
-1. Builds the WebUI once → `dist/webui/`.
-2. Boots the daemon (`src/daemon/dev.ts`) under bun.
-3. Seeds a throwaway `dev-author` profile (no real NPM credentials needed).
-4. Injects one demo pending publish so the Events hub has something to show.
-5. Prints the WebUI URL — open it in a browser (or via `opentray` if installed):
+1. Starts the WebUI as a live Vite dev server on a random local port.
+2. Boots the daemon (`src/daemon/dev.ts`) through `tsx` on a second random local port.
+3. Proxies WebUI `/api`, `/__token`, and `/ws` traffic to the daemon.
+4. Prints the WebUI URL — open it in a browser (or via `opentray` if installed):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  pnpm-pub dev server is up.                                     │
 │  WebUI:   http://127.0.0.1:<port>/#token=<webtoken>             │
-│  Profile: dev-author                                            │
+│  Profile: add one in the UI                                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -126,14 +124,14 @@ Open the WebUI URL → the **Events** page shows the pending publish with a
 
 ### Testing a real publish against a local registry
 
-Point the dev daemon at a local Verdaccio:
+Point a profile at a local Verdaccio:
 
 ```bash
 # start Verdaccio (permissive, no auth)
 npx verdaccio --config verdaccio-dev.yaml
 
-# boot the daemon against it
-PNPM_PUB_DEV_REGISTRY=http://127.0.0.1:4873 pnpm dev
+# boot the daemon, then add a profile with registry http://127.0.0.1:4873
+pnpm dev
 ```
 
 Then trigger a publish as above — confirming it will pack the tarball and PUT it
@@ -156,16 +154,17 @@ falls back to `pnpm publish <anything>` for muscle-memory compatibility
 
 The project uses two launch conventions:
 
-### Development — run TypeScript source directly via `bun`
+### Development — run TypeScript source directly
 
-No `dist/` build step for the daemon or CLI; `bun` runs the `.ts` source. Only
-the WebUI is pre-built once (SvelteKit can't run from raw source).
+No `dist/` build step for the daemon, CLI, or WebUI. `pnpm dev` serves WebUI
+from Vite and runs the daemon source through `tsx` so Node HTTP/WebSocket
+upgrade semantics match the tested daemon server.
 
 | Command            | Description                                                  |
 | ------------------ | ------------------------------------------------------------ |
-| `pnpm dev`         | Build WebUI once → `dist/webui`, then boot the daemon via `bun run src/daemon/dev.ts` with a seeded mock profile. |
-| `pnpm dev:webui`   | Rebuild the WebUI into `dist/webui`.                         |
-| `pnpm dev:core`    | Boot only the daemon via bun (`bun run src/daemon/dev.ts`).  |
+| `pnpm dev`         | Start live Vite WebUI + source daemon, both on random local ports. |
+| `pnpm dev:webui`   | Start only the live Vite WebUI on a random local port.       |
+| `pnpm dev:core`    | Boot only the daemon via `tsx src/daemon/dev.ts`.            |
 | `pnpm dev:publish` | Run the CLI from source (`bun run src/cli/cli.ts publish …`). |
 
 ### Release — run the compiled `dist/` bundle via Node
@@ -195,9 +194,6 @@ them directly (no bun, no source transpilation).
 | Var                       | Purpose                                                       |
 | ------------------------- | ------------------------------------------------------------ |
 | `PNPM_PUB_HOME`           | Override the app home (`~/.pnpm-pub`). Used by `pnpm dev` so a spawned CLI agrees with the daemon on the IPC socket path. |
-| `PNPM_PUB_DEV_REGISTRY`   | Registry the dev-seeded profile targets (default npmjs.org). |
-| `PNPM_PUB_DEV_TOKEN`      | Token for the dev mock profile.                              |
-| `PNPM_PUB_DEV_TOTP`       | TOTP secret for the dev mock profile.                        |
 | `PNPM_PUB_DEV_NO_TRAY`    | `1` to skip the opentray host (headless).                    |
 | `PNPM_PUB_DAEMON_ENTRY`   | Daemon entry the CLI spawns (dev: `src/daemon/main.ts`).     |
 | `PNPM_PUB_E2E_REGISTRY`   | Real registry URL for the E2E test (e.g. a local Verdaccio). |

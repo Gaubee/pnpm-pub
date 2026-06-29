@@ -19,6 +19,7 @@ import { applyToken } from './npm-api.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
+import { lookupNpmProfileIdentity } from './avatar.js';
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -97,6 +98,14 @@ export class WebServer {
       }
       try {
         const body = method !== 'GET' ? await readJson(req) : {};
+        if (url === '/api/npm-profile' && method === 'GET') {
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const result = await lookupNpmProfileIdentity(
+            readQueryString(query, 'username'),
+            query.get('registry') ?? 'https://registry.npmjs.org/',
+          );
+          return json(res, 200, { ok: true, profile: result });
+        }
         if (url === '/api/add-profile' && method === 'POST') {
           const result = await this.addProfile(parseAddProfileBody(body));
           return json(res, 200, result);
@@ -404,9 +413,11 @@ export class WebServer {
     try {
       await setToken(body.username, token!);
       await setTotpSecret(body.username, body.totpSecret);
+      const identity = await lookupNpmProfileIdentity(body.username, registry, { token });
       await this.deps.store.upsertProfile({
         username: body.username,
         registry,
+        avatarUrl: identity.avatarUrl ?? undefined,
       });
     } catch (error: unknown) {
       const { deleteProfile } = await import('./keychain.js');
@@ -457,9 +468,11 @@ export class WebServer {
       if (incomingTotpSecret && incomingTotpSecret !== previousTotpSecret) {
         await setTotpSecret(body.username, incomingTotpSecret);
       }
+      const identity = await lookupNpmProfileIdentity(body.username, registry, { token });
       await this.deps.store.upsertProfile({
         ...profile,
         registry,
+        avatarUrl: identity.avatarUrl ?? profile.avatarUrl,
       });
     } catch (error: unknown) {
       await this.restoreRenewCredentialState(body.username, previousToken, previousTotpSecret);
@@ -629,6 +642,14 @@ function readOptionalString(body: JsonObject, key: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Invalid ${key}.`);
+  }
+  return value;
+}
+
+function readQueryString(query: URLSearchParams, key: string): string {
+  const value = query.get(key);
+  if (!value) {
+    throw new Error(`Invalid or missing ${key}.`);
   }
   return value;
 }

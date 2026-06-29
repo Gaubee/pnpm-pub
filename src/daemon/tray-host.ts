@@ -9,7 +9,7 @@
  * We keep the real typed handles (`EventfulTrayHandle & WebviewTrayCapability` +
  * `WebviewWindowHandle`) instead of inventing a parallel abstraction. The host
  * layering on top is purely the product behavior the skill leaves to the app:
- *   - blur auto-hide (reversible dismissal, NOT destroy)
+ *   - one explicit dismissal law per panel: keepOnTop click-toggle, or blur auto-hide
  *   - pending-event KeepOnTop override + tray-title flash
  *   - reject pending publishes when the window is hidden with events outstanding
  *
@@ -47,6 +47,13 @@ export interface TrayHostOptions {
   pendingIcon?: string;
   /** Swaps the tray icon. Used to apply/clear the pending badge. */
   setIcon?: (path: string) => void | Promise<void>;
+  /**
+   * Pinned panel policy: tray primary click toggles show/hide and blur does not
+   * auto-hide. When false, native blur is the reversible dismissal source.
+   */
+  keepOnTop?: boolean;
+  /** Initial native window visibility when TrayHost takes ownership. */
+  initialVisible?: boolean;
 }
 
 type Visibility = 'hidden' | 'shown' | 'pinned';
@@ -62,6 +69,7 @@ export class TrayHost {
     private window: OpentrayWindow | null,
     private opts: TrayHostOptions = {},
   ) {
+    this.visibility = opts.initialVisible ? 'shown' : 'hidden';
     this.wireUp();
   }
 
@@ -85,18 +93,19 @@ export class TrayHost {
 
   private wireUp(): void {
     const openId = this.opts.openItemId ?? 1;
-    // Skill scenario: tray click → show() on the SAME panel handle.
+    // Skill scenario: tray click toggles the SAME panel handle.
     if (this.tray) {
       const off = this.tray.onMenuClick(({ itemId }) => {
-        if (itemId === openId) void this.show();
+        this.log(`menu click received: itemId=${itemId}`);
+        if (itemId === openId) this.toggle();
       });
       this.unsubs.push(off);
     }
-    // Skill rule: hide() is reversible dismissal. We auto-hide on blur unless a
-    // pending event forces KeepOnTop (pin()).
+    // Non-pinned panel law: hide() is reversible dismissal sourced from native
+    // blur. Pinned panels use tray-click toggle instead.
     if (this.window) {
       const off = this.window.listen('blur', () => {
-        if (!this.hasPending()) this.hide();
+        if (!this.hasPending() && !this.opts.keepOnTop) this.hide();
       });
       this.unsubs.push(off);
     }
@@ -114,9 +123,26 @@ export class TrayHost {
   /** Restore window visibility (skill: show() restores, never re-bootstraps). */
   show(): void {
     if (this.visibility === 'pinned') return; // already forced visible
-    this.safeCall('show', this.window?.show());
+    const showP = this.window?.show();
+    this.safeCall('show', showP);
+    if (this.opts.keepOnTop) {
+      if (showP && typeof showP.then === 'function') {
+        showP.then(
+          () => this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true })),
+          () => {},
+        );
+      } else {
+        this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true }));
+      }
+    }
     this.visibility = 'shown';
     this.log('show');
+  }
+
+  /** Primary tray click behavior for a tray-owned panel. */
+  toggle(): void {
+    if (this.visibility === 'hidden') this.show();
+    else this.hide();
   }
 
   /** Reversible dismissal (skill: hide(), NOT destroy()). */

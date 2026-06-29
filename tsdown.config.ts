@@ -69,19 +69,42 @@ function copyKeytarPrebuilds(): Plugin {
   };
 }
 
-/** Copy bundled tray-icon assets into dist/assets (Chapter 9 build). */
+/**
+ * Copy tray-icon assets into dist/assets (Chapter 9 build).
+ *
+ * PNGs come from the same content-hash cache the vite dev plugin uses
+ * (scripts/gen-icons.mjs ensureIcons) so dev and release share one rasterized
+ * artifact set — never re-rasterize when the SVGs + script are unchanged. SVG
+ * sources are copied from assets/ as-is (they're committed sources, not cache).
+ * This makes `gen:icons` optional in the build pipeline: copyAssets is
+ * self-contained and produces the PNGs on demand.
+ */
 function copyAssets(): Plugin {
   return {
     name: 'pnpm-pub/assets',
     apply: () => 'build',
-    closeBundle() {
-      const src = path.resolve(process.cwd(), 'assets');
-      if (!existsSync(src)) return;
+    async closeBundle() {
       const destDir = path.resolve(process.cwd(), 'dist', 'assets');
       mkdirSync(destDir, { recursive: true });
-      for (const file of readdirSync(src)) {
-        if (file.endsWith('.png') || file.endsWith('.svg')) {
-          copyFileSync(path.join(src, file), path.join(destDir, file));
+
+      // PNGs: resolve the cached rasterization (generates on miss).
+      const { ensureIcons } = await import('./scripts/gen-icons.mjs');
+      const cacheRoot = path.resolve(process.cwd(), 'node_modules', '.cache', 'pnpm-pub-icons');
+      const { dir: iconDir, generated } = await ensureIcons({ cacheRoot, root: process.cwd() });
+      if (generated) console.log(`[build] rasterized tray icons → ${iconDir}`);
+      for (const file of readdirSync(iconDir)) {
+        if (file.endsWith('.png')) {
+          copyFileSync(path.join(iconDir, file), path.join(destDir, file));
+        }
+      }
+
+      // SVGs: committed sources, copied as-is (favicon + design references).
+      const assetsDir = path.resolve(process.cwd(), 'assets');
+      if (existsSync(assetsDir)) {
+        for (const file of readdirSync(assetsDir)) {
+          if (file.endsWith('.svg')) {
+            copyFileSync(path.join(assetsDir, file), path.join(destDir, file));
+          }
         }
       }
     },

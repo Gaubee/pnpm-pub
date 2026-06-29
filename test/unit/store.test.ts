@@ -52,6 +52,18 @@ describe('DaemonStore profiles (Chapter 4.1)', () => {
     expect(store.getCredentials('alice')).toBeUndefined();
   });
 
+  it('Scenario: Given multiple profiles, When deleting the default profile, Then default moves to the next profile source', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice' });
+    await store.upsertProfile({ username: 'work' });
+
+    await expect(store.removeProfile('alice')).resolves.toBe(true);
+
+    expect(store.getProfiles().map((profile) => profile.username)).toEqual(['work']);
+    expect(store.getDefault()).toBe('work');
+  });
+
   it('Scenario: Given an unknown profile, When removing it, Then profile truth is unchanged', async () => {
     const store = new DaemonStore();
     await store.load();

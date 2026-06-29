@@ -28,9 +28,24 @@ export interface DaemonOptions {
   cliVersion: string;
   webuiDir?: string;
   port?: number;
-  /** When false, skip the opentray host (tests/headless). */
+  /** When false, skip tray mount (tests/headless). */
   withTray?: boolean;
+  /**
+   * When true, tray mount failures are surfaced as fatal dev errors instead of
+   * silently degrading to headless mode.
+   */
+  strictTrayMount?: boolean;
+  /** opentray package version, used to partition the local-broker runtime state. */
+  packageVersion?: string;
+  /**
+   * The URL the tray webview window should load. In release this is the daemon's
+   * own WebServer URL; in dev this is the vite dev server URL (so HMR works).
+   * Defaults to the daemon's own WebServer URL.
+   */
+  webviewUrl?: string;
 }
+
+const WEB_TOKEN_PLACEHOLDER = '__PNPM_PUB_WEB_TOKEN__';
 
 export interface DaemonHandles {
   store: DaemonStore;
@@ -39,7 +54,7 @@ export interface DaemonHandles {
   ipc: IpcServer;
   port: number;
   webToken: string;
-  stop: () => Promise<void>;
+  stop: (opts?: { exit?: boolean }) => Promise<void>;
 }
 
 /**
@@ -53,13 +68,58 @@ export interface DaemonHandles {
  * product domain vocabulary rather than SDK internals.
  */
 type MountedTray = OpentrayTray;
+type BaseTray = Awaited<ReturnType<typeof import('opentray').createTray>>;
+
+type TrayMountFailureStage =
+  | 'runtime-binding'
+  | 'tray-extend'
+  | 'window-create'
+  | 'window-show';
+
+type TrayMountFailureKind =
+  | 'unsupported-platform'
+  | 'missing-native-package'
+  | 'missing-webview-package'
+  | 'tray-mount-failed'
+  | 'window-show-failed';
+
+interface TrayMountFailure {
+  kind: TrayMountFailureKind;
+  stage: TrayMountFailureStage;
+  cause: unknown;
+}
 
 type TrayMount = {
   tray: MountedTray | null;
   window: OpentrayWindow | null;
   /** Stop the tray-placement watch (no-op when placement never started). */
   stopPlacement: () => void;
+  failure?: TrayMountFailure;
 };
+
+export class TrayMountError extends Error {
+  readonly kind: TrayMountFailureKind;
+  readonly stage: TrayMountFailureStage;
+  readonly cause: unknown;
+
+  constructor(failure: TrayMountFailure) {
+    super(
+      formatTrayMountFailure(failure),
+      failure.cause instanceof Error ? { cause: failure.cause } : undefined,
+    );
+    this.name = 'TrayMountError';
+    this.kind = failure.kind;
+    this.stage = failure.stage;
+    this.cause = failure.cause;
+  }
+}
+
+interface TrayMountContext {
+  baseTray: BaseTray | null;
+  tray: MountedTray | null;
+  panel: OpentrayWindow | null;
+  stage: TrayMountFailureStage;
+}
 
 /** Resolve the directory holding the built SvelteKit SPA (Chapter 5.2.2 / 9.1.1). */
 function resolveWebuiDir(override?: string): string {
@@ -104,7 +164,9 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     scheduler,
     cliVersion: opts.cliVersion,
     onStatus: () => ({ active: true, profile: store.getDefault(), pid: process.pid }),
-    onStop: async () => daemonHandles?.stop(),
+    onStop: async () => {
+      await daemonHandles?.stop();
+    },
     onStart: async (profileOverride) => {
       if (profileOverride && store.getProfile(profileOverride)) {
         await store.setDefault(profileOverride);
@@ -131,9 +193,10 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   // Populate the credential pool from the keychain (Chapter 3.1 / 5.1).
   await refreshCredentials(store);
 
-  // Tray host (Chapter 6.4). We try to bind opentray's createTray; when it is
-  // unavailable (dev/headless) we still construct a TrayHost with null handles
-  // so the KeepOnTop/flash state machine is observable via the daemon log.
+  // Tray host (Chapter 6.4). We bind opentray's public createTray() directly;
+  // when the runtime is unavailable (dev/headless) we still construct a
+  // TrayHost with null handles so the KeepOnTop/flash state machine is
+  // observable via the daemon log.
   let trayHost: TrayHost | null = null;
   let stopPlacement: (() => void) | undefined;
   if (opts.withTray !== false) {
@@ -146,7 +209,16 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       const { fetchAndCacheAvatar } = await import('./avatar.js');
       await fetchAndCacheAvatar(defaultProfile, registry);
     }
-    const mounted = await tryCreateTray(web.webUiUrl(port), (line) => log(line));
+    const mounted = await tryCreateTray(
+      resolveWebviewUrl(opts.webviewUrl, web.webUiUrl(port), webToken),
+      opts.packageVersion ?? opts.cliVersion,
+      (line) => log(line),
+    );
+    if (mounted.failure && opts.strictTrayMount) {
+      await web.stop();
+      await ipc.stop();
+      throw new TrayMountError(mounted.failure);
+    }
     trayHost = new TrayHost(store, mounted.tray, mounted.window, {
       title: 'pnpm-pub',
       log: (line) => log(line),
@@ -161,16 +233,21 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       setIcon: (p) => {
         mounted.tray?.setIcon?.({ type: 'file', path: p });
       },
+      keepOnTop: true,
+      initialVisible: mounted.window !== null,
     });
     stopPlacement = mounted.stopPlacement;
   }
   log(`WebUI available at ${web.webUiUrlRedacted(port)}`);
 
   let stopping = false;
-  const stop = async (opts: { exit?: boolean } = {}): Promise<void> => {
+  const stop = async (stopOpts: { exit?: boolean } = {}): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    const exit = opts.exit ?? true;
+    // bootDaemon runs inside a worker (the main thread owns the visible runtime
+    // host loop). The worker must NOT call process.exit on its own — tearing
+    // down the IPC/socket/tray is enough; the host terminates the worker.
+    const exit = stopOpts.exit ?? false;
     scheduler.drainAll();
     stopPlacement?.();
     await trayHost?.destroy();
@@ -200,6 +277,10 @@ export async function refreshCredentials(store: DaemonStore): Promise<void> {
       store.setCredentials(profile.username, { token, totpSecret });
     }
   }
+}
+
+function resolveWebviewUrl(webviewUrl: string | undefined, fallbackUrl: string, webToken: string): string {
+  return webviewUrl?.replace(WEB_TOKEN_PLACEHOLDER, encodeURIComponent(webToken)) ?? fallbackUrl;
 }
 
 function log(message: string): void {
@@ -248,37 +329,42 @@ export { keychain };
  */
 async function tryCreateTray(
   url: string,
+  packageVersion: string,
   log: (line: string) => void,
 ): Promise<TrayMount> {
+  let baseTray: BaseTray | null = null;
+  let tray: MountedTray | null = null;
+  let panel: OpentrayWindow | null = null;
+  let stopPlacement: (() => void) | undefined;
   try {
-    // Dynamic imports keep opentray external (tsdown neverBundle) and let the
-    // daemon degrade to headless when the native runtime binding is missing
-    // (headless CI, unsupported platform). opentray 0.8 owns the tray lifetime
-    // in-process — no separate broker daemon — so this process IS the host.
+    // opentray 0.10 tray-first model: createTray() is the public creation
+    // entrypoint and owns local-broker transport selection. pnpm-pub only
+    // declares the tray atom and runtime identity.
     const opentray = await import('opentray');
     const ext = await import('@opentray/ext-webview');
 
     // trayOptions is typed by createTray's own parameter (TrayOptions from
     // @opentray/spec) via inference, so we don't need a direct spec dep.
     const trayOptions: Parameters<typeof opentray.createTray>[0] = {
-      trayId: 'pnpm-pub',
-      title: 'pnpm-pub',
+      id: 'pnpm-pub',
+      tooltip: { title: 'pnpm-pub', description: 'pnpm publish companion' },
       menu: { items: [{ type: 'item', id: 1, title: 'Open pnpm-pub', primaryEvent: true }] },
     };
     const icon = iconPath();
     if (icon && fs.existsSync(icon)) trayOptions.icon = { type: 'file', path: icon };
 
-    // createTray() loads the platform runtime binding (@opentray/<os>-<arch>)
-    // and returns an EventfulTrayHandle. extend(WebviewExt) widens it to also
-    // carry createWebviewWindow / getScreenDetails / getBounds.
-    const baseTray = await opentray.createTray(trayOptions);
-    const tray = baseTray.extend(ext.WebviewExt);
+    baseTray = await opentray.createTray(trayOptions, {
+      packageVersion,
+      appId: 'com.pnpm-pub',
+      appName: 'pnpm-pub',
+    });
+    tray = baseTray.extend(ext.WebviewExt);
 
     // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
     // the OS control cluster while the page owns the titlebar drag area; the
     // native semantic-blur material supplies the gaussian background, and
     // nativeWindowApi exposes navigator.opentrayWindow for startAppRegionDrag.
-    const panel = tray.createWebviewWindow({
+    panel = tray.createWebviewWindow({
       url,
       width: WINDOW_WIDTH,
       height: WINDOW_HEIGHT,
@@ -286,22 +372,33 @@ async function tryCreateTray(
       nativeWindowApi: true,
       windowControlsOverlay: true,
       style: {
+        keepOnTop: true,
         background: { kind: 'semantic', token: 'blur', state: 'active' },
       },
     });
 
-    // Anchor the panel to the tray (skill "Tray-Anchored Lightweight Panel").
-    // The kit consumes logical desktop pixels for the full Rect; tray bounds +
-    // screen details come from the WebviewTrayCapability handle. watch() is
-    // quiescent by default — it yields to user drag/resize and only re-applies
-    // after the window settles, so it never fights a manual resize/move.
-    const stopPlacement = await startTrayPlacement(tray, panel, ext, log);
+    // Initial show so the window is visible on first tray mount (the panel is
+    // created hidden; subsequent toggles go through tray-host show/hide).
+    await panel.show();
+    log('tray window shown on mount');
+
+    // Anchor the panel to the tray after the native window exists. Placement is
+    // projection behavior, so it must not query bounds before show() activates
+    // the WebView window.
+    stopPlacement = await startTrayPlacement(tray, panel, ext, log);
 
     log('opentray webview window mounted');
     return { tray, window: panel, stopPlacement };
   } catch (err) {
-    log(`opentray mount failed (${errorToLogMessage(err)}) — running headless`);
-    return { tray: null, window: null, stopPlacement: () => {} };
+    const failure = classifyTrayMountFailure(err, {
+      baseTray,
+      tray,
+      panel,
+      stage: inferTrayMountFailureStage({ baseTray, tray, panel }),
+    });
+    await destroyMountedTray({ baseTray, tray, panel, stopPlacement });
+    log(`opentray mount failed (${formatTrayMountFailure(failure)}) — running headless`);
+    return { tray: null, window: null, stopPlacement: () => {}, failure };
   }
 }
 
@@ -351,7 +448,119 @@ async function startTrayPlacement(
 }
 
 function errorToLogMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  // Recurse into the cause chain — opentray wraps native resolution errors
+  // (which list the candidate paths searched) several layers deep.
+  const parts: string[] = [error.message];
+  let cause = error.cause;
+  let guard = 0;
+  while (cause instanceof Error && guard < 5) {
+    parts.push(`↳ ${cause.message}`);
+    cause = (cause as Error).cause;
+    guard++;
+  }
+  return parts.join(' ');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function formatTrayMountFailure(failure: TrayMountFailure): string {
+  return `[${failure.kind}@${failure.stage}] ${errorToLogMessage(failure.cause)}`;
+}
+
+function inferTrayMountFailureStage({
+  baseTray,
+  tray,
+  panel,
+}: Pick<TrayMountContext, 'baseTray' | 'tray' | 'panel'>): TrayMountFailureStage {
+  if (panel !== null) return 'window-show';
+  if (tray !== null) return 'window-create';
+  if (baseTray !== null) return 'tray-extend';
+  return 'runtime-binding';
+}
+
+function classifyTrayMountFailure(
+  error: unknown,
+  context: TrayMountContext,
+): TrayMountFailure {
+  const stage = context.stage;
+  if (isMissingPlatformRuntimeBindingError(error)) {
+    return {
+      kind: isUnsupportedPlatformMessage(error.message)
+        ? 'unsupported-platform'
+        : 'missing-native-package',
+      stage,
+      cause: error,
+    };
+  }
+  if (isWebviewExtensionLoadError(error)) {
+    return {
+      kind: isUnsupportedPlatformMessage(error.message)
+        ? 'unsupported-platform'
+        : 'missing-webview-package',
+      stage,
+      cause: error,
+    };
+  }
+  if (stage === 'window-show') {
+    return { kind: 'window-show-failed', stage, cause: error };
+  }
+  if (stage === 'window-create') {
+    return { kind: 'missing-webview-package', stage, cause: error };
+  }
+  if (stage === 'tray-extend') {
+    return { kind: 'tray-mount-failed', stage, cause: error };
+  }
+  return { kind: 'missing-native-package', stage, cause: error };
+}
+
+function isMissingPlatformRuntimeBindingError(
+  error: unknown,
+): error is { message: string; code?: string } {
+  return isRecord(error) && error.code === 'OPENTRAY_MISSING_PLATFORM_RUNTIME_BINDING' && typeof error.message === 'string';
+}
+
+function isWebviewExtensionLoadError(
+  error: unknown,
+): error is { message: string; code?: string } {
+  return isRecord(error) && error.code === 'webview_extension_load_failed' && typeof error.message === 'string';
+}
+
+function isUnsupportedPlatformMessage(message: string): boolean {
+  return (
+    message.includes('unsupported OpenTray runtime platform') ||
+    message.includes('unsupported OpenTray runtime architecture') ||
+    message.includes('Linux is unsupported for this extension')
+  );
+}
+
+async function destroyMountedTray({
+  baseTray,
+  tray,
+  panel,
+  stopPlacement,
+}: Pick<TrayMountContext, 'baseTray' | 'tray' | 'panel'> & {
+  stopPlacement?: () => void;
+}): Promise<void> {
+  try {
+    stopPlacement?.();
+  } catch {
+    /* placement teardown must never crash mount cleanup */
+  }
+  try {
+    await panel?.destroy();
+  } catch {
+    /* window teardown must never crash mount cleanup */
+  }
+  const mountedTray = tray ?? baseTray;
+  if (!mountedTray) return;
+  try {
+    await mountedTray.destroy();
+  } catch {
+    /* tray teardown must never crash mount cleanup */
+  }
 }
 
 /**
@@ -385,11 +594,15 @@ function iconPath(pending = false): string | null {
   const plat = process.platform === 'darwin' ? 'macos' : 'windows';
   const name = pending ? `icon-${plat}-pending.png` : `icon-${plat}.png`;
   const candidates = [
+    // Dev: the vite plugin rasterizes icons into a content-hash cache dir and
+    // publishes it here, so the tray always uses fresh icons without touching
+    // the working-tree assets/.
+    process.env.PNPM_PUB_ICON_DIR ? path.join(process.env.PNPM_PUB_ICON_DIR, name) : null,
     path.join(__dirname, 'assets', name), // dist/assets (bundled)
     path.join(__dirname, '..', 'assets', name), // dev: src/daemon → <root>/assets
     path.join(process.cwd(), 'assets', name),
   ];
-  return candidates.find((c) => fs.existsSync(c)) ?? null;
+  return candidates.find((c) => c !== null && fs.existsSync(c)) ?? null;
 }
 
 /** Set by bootDaemon so the module-level iconPath() knows the active profile. */

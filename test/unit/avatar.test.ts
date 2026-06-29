@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
-import { avatarCachePath, fetchAndCacheAvatar } from '../../src/daemon/avatar.js';
+import { avatarCachePath, fetchAndCacheAvatar, lookupNpmProfileIdentity } from '../../src/daemon/avatar.js';
 import { setHomeOverride } from '../../src/shared/paths.js';
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-avatar-${process.pid}-${Date.now()}`);
@@ -45,21 +45,24 @@ afterEach(async () => {
 });
 
 describe('fetchAndCacheAvatar', () => {
-  it('Scenario: Given profile JSON without a string avatar, When fetching, Then no image fetch is attempted', async () => {
+  it('Scenario: Given npm exposes no verified avatar, When fetching, Then no image fetch is attempted', async () => {
     const calls = stubFetch([
-      new Response(JSON.stringify({ avatar: 42 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }),
+      new Response(JSON.stringify({ ok: false }), { status: 401, headers: { 'content-type': 'application/json' } }),
+      new Response(JSON.stringify({ ok: false }), { status: 401, headers: { 'content-type': 'application/json' } }),
+      new Response(JSON.stringify({ objects: [] }), { status: 200, headers: { 'content-type': 'application/json' } }),
     ]);
 
     await expect(fetchAndCacheAvatar('alice', 'https://registry.test/')).resolves.toBeNull();
 
-    expect(calls.map((call) => String(call.input))).toEqual(['https://registry.test/-/user/alice']);
+    expect(calls.map((call) => String(call.input))).toEqual([
+      'https://registry.test/-/user/alice',
+      'https://registry.test/-/user/org.couchdb.user:alice',
+      'https://registry.test/-/v1/search?text=maintainer%3Aalice&size=5',
+    ]);
     await expect(fsp.access(avatarCachePath('alice'))).rejects.toBeTruthy();
   });
 
-  it('Scenario: Given profile JSON with an avatar URL, When fetching, Then the image bytes are cached', async () => {
+  it('Scenario: Given registry profile JSON with an avatar URL, When fetching, Then the image bytes are cached', async () => {
     const imageBytes = Buffer.from('png bytes');
     const calls = stubFetch([
       new Response(JSON.stringify({ avatar: 'https://img.test/alice.png' }), {
@@ -79,5 +82,42 @@ describe('fetchAndCacheAvatar', () => {
       'https://img.test/alice.png',
     ]);
     await expect(fsp.readFile(avatarCachePath('alice'))).resolves.toEqual(imageBytes);
+  });
+});
+
+describe('lookupNpmProfileIdentity', () => {
+  it('Scenario: Given search finds maintainer email and Gravatar exists, When resolving, Then it returns a verified avatar URL', async () => {
+    const calls = stubFetch([
+      new Response(JSON.stringify({ ok: false }), { status: 401, headers: { 'content-type': 'application/json' } }),
+      new Response(JSON.stringify({ ok: false }), { status: 401, headers: { 'content-type': 'application/json' } }),
+      new Response(
+        JSON.stringify({
+          objects: [
+            {
+              package: {
+                maintainers: [{ username: 'alice', email: 'alice@example.com' }],
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+      new Response(null, { status: 200 }),
+    ]);
+
+    await expect(lookupNpmProfileIdentity('alice', 'https://registry.test/')).resolves.toEqual({
+      username: 'alice',
+      registry: 'https://registry.test',
+      avatarUrl: 'https://gravatar.com/avatar/c160f8cc69a4f0bf2b0362752353d060?s=128&d=404',
+      source: 'maintainer-gravatar',
+    });
+
+    expect(calls.map((call) => String(call.input))).toEqual([
+      'https://registry.test/-/user/alice',
+      'https://registry.test/-/user/org.couchdb.user:alice',
+      'https://registry.test/-/v1/search?text=maintainer%3Aalice&size=5',
+      'https://gravatar.com/avatar/c160f8cc69a4f0bf2b0362752353d060?s=128&d=404',
+    ]);
+    expect(calls[3]?.init?.method).toBe('HEAD');
   });
 });

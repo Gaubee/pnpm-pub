@@ -4,8 +4,8 @@
  * Drives the KeepOnTop / blur-auto-hide / pending-flash state machine with
  * in-memory fakes mirroring the real opentray API (OpentrayTray / OpentrayWindow)
  * and asserts each spec rule:
- *   - tray click shows the window
- *   - blur hides the window UNLESS a pending event is keeping it on top
+ *   - tray click toggles the same window handle
+ *   - blur hides only for non-pinned panels
  *   - a pending event pins (keepOnTop + visible) and releases when resolved
  */
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -108,6 +108,49 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
+  it('toggles the window on repeated tray menu click for keepOnTop panels', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const tray = makeTray();
+    const host = new TrayHost(store, tray, window, {
+      title: 'pnpm-pub',
+      openItemId: 1,
+      keepOnTop: true,
+    });
+
+    tray.fireClick(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.visible).toBe(true);
+    expect(window.keepOnTop).toBe(true);
+    expect(host.getVisibility()).toBe('shown');
+
+    tray.fireClick(1);
+    expect(window.visible).toBe(false);
+    expect(host.getVisibility()).toBe('hidden');
+    await host.destroy();
+  });
+
+  it('preserves initial visible state and first tray click hides a mounted panel', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    window.visible = true;
+    const tray = makeTray();
+    const host = new TrayHost(store, tray, window, {
+      title: 'pnpm-pub',
+      openItemId: 1,
+      keepOnTop: true,
+      initialVisible: true,
+    });
+
+    expect(host.getVisibility()).toBe('shown');
+    tray.fireClick(1);
+    expect(window.visible).toBe(false);
+    expect(host.getVisibility()).toBe('hidden');
+    await host.destroy();
+  });
+
   it('hides the window on blur when nothing is pending', async () => {
     const store = new DaemonStore();
     await store.load();
@@ -118,6 +161,24 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     window.blurHandler?.(); // simulate focus loss
     expect(window.visible).toBe(false);
     expect(host.getVisibility()).toBe('hidden');
+    await host.destroy();
+  });
+
+  it('does not hide keepOnTop panels on blur', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, {
+      title: 'pnpm-pub',
+      keepOnTop: true,
+    });
+    host.show();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.visible).toBe(true);
+    expect(window.keepOnTop).toBe(true);
+    window.blurHandler?.();
+    expect(window.visible).toBe(true);
+    expect(host.getVisibility()).toBe('shown');
     await host.destroy();
   });
 

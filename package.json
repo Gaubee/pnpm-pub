@@ -10,13 +10,14 @@
   },
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
-    "build": "pnpm run gen:icons && pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
+    "build": "pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
     "build:webui": "pnpm --filter ./webui run build",
     "copy:webui": "rm -rf dist/webui && mkdir -p dist && cp -r webui/build dist/webui",
     "build:core": "tsdown",
-    "dev:webui": "pnpm run gen:icons && pnpm run build:webui && pnpm run copy:webui",
-    "dev": "pnpm run dev:webui && bun run src/daemon/dev.ts",
-    "dev:core": "bun run src/daemon/dev.ts",
+    "dev:webui": "pnpm --dir webui exec vite dev --host 127.0.0.1 --port 0 --strictPort",
+    "dev:webui:build": "pnpm run gen:icons && pnpm run build:webui && pnpm run copy:webui",
+    "dev": "tsx src/dev.ts",
+    "dev:core": "tsx src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
     "dev:publish": "bun run src/cli/cli.ts",
     "release:start": "node dist/cli.js start",
@@ -29,7 +30,7 @@
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:e2e:docker": "tsx scripts/run-e2e-docker.ts",
-    "clean": "rm -rf dist packages/*/dist webui/build webui/.svelte-kit"
+    "clean": "rm -rf dist packages/*/dist webui/build webui/.svelte-kit node_modules/.cache/pnpm-pub-icons"
   },
   "keywords": [
     "npm",
@@ -45,18 +46,20 @@
   "license": "ISC",
   "dependencies": {
     "@github/keytar": "^7.0.0",
-    "@opentray/ext-webview": "^0.7.1",
-    "opentray": "^0.8.1",
+    "@opentray/ext-webview": "link:../jixoai-labs/opentray/packages/ext-webview",
+    "opentray": "link:../jixoai-labs/opentray/packages/cli",
     "otplib": "^12.0.1",
     "yargs": "^17.7.2"
   },
   "devDependencies": {
-    "@opentray/ext-webview-darwin-arm64": "^0.7.1",
+    "@opentray/ext-webview-darwin-arm64": "link:../jixoai-labs/opentray/packages/ext-webview-darwin-arm64",
     "@resvg/resvg-js": "^2.6.2",
+    "@types/http-proxy": "^1.17.17",
     "@types/node": "^22.10.0",
     "@types/yargs": "^17.0.33",
     "agent-browser": "0.31.1",
     "fast-glob": "^3.3.3",
+    "http-proxy": "^1.18.1",
     "memfs": "^4.17.0",
     "tsdown": "^0.22.3",
     "tsx": "^4.19.2",

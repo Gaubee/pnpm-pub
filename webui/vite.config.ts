@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import type { ServerOptions } from 'vite';
 
 // Chapter 4.4.1: adapter-static compiles the SvelteKit app to a pure SPA whose
 // output the daemon serves from dist/webui.
@@ -22,5 +23,19 @@ export default defineConfig({
 				strict: false
 			})
 		})
-	]
+	],
+	server: {
+		proxy: devDaemonProxy()
+	}
 });
+
+function devDaemonProxy(): ServerOptions['proxy'] {
+	const port = process.env.PNPM_PUB_DEV_DAEMON_PORT;
+	if (!port) return undefined;
+	const target = `http://127.0.0.1:${port}`;
+	return {
+		'/api': { target },
+		'/__token': { target },
+		'/ws': { target, ws: true }
+	};
+}

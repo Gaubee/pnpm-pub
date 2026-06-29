@@ -8,6 +8,9 @@ import { bootDaemon } from '../../src/daemon/index.js';
 import { daemonLogPath, setHomeOverride } from '../../src/shared/paths.js';
 
 const trayMocks = vi.hoisted(() => ({
+  // tryCreateTray uses opentray 0.10's public createTray(options, runtime) API.
+  // createTray resolves to a handle whose extend() yields the WebView-capable
+  // tray surface; tests override this to simulate failure modes.
   createTray: vi.fn(),
   placementWatch: vi.fn(),
 }));
@@ -35,8 +38,9 @@ vi.mock('@opentray/ext-webview', () => ({
 
 /**
  * A complete fake tray+window surface matching the SDK shape tryCreateTray
- * drives: EventfulTrayHandle & WebviewTrayCapability + WebviewWindowHandle.
- * Individual tests override the pieces they want to break.
+ * drives: createTray() -> EventfulTrayHandle, whose extend() yields
+ * WebviewTrayCapability with createWebviewWindow. Individual tests override
+ * the pieces they want to break.
  */
 function makeHappyMount() {
   const panel = {
@@ -106,7 +110,7 @@ describe('bootDaemon logging', () => {
 
     try {
       const log = await fsp.readFile(daemonLogPath(), 'utf8');
-      expect(log).toContain('opentray mount failed (native binding offline) — running headless');
+      expect(log).toContain('opentray mount failed ([missing-native-package@runtime-binding] native binding offline) — running headless');
     } finally {
       await handles.stop({ exit: false });
     }
@@ -186,9 +190,28 @@ describe('bootDaemon logging', () => {
 
     try {
       const log = await fsp.readFile(daemonLogPath(), 'utf8');
-      expect(log).toContain('opentray mount failed (native webview unavailable) — running headless');
+      expect(log).toContain('opentray mount failed ([missing-webview-package@window-create] native webview unavailable) — running headless');
     } finally {
       await handles.stop({ exit: false });
     }
+  });
+
+  it('Scenario: Given strict tray mount mode and missing native binding, When daemon starts, Then it throws a typed tray mount error', async () => {
+    trayMocks.createTray.mockRejectedValueOnce(
+      Object.assign(new Error('OpenTray runtime package missing'), {
+        code: 'OPENTRAY_MISSING_PLATFORM_RUNTIME_BINDING',
+      }),
+    );
+
+    await expect(
+      bootDaemon({
+        cliVersion: '0.1.0',
+        strictTrayMount: true,
+      }),
+    ).rejects.toMatchObject({
+      name: 'TrayMountError',
+      kind: 'missing-native-package',
+      stage: 'runtime-binding',
+    });
   });
 });

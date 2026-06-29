@@ -17,6 +17,7 @@ import type { BackupBundle, Profile, WorkspaceEntry, WsServerMessage } from '../
 
 const mocks = vi.hoisted(() => ({
   applyTokenMock: vi.fn(),
+  lookupNpmProfileIdentityMock: vi.fn(),
   setTokenMock: vi.fn(),
   setTotpSecretMock: vi.fn(),
   getTokenMock: vi.fn(),
@@ -31,6 +32,10 @@ vi.mock('../../src/daemon/npm-api.js', () => ({
   publishPackage: vi.fn(),
   configureOidc: vi.fn(),
   isExpiredToken: vi.fn(),
+}));
+
+vi.mock('../../src/daemon/avatar.js', () => ({
+  lookupNpmProfileIdentity: mocks.lookupNpmProfileIdentityMock,
 }));
 
 vi.mock('../../src/daemon/keychain.js', () => ({
@@ -129,6 +134,14 @@ describe('renew flow keeps the stored secret', () => {
     setHomeOverride(sandbox);
     mocks.getTokenMock.mockResolvedValue('old-token');
     mocks.getTotpSecretMock.mockResolvedValue('SECRET');
+    mocks.lookupNpmProfileIdentityMock.mockImplementation((username: string, registry: string) =>
+      Promise.resolve({
+        username,
+        registry: registry.replace(/\/$/, ''),
+        avatarUrl: null,
+        source: 'none',
+      }),
+    );
 
     store = new DaemonStore();
     await store.load();
@@ -206,6 +219,69 @@ describe('renew flow keeps the stored secret', () => {
     });
     expect(mocks.deleteProfileMock).toHaveBeenCalledWith('bob');
     expect(store.getCredentials('bob')).toBeUndefined();
+  });
+
+  it('resolves npm profile identity through a token-guarded API', async () => {
+    mocks.lookupNpmProfileIdentityMock.mockResolvedValueOnce({
+      username: 'bob',
+      registry: 'https://registry.npmjs.org',
+      avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
+      source: 'maintainer-gravatar',
+    });
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}/api/npm-profile?username=bob&registry=${encodeURIComponent('https://registry.npmjs.org/')}`,
+      {
+        headers: {
+          authorization: 'Bearer webtoken',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      profile: {
+        username: 'bob',
+        registry: 'https://registry.npmjs.org',
+        avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
+        source: 'maintainer-gravatar',
+      },
+    });
+    expect(mocks.lookupNpmProfileIdentityMock).toHaveBeenCalledWith('bob', 'https://registry.npmjs.org/');
+  });
+
+  it('persists a resolved avatar URL when adding a profile', async () => {
+    mocks.lookupNpmProfileIdentityMock.mockResolvedValueOnce({
+      username: 'bob',
+      registry: 'https://registry.npmjs.org',
+      avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
+      source: 'maintainer-gravatar',
+    });
+    mocks.setTokenMock.mockResolvedValue(undefined);
+    mocks.setTotpSecretMock.mockResolvedValue(undefined);
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/add-profile`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer webtoken',
+      },
+      body: JSON.stringify({
+        username: 'bob',
+        password: 'ignored',
+        totpSecret: 'BOBSECRET',
+        manualToken: 'npm_manual_bob',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    expect(store.getProfile('bob')).toEqual({
+      username: 'bob',
+      registry: 'https://registry.npmjs.org/',
+      avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
+    });
   });
 
   it('restores the previous token and secret when persistence fails', async () => {
