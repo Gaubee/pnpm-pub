@@ -6,27 +6,30 @@
 	 *  - Bottom-left profile switcher (Chapter 6.1.1)
 	 */
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
-	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
-	import { actions, activeProfile, daemon, pendingEvents } from '$lib/store.js';
-	import { toggleMode } from 'mode-watcher';
+	import { cn } from '$lib/utils.js';
+	import { actions, activeProfile, daemon, openAddProfile, pendingEvents } from '$lib/store.js';
 	import IconEvent from '@lucide/svelte/icons/list-checks';
 	import IconWorkspaces from '@lucide/svelte/icons/folder-tree';
 	import IconPlus from '@lucide/svelte/icons/plus';
-	import IconSun from '@lucide/svelte/icons/sun';
-	import IconMoon from '@lucide/svelte/icons/moon';
 	import IconChevron from '@lucide/svelte/icons/chevrons-up-down';
 	import IconBackup from '@lucide/svelte/icons/database-backup';
+	import IconPanelClose from '@lucide/svelte/icons/panel-left-close';
+	import IconPanelOpen from '@lucide/svelte/icons/panel-left-open';
 	import NpmMark from '$lib/components/npm-mark.svelte';
+	import { _ } from 'svelte-i18n';
 
 	let menuOpen = $state(false);
+	let collapsed = $state(true);
 
 	const nav = [
-		{ href: '/', label: 'Events', icon: IconEvent },
-		{ href: '/workspaces', label: 'Workspaces', icon: IconWorkspaces },
-		{ href: '/backup', label: 'Backup', icon: IconBackup },
+		{ href: '/', labelKey: 'sidebar.events', icon: IconEvent },
+		{ href: '/workspaces', labelKey: 'sidebar.workspaces', icon: IconWorkspaces },
+		{ href: '/backup', labelKey: 'sidebar.backup', icon: IconBackup },
 	];
 
 	const pinned = $derived($daemon.workspaces.filter((w) => w.pinned));
@@ -39,42 +42,72 @@
 			.toUpperCase();
 </script>
 
-<aside class="flex w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+<aside
+	class={cn(
+		'flex shrink-0 flex-col bg-transparent text-sidebar-foreground transition-[width] duration-200 ease-out',
+		collapsed ? 'w-14' : 'w-60',
+	)}
+	data-collapsed={collapsed}
+>
 	<!-- Brand header (NPM logo mark — Chapter 1.3.2), unified with the tray icon. -->
-	<div class="no-drag flex h-12 items-center gap-2 px-4">
-		<NpmMark class="h-6 w-6 rounded-[5px]" />
-		<span class="text-sm font-semibold tracking-tight">pnpm-pub</span>
-	</div>
-	<Separator />
-
-	<!-- Primary navigation (Chapter 6.1.2). -->
-	<nav class="no-drag flex flex-1 flex-col gap-1 p-3">
-		<a
-			href="/add-profile"
-			class="mb-2 inline-flex items-center justify-center gap-2 rounded-md border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+	<div class={cn('no-drag flex h-12 items-center gap-2 px-3', collapsed && 'justify-center')}>
+		{#if !collapsed}
+			<NpmMark class="h-6 w-6 rounded-[5px]" />
+			<span class="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight">pnpm-pub</span>
+		{/if}
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon"
+			class="h-8 w-8 text-muted-foreground hover:text-foreground"
+			aria-label={collapsed ? $_('sidebar.expand') : $_('sidebar.collapse')}
+			aria-expanded={!collapsed}
+			onclick={() => {
+				collapsed = !collapsed;
+				menuOpen = false;
+			}}
 		>
-			<IconPlus class="h-3.5 w-3.5" /> New Profile
-		</a>
+			{#if collapsed}
+				<IconPanelOpen />
+			{:else}
+				<IconPanelClose />
+			{/if}
+		</Button>
+	</div>
+		<Separator />
 
+	<!-- Primary navigation (Chapter 6.1.2). Profile creation lives in the bottom profile menu. -->
+	<nav class="no-drag flex flex-1 flex-col gap-1 p-3">
 		{#each nav as item (item.href)}
 			{@const active = page.url.pathname === item.href}
+			{@const label = $_(item.labelKey)}
 			<a
 				href={item.href}
-				class="group flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors {active
-					? 'bg-accent text-accent-foreground'
-					: 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground'}"
+				class={cn(
+					'group flex items-center gap-2.5 rounded-md py-2 text-sm font-medium transition-colors',
+					collapsed ? 'justify-center px-0' : 'px-3',
+					active
+						? 'bg-accent text-accent-foreground'
+						: 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+				)}
+				aria-label={label}
+				title={collapsed ? label : undefined}
 			>
 				<item.icon class="h-4 w-4" />
-				<span class="flex-1">{item.label}</span>
-				{#if item.href === '/' && $pendingEvents.length}
+				{#if !collapsed}
+					<span class="flex-1">{label}</span>
+				{/if}
+				{#if item.href === '/' && $pendingEvents.length && !collapsed}
 					<Badge variant="brand" class="h-5 px-1.5 text-[10px]">{$pendingEvents.length}</Badge>
+				{:else if item.href === '/' && $pendingEvents.length}
+					<span class="absolute ml-5 mt-[-1.25rem] h-2 w-2 rounded-full bg-brand"></span>
 				{/if}
 			</a>
 		{/each}
 
-		{#if pinned.length > 0}
+		{#if pinned.length > 0 && !collapsed}
 			<div class="mt-4 px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
-				Pinned
+				{$_('sidebar.pinned')}
 			</div>
 			{#each pinned as ws (ws.path)}
 				<a
@@ -88,23 +121,17 @@
 		{/if}
 	</nav>
 
-	<!-- Bottom controls: theme toggle + profile switcher (Chapter 6.1.1). -->
+	<!-- Bottom controls: profile switcher (Chapter 6.1.1). Theme toggle lives in the titlebar. -->
 	<div class="no-drag relative border-t border-sidebar-border p-3">
-		<Button
-			variant="ghost"
-			size="icon"
-			class="absolute right-3 top-3 h-7 w-7"
-			onclick={() => toggleMode()}
-			aria-label="Toggle theme"
-		>
-			<IconSun class="hidden dark:block" />
-			<IconMoon class="block dark:hidden" />
-		</Button>
-
 		<button
 			type="button"
 			onclick={() => (menuOpen = !menuOpen)}
-			class="flex w-full items-center gap-2.5 rounded-md p-2 text-left transition-colors hover:bg-accent/60"
+			class={cn(
+				'flex w-full items-center rounded-md p-2 text-left transition-colors hover:bg-accent/60',
+				collapsed ? 'justify-center' : 'gap-2.5',
+			)}
+			aria-label={$_('sidebar.switchProfile')}
+			title={collapsed ? ($activeProfile?.username ?? $_('sidebar.noProfile')) : undefined}
 		>
 			<Avatar>
 				{#if $activeProfile?.avatarUrl}
@@ -113,19 +140,26 @@
 					<AvatarFallback>{$activeProfile ? initials($activeProfile.username) : '??'}</AvatarFallback>
 				{/if}
 			</Avatar>
-			<div class="min-w-0 flex-1">
-				<div class="truncate text-sm font-medium">{$activeProfile?.username ?? 'No profile'}</div>
-				<div class="truncate text-[11px] text-muted-foreground">
-					{$daemon.profiles.length} profile{$daemon.profiles.length === 1 ? '' : 's'}
+			{#if !collapsed}
+				<div class="min-w-0 flex-1">
+					<div class="truncate text-sm font-medium">{$activeProfile?.username ?? $_('sidebar.noProfile')}</div>
+					<div class="truncate text-[11px] text-muted-foreground">
+						{$_('sidebar.profileCount', { values: { count: $daemon.profiles.length } })}
+					</div>
 				</div>
-			</div>
-			<IconChevron class="h-4 w-4 text-muted-foreground" />
+				<IconChevron class="h-4 w-4 text-muted-foreground" />
+			{/if}
 		</button>
 
 		{#if menuOpen}
-			<div class="absolute inset-x-3 bottom-16 z-20 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-lg">
+			<div
+				class={cn(
+					'absolute bottom-16 z-20 overflow-hidden rounded-md border border-border bg-popover p-1 shadow-lg',
+					collapsed ? 'left-3 w-56' : 'inset-x-3',
+				)}
+			>
 				<div class="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-					Switch profile
+					{$_('sidebar.switchProfile')}
 				</div>
 				{#each $daemon.profiles as p (p.username)}
 					<button
@@ -133,6 +167,7 @@
 						onclick={() => {
 							actions.selectProfile(p.username);
 							menuOpen = false;
+							goto(`/profiles/${encodeURIComponent(p.username)}${location.hash}`);
 						}}
 						class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent {p.username ===
 						$daemon.defaultProfile
@@ -149,13 +184,16 @@
 					</button>
 				{/each}
 				<Separator class="my-1" />
-				<a
-					href="/add-profile"
-					onclick={() => (menuOpen = false)}
-					class="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent"
+				<button
+					type="button"
+					onclick={() => {
+						menuOpen = false;
+						openAddProfile();
+					}}
+					class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent"
 				>
-					<IconPlus class="h-3.5 w-3.5" /> Add profile…
-				</a>
+					<IconPlus class="h-3.5 w-3.5" /> {$_('sidebar.addProfile')}
+				</button>
 			</div>
 		{/if}
 	</div>

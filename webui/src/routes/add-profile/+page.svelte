@@ -1,127 +1,75 @@
 <script lang="ts">
 	/**
-	 * Add Profile — automated token apply with graceful fallback (Chapter 8.1).
-	 * The password is sent to the daemon which burns it after the NPM exchange.
-	 * If NPM silently rejects (rate-limit/captcha) we surface a manual-paste box.
-	 */
-	import { Button } from '$lib/components/ui/button/index.js';
-	import { Input } from '$lib/components/ui/input/index.js';
-	import { Label } from '$lib/components/ui/label/index.js';
-	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui/card/index.js';
-	import { errorToMessage } from '$lib/error-projection.js';
-	import { parseTokenApplyResponse } from '$lib/rest-response.js';
-	import { daemon, readWebToken } from '$lib/store.js';
+	 * First-profile onboarding route. This page is the SOLE entrypoint when the
+	 * daemon has no profiles: +layout.svelte force-redirects here, and there is
+	 * nothing else to show (no events, no profiles to manage).
+	 *
+	 * No nested card: the WINDOW itself is the card. The layout's onboarding
+	 * branch paints the translucent root background (native blur shows through)
+	 * and renders this page edge-to-edge in <main>. The form's own header
+	 * (avatar + "Add profile" + description) is the sole title. On success the
+	 * new profile is pushed over the WS and we route home. Also reachable
+	 * directly (bookmark / deep link).
+ */
 	import { goto } from '$app/navigation';
-	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
-	import IconAlert from '@lucide/svelte/icons/triangle-alert';
+	import AddProfileForm from '$lib/components/add-profile-form.svelte';
+	import { daemon } from '$lib/store.js';
+	import { ADD_PROFILE_WINDOW_SIZE, resizeWindow } from '$lib/window-size.js';
+	import { onMount } from 'svelte';
+	import { _ } from 'svelte-i18n';
 
-	let username = $state('');
-	let password = $state('');
-	let totpSecret = $state('');
-	let registry = $state('https://registry.npmjs.org/');
-	let manualToken = $state('');
-	let busy = $state(false);
-	let error = $state<string | null>(null);
-	let needsManual = $state(false);
+	let contentEl = $state<HTMLDivElement | null>(null);
 
-	async function submit(): Promise<void> {
-		busy = true;
-		error = null;
-		needsManual = false;
-		try {
-			const res = await fetch('/api/add-profile', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
-				body: JSON.stringify({ username, password, totpSecret, registry, manualToken: manualToken || undefined }),
-			});
-			const json = parseTokenApplyResponse(await res.json());
-			if (!json) {
-				error = 'Invalid daemon response.';
-				return;
-			}
-			if (json.ok) {
-				totpSecret = '';
-				manualToken = '';
-				goto('/');
-				return;
-			}
-			if (json.needsManualToken) {
-				needsManual = true;
-				error = json.error ?? 'NPM refused the silent token apply.';
-			} else {
-				error = json.error ?? 'Failed to add profile.';
-			}
-		} catch (err) {
-			error = errorToMessage(err);
-		} finally {
-			busy = false;
-			// Best-effort: clear the password fields from the DOM (burn-after-read is
-			// enforced server-side; here we just avoid lingering in the input).
-			password = '';
-		}
+	function onSuccess(): void {
+		// The new profile arrives over the WS; go home (replace so back doesn't
+		// bounce to this onboarding page).
+		goto('/', { replaceState: true });
 	}
+
+	function measuredWindowSize(target: HTMLElement): { width: number; height: number } {
+		const rect = target.getBoundingClientRect();
+		const titlebar = document.querySelector<HTMLElement>('[data-window-titlebar]');
+		const titlebarHeight = titlebar?.getBoundingClientRect().height ?? 0;
+		return {
+			width: Math.max(ADD_PROFILE_WINDOW_SIZE.width, Math.ceil(rect.width)),
+			height: Math.max(ADD_PROFILE_WINDOW_SIZE.height, Math.ceil(rect.height + titlebarHeight)),
+		};
+	}
+
+	function resizeToContent(): void {
+		if (!contentEl) {
+			void resizeWindow(ADD_PROFILE_WINDOW_SIZE);
+			return;
+		}
+		void resizeWindow(measuredWindowSize(contentEl));
+	}
+
+	$effect(() => {
+		const connected = $daemon.connected;
+		void connected;
+		if (!connected) return;
+		resizeToContent();
+	});
+
+	onMount(() => {
+		if (!contentEl) {
+			void resizeWindow(ADD_PROFILE_WINDOW_SIZE);
+			return;
+		}
+		resizeToContent();
+		const observer = new ResizeObserver(resizeToContent);
+		observer.observe(contentEl);
+		return () => observer.disconnect();
+	});
 </script>
 
-<svelte:head><title>Add Profile · pnpm-pub</title></svelte:head>
+<svelte:head><title>{$_('addProfile.title')}</title></svelte:head>
 
-<div class="mx-auto flex max-w-md flex-col gap-5 p-6">
-	<a href="/" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-		<IconArrowLeft class="h-3.5 w-3.5" /> Back to Events
-	</a>
-
-	<header>
-		<h1 class="text-lg font-semibold tracking-tight">Add Profile</h1>
-		<p class="text-xs text-muted-foreground">
-			We exchange your password for a long-lived token and burn the password immediately (Chapter 8.1).
-		</p>
-	</header>
-
-	<Card>
-		<CardHeader>
-			<CardTitle>NPM credentials</CardTitle>
-			<CardDescription>The password never touches disk — only the resulting token is stored in your keychain.</CardDescription>
-		</CardHeader>
-		<CardContent class="space-y-3">
-			<div class="space-y-1.5">
-				<Label for="u">Username</Label>
-				<Input id="u" bind:value={username} placeholder="john_doe" autocomplete="username" />
-			</div>
-			<div class="space-y-1.5">
-				<Label for="p">Password</Label>
-				<Input id="p" type="password" bind:value={password} placeholder="••••••••" autocomplete="current-password" />
-			</div>
-			<div class="space-y-1.5">
-				<Label for="t">TOTP secret (base32)</Label>
-				<Input id="t" bind:value={totpSecret} placeholder="JBSWY3DPEHPK3PXP" />
-			</div>
-			<div class="space-y-1.5">
-				<Label for="r">Registry</Label>
-				<Input id="r" bind:value={registry} />
-			</div>
-
-			{#if needsManual}
-				<div class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
-					<IconAlert class="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
-					<div>
-						NPM refused the silent token apply ({error}). Paste a token generated from
-						<a class="underline" target="_blank" rel="noreferrer" href="https://www.npmjs.com/settings/~/tokens">npmjs.com</a>:
-					</div>
-				</div>
-				<div class="space-y-1.5">
-					<Label for="m">Manual token (fallback)</Label>
-					<Input id="m" bind:value={manualToken} placeholder="npm_..." />
-				</div>
-			{/if}
-
-			{#if error && !needsManual}
-				<div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-					{error}
-				</div>
-			{/if}
-
-			<Button variant="brand" class="w-full" disabled={busy || !username || (!password && !manualToken) || !totpSecret} onclick={submit}>
-				{busy ? 'Applying…' : 'Apply & save'}
-			</Button>
-		</CardContent>
-	</Card>
+<!--
+	The window IS the card: no nested <Card>. This single child is measured by a
+	ResizeObserver; its size plus the titlebar height defines the host window
+	size, with ADD_PROFILE_WINDOW_SIZE as the fallback minimum.
+-->
+<div bind:this={contentEl} class="mx-auto w-full max-w-md p-6">
+	<AddProfileForm {onSuccess} />
 </div>

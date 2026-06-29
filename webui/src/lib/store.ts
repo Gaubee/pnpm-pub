@@ -40,6 +40,11 @@ function derivePort(): string {
 export interface DaemonState {
 	connected: boolean;
 	authed: boolean;
+	/**
+	 * True after the daemon has sent the authoritative profiles frame. Transport
+	 * connection is only a projection; route gates must wait for this source.
+	 */
+	profilesLoaded: boolean;
 	profiles: Profile[];
 	defaultProfile: string;
 	workspaces: WorkspaceEntry[];
@@ -55,6 +60,7 @@ function createState(): DaemonState {
 	return {
 		connected: false,
 		authed: false,
+		profilesLoaded: false,
 		profiles: [],
 		defaultProfile: '',
 		workspaces: [],
@@ -67,6 +73,25 @@ function createState(): DaemonState {
 }
 
 export const daemon = writable<DaemonState>(createState());
+
+/**
+ * Ephemeral UI state — NOT protocol data. Drives the global Add Profile dialog
+ * (used when at least one profile exists and the user adds another). When there
+ * are NO profiles, the app forces the dedicated `/add-profile` route instead.
+ */
+export const ui = writable<{ addProfileOpen: boolean }>({ addProfileOpen: false });
+
+export function openAddProfile(): void {
+	ui.set({ addProfileOpen: true });
+}
+
+export function closeAddProfile(force = false): void {
+	if (!force) {
+		const { profiles } = get(daemon);
+		if (profiles.length === 0) return;
+	}
+	ui.set({ addProfileOpen: false });
+}
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -86,7 +111,10 @@ export function connect(): void {
 	const token = readWebToken();
 	const port = derivePort();
 	const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-	const url = `${proto}://${window.location.hostname}:${port}/?token=${encodeURIComponent(token)}`;
+	// /ws is a dedicated upgrade path so the vite dev server can proxy it to the
+	// daemon without colliding with the SPA's root route. The daemon validates by
+	// ?token= query, not path, so it accepts /ws unchanged.
+	const url = `${proto}://${window.location.hostname}:${port}/ws?token=${encodeURIComponent(token)}`;
 	try {
 		socket = new WebSocket(url);
 	} catch {
@@ -131,7 +159,12 @@ function handleServerMessage(msg: WsServerMessage): void {
 			// daemon requires auth; we already sent it on open.
 			break;
 		case 'profiles':
-			daemon.update((s) => ({ ...s, profiles: msg.profiles, defaultProfile: msg.default }));
+			daemon.update((s) => ({
+				...s,
+				profilesLoaded: true,
+				profiles: msg.profiles,
+				defaultProfile: msg.default,
+			}));
 			break;
 		case 'workspaces':
 			daemon.update((s) => ({ ...s, workspaces: msg.workspaces }));
@@ -186,6 +219,15 @@ export const actions = {
 			}));
 			send({ type: 'select-profile', username });
 		},
+	async deleteProfile(username: string): Promise<boolean> {
+		const res = await fetch('/api/profiles', {
+			method: 'DELETE',
+			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			body: JSON.stringify({ username }),
+		});
+		const json = parseOkResponse(await res.json());
+		return json?.ok ?? false;
+	},
 	confirm(id: string): void {
 		send({ type: 'confirm-event', id });
 	},
