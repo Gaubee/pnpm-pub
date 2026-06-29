@@ -53,7 +53,9 @@ export interface OpentrayWindowOverlay {
 /**
  * The page-facing native window bridge. `startAppRegionDrag()` hands a
  * pointerdown to the native window manager (overlay chrome drag); `overlay`
- * exposes titlebar geometry so the page can reserve space for OS controls.
+ * exposes titlebar geometry so the page can reserve space for OS controls;
+ * `resizeTo()` lets the page set the OS window size at runtime (used to give
+ * each route its preferred default geometry).
  */
 export interface OpentrayWindowBridge {
 	readonly overlay?: OpentrayWindowOverlay;
@@ -63,6 +65,8 @@ export interface OpentrayWindowBridge {
 		pointerId?: number;
 	}): Promise<{ active: boolean }>;
 	stopAppRegionDrag?(): Promise<{ active: boolean }>;
+	/** Resize the OS window (logical CSS pixels). No-op when not in a host. */
+	resizeTo?(width: number, height: number): Promise<{ width: number; height: number }>;
 }
 
 declare global {
