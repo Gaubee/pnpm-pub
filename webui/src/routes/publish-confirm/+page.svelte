@@ -11,6 +11,7 @@
 	import EventCard from '$lib/components/event-card.svelte';
 	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
+	import { _ } from 'svelte-i18n';
 
 	// If nothing is pending, this page has nothing to confirm → back to Events.
 	$effect(() => {
@@ -18,20 +19,18 @@
 	});
 </script>
 
-<svelte:head><title>Confirm Publish · pnpm-pub</title></svelte:head>
+<svelte:head><title>{$_('publishConfirm.title')}</title></svelte:head>
 
 <div class="mx-auto flex max-w-2xl flex-col gap-5 p-6">
 	<header>
-		<a href="/" class="text-xs text-muted-foreground hover:text-foreground">← Back to Events</a>
-		<h1 class="mt-2 text-lg font-semibold tracking-tight">Confirm Publish</h1>
-		<p class="text-xs text-muted-foreground">
-			A publish request is waiting for your approval. Review the diff and confirm or reject.
-		</p>
+		<a href="/" class="text-xs text-muted-foreground hover:text-foreground">{$_('publishConfirm.back')}</a>
+		<h1 class="mt-2 text-lg font-semibold tracking-tight">{$_('publishConfirm.heading')}</h1>
+		<p class="text-xs text-muted-foreground">{$_('publishConfirm.intro')}</p>
 	</header>
 
 	{#if $pendingEvents.length === 0}
 		<div class="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-			No pending publishes. Redirecting…
+			{$_('publishConfirm.empty')}
 		</div>
 	{:else}
 		{#each $pendingEvents as event (event.id)}

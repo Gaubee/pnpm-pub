@@ -14,6 +14,7 @@
 	import IconPackage from '@lucide/svelte/icons/package';
 	import IconShield from '@lucide/svelte/icons/shield-check';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
+	import { _ } from 'svelte-i18n';
 
 	let showActions = $state(false);
 	let placeholderName = $state('');
@@ -42,17 +43,17 @@
 	}
 </script>
 
-<svelte:head><title>Events · pnpm-pub</title></svelte:head>
+<svelte:head><title>{$_('events.title')}</title></svelte:head>
 
 <div class="mx-auto flex max-w-2xl flex-col gap-5 p-6">
 	<header class="flex items-center justify-between">
 		<div>
-			<h1 class="text-lg font-semibold tracking-tight">Events</h1>
-			<p class="text-xs text-muted-foreground">Approve publish requests and review history.</p>
+			<h1 class="text-lg font-semibold tracking-tight">{$_('events.heading')}</h1>
+			<p class="text-xs text-muted-foreground">{$_('events.intro')}</p>
 		</div>
 		<div class="relative">
 			<Button variant="outline" size="sm" onclick={() => (showActions = !showActions)}>
-				<IconPlus class="h-3.5 w-3.5" /> New Action
+				<IconPlus class="h-3.5 w-3.5" /> {$_('events.newAction')}
 			</Button>
 			{#if showActions}
 				<div
@@ -61,17 +62,17 @@
 				>
 					<div class="space-y-3">
 						<div class="space-y-1.5">
-							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconPackage class="h-3.5 w-3.5" /> Placeholder</div>
-							<Input bind:value={placeholderName} placeholder="reserved-name" onkeydown={(e) => e.key === 'Enter' && createPlaceholder()} />
-							<Button variant="outline" size="sm" class="w-full" onclick={createPlaceholder}>Create placeholder</Button>
+							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconPackage class="h-3.5 w-3.5" /> {$_('events.placeholder')}</div>
+							<Input bind:value={placeholderName} placeholder={$_('events.placeholderName')} onkeydown={(e) => e.key === 'Enter' && createPlaceholder()} />
+							<Button variant="outline" size="sm" class="w-full" onclick={createPlaceholder}>{$_('events.createPlaceholder')}</Button>
 						</div>
 						<div class="space-y-1.5 border-t border-border pt-3">
-							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> Trusted Publish</div>
-							<Label class="sr-only" for="oidc-name">Package name</Label>
-							<Input id="oidc-name" bind:value={oidcName} placeholder="@scope/pkg" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Input bind:value={oidcRepo} placeholder="owner/repo" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Input bind:value={oidcPath} placeholder="/path/to/package" onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Button variant="brand" size="sm" class="w-full" onclick={createOidc}>Configure Trusted Publish</Button>
+							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>
+							<Label class="sr-only" for="oidc-name">{$_('events.packageName')}</Label>
+							<Input id="oidc-name" bind:value={oidcName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Input bind:value={oidcRepo} placeholder={$_('events.repositoryPlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Input bind:value={oidcPath} placeholder={$_('events.packagePathPlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
+							<Button variant="brand" size="sm" class="w-full" onclick={createOidc}>{$_('events.configureTrustedPublish')}</Button>
 						</div>
 						<div class="space-y-1.5 border-t border-border pt-3">
 							<Button
@@ -85,10 +86,10 @@
 									showActions = false;
 								}}
 							>
-								<IconRefresh class="h-3.5 w-3.5" /> Force-refresh token
+								<IconRefresh class="h-3.5 w-3.5" /> {$_('events.forceRefreshToken')}
 							</Button>
 							<Button variant="ghost" size="sm" class="w-full justify-start px-0 text-muted-foreground hover:bg-transparent" onclick={() => (showActions = false)}>
-								Close
+								{$_('common.close')}
 							</Button>
 						</div>
 					</div>
@@ -99,7 +100,7 @@
 
 	{#if $pendingEvents.length > 0}
 		<section class="space-y-2.5">
-			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pending</h2>
+			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
 			{#each $pendingEvents as event (event.id)}
 				<EventCard {event} />
 			{/each}
@@ -107,12 +108,12 @@
 	{/if}
 
 	<section class="space-y-2.5">
-		<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">History</h2>
+		<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.history')}</h2>
 		{#if $historyEvents.length === 0 && $pendingEvents.length === 0}
 			<div class="rounded-xl border border-dashed border-border p-10 text-center">
-				<p class="text-sm text-muted-foreground">No events yet.</p>
+				<p class="text-sm text-muted-foreground">{$_('events.noEvents')}</p>
 				<p class="mt-1 text-xs text-muted-foreground/70">
-					Run <code class="rounded bg-muted px-1 py-0.5 font-mono">pnpm-pub publish</code> in a project to trigger one.
+					{$_('events.runPublishHint', { values: { command: 'pnpm-pub publish' } })}
 				</p>
 			</div>
 		{:else}

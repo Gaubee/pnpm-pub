@@ -18,6 +18,7 @@
 	import IconClock from '@lucide/svelte/icons/clock';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconX from '@lucide/svelte/icons/x';
+	import { _ } from 'svelte-i18n';
 
 	let { event }: { event: PubEvent } = $props();
 
@@ -43,6 +44,11 @@
 	const IconCmp = $derived(iconFor(event.kind));
 
 	const statusVariant = $derived(STATUS_VARIANTS[event.status]);
+	const statusLabel = $derived(
+		event.status === 'action-required'
+			? $_('eventCard.status.actionRequired')
+			: $_(`eventCard.status.${event.status}`),
+	);
 
 	const isPending = $derived(event.status === 'pending');
 	const isExpired = $derived(event.status === 'expired');
@@ -63,8 +69,8 @@
 			name,
 			version: '0.0.0',
 			previousVersion: undefined,
-			description: 'Generated placeholder package',
-			path: '(generated)',
+			description: $_('eventCard.generatedPlaceholder'),
+			path: $_('eventCard.generated'),
 		};
 	}
 
@@ -93,13 +99,13 @@
 					</span>
 					<Badge variant={statusVariant} class="h-5 capitalize">
 						{#if isPending}<IconClock class="mr-1 h-3 w-3" />{/if}
-						{event.status}
+						{statusLabel}
 					</Badge>
 				</div>
 				<div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
 					<IconClock class="h-3 w-3" /> {timeLabel}
 					{#if event.clockDriftRecovered}
-						<span class="ml-1 text-warning">· drift-recovered</span>
+						<span class="ml-1 text-warning">· {$_('eventCard.driftRecovered')}</span>
 					{/if}
 				</div>
 			</div>
@@ -120,7 +126,7 @@
 	<CardContent class="space-y-3">
 		{#if overrideActive}
 			<div class="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground">
-				Command specified identity <strong>{event.profileOverride}</strong> — overriding sidebar selection.
+				{$_('eventCard.override', { values: { profile: event.profileOverride } })}
 			</div>
 		{/if}
 
@@ -134,14 +140,14 @@
 					<span class="text-brand">{publishTarget.target.version}</span>
 				</div>
 				{#if publishTarget.target.repository}
-					<p class="text-[11px] text-muted-foreground">repo <span class="font-mono">{publishTarget.target.repository}</span></p>
+					<p class="text-[11px] text-muted-foreground">{$_('eventCard.repo')} <span class="font-mono">{publishTarget.target.repository}</span></p>
 				{/if}
 				{#if publishTarget.target.description}
 					<p class="text-xs text-muted-foreground">{publishTarget.target.description}</p>
 				{/if}
 		{:else if oidcCtx}
 			<div class="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
-				Configure Trusted Publish (OIDC) for <span class="font-mono">{oidcCtx.name}</span>
+				{$_('eventCard.configureOidc', { values: { name: oidcCtx.name } })} <span class="font-mono">{oidcCtx.name}</span>
 				{#if oidcCtx.repo}· repo <span class="font-mono">{oidcCtx.repo}</span>{/if}
 			</div>
 		{/if}
@@ -156,10 +162,10 @@
 			<div class="flex items-center gap-2 pt-1">
 				<Button variant="brand" size="sm" class="flex-1" onclick={() => actions.confirm(event.id)}>
 					<IconCheck class="h-3.5 w-3.5" />
-					{#if event.kind === 'setup-oidc'}Confirm Setup OIDC{:else if event.kind === 'refresh-token'}Confirm Token Refresh{:else}Confirm Publish{/if}
+					{#if event.kind === 'setup-oidc'}{$_('eventCard.confirmSetupOidc')}{:else if event.kind === 'refresh-token'}{$_('eventCard.confirmTokenRefresh')}{:else}{$_('eventCard.confirmPublish')}{/if}
 				</Button>
 				<Button variant="outline" size="sm" onclick={() => actions.reject(event.id)}>
-					<IconX class="h-3.5 w-3.5" /> Reject
+					<IconX class="h-3.5 w-3.5" /> {$_('eventCard.reject')}
 				</Button>
 			</div>
 		{:else if isExpired || needsAction}
@@ -170,7 +176,7 @@
 				class="w-full"
 				onclick={() => (window.location.href = `/renew?reason=${isExpired ? 'expired' : 'action-required'}`)}
 			>
-				{isExpired ? 'Token expired' : 'Credential input required'} — renew now
+				{isExpired ? $_('eventCard.tokenExpired') : $_('eventCard.credentialRequired')} — {$_('eventCard.renewNow')}
 			</Button>
 		{/if}
 	</CardContent>

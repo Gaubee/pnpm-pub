@@ -1,3 +1,6 @@
+import { get } from 'svelte/store';
+import { _ } from 'svelte-i18n';
+
 export type RenewReason = 'expired' | 'action-required' | 'direct';
 
 export interface RenewProjection {
@@ -9,35 +12,29 @@ export interface RenewProjection {
 	defaultError: string;
 }
 
-const expiredProjection: RenewProjection = {
-	heading: 'Renew Token',
-	intro: 'The current token has expired. Re-apply to continue publishing.',
-	documentTitle: 'Renew Token · pnpm-pub',
-	submitLabel: 'Renew token',
-	busyLabel: 'Renewing…',
-	defaultError: 'Renew failed.',
-};
-
-const credentialProjection: RenewProjection = {
-	heading: 'Re-apply Credentials',
-	intro: 'Re-apply credentials before publishing can continue.',
-	documentTitle: 'Re-apply Credentials · pnpm-pub',
-	submitLabel: 'Re-apply credentials',
-	busyLabel: 'Re-applying…',
-	defaultError: 'Credential re-apply failed.',
-};
-
-const projections: Record<RenewReason, RenewProjection> = {
-	expired: expiredProjection,
-	'action-required': credentialProjection,
-	direct: credentialProjection,
-};
-
 export function toRenewReason(value: string | null): RenewReason {
 	if (value === 'expired' || value === 'action-required') return value;
 	return 'direct';
 }
 
 export function getRenewProjection(reason: RenewReason): RenewProjection {
-	return projections[reason];
+	const t = get(_);
+	if (reason === 'expired') {
+		return {
+			heading: t('renew.expiredHeading'),
+			intro: t('renew.expiredIntro'),
+			documentTitle: t('renew.expiredTitle'),
+			submitLabel: t('renew.expiredSubmit'),
+			busyLabel: t('renew.expiredBusy'),
+			defaultError: t('renew.expiredError'),
+		};
+	}
+	return {
+		heading: t('renew.credentialHeading'),
+		intro: t('renew.credentialIntro'),
+		documentTitle: t('renew.credentialTitle'),
+		submitLabel: t('renew.credentialSubmit'),
+		busyLabel: t('renew.credentialBusy'),
+		defaultError: t('renew.credentialError'),
+	};
 }

@@ -16,6 +16,7 @@
 	import IconShield from '@lucide/svelte/icons/shield-check';
 	import { goto } from '$app/navigation';
 	import type { PublishTarget } from '$lib/types.js';
+	import { _ } from 'svelte-i18n';
 
 	let scanPath = $state('');
 
@@ -51,31 +52,31 @@
 	}
 </script>
 
-<svelte:head><title>Workspaces · pnpm-pub</title></svelte:head>
+<svelte:head><title>{$_('workspaces.title')}</title></svelte:head>
 
 <div class="mx-auto flex max-w-3xl flex-col gap-5 p-6">
 	<header>
-		<h1 class="text-lg font-semibold tracking-tight">Workspaces</h1>
-		<p class="text-xs text-muted-foreground">Scan a project root to list its publishable packages.</p>
+		<h1 class="text-lg font-semibold tracking-tight">{$_('workspaces.heading')}</h1>
+		<p class="text-xs text-muted-foreground">{$_('workspaces.intro')}</p>
 	</header>
 
 	<section class="rounded-xl border border-border bg-card p-4">
-		<Label for="scan" class="mb-1.5 block">Project root path</Label>
+		<Label for="scan" class="mb-1.5 block">{$_('workspaces.projectRoot')}</Label>
 		<div class="flex gap-2">
-			<Input id="scan" bind:value={scanPath} placeholder="/path/to/project" onkeydown={(e) => e.key === 'Enter' && doScan()} />
-			<Button variant="brand" onclick={doScan}><IconScan class="h-4 w-4" /> Scan</Button>
+			<Input id="scan" bind:value={scanPath} placeholder={$_('workspaces.projectRootPlaceholder')} onkeydown={(e) => e.key === 'Enter' && doScan()} />
+			<Button variant="brand" onclick={doScan}><IconScan class="h-4 w-4" /> {$_('workspaces.scan')}</Button>
 		</div>
 		<p class="mt-1.5 text-[11px] text-muted-foreground">
-			A pnpm-workspace.yaml takes priority; otherwise we walk excluding node_modules/.git.
+			{$_('workspaces.scanHint')}
 		</p>
 	</section>
 
 	{#if $daemon.riskyConfirmationToken}
 		<section class="rounded-xl border border-warning/50 bg-warning/10 p-4">
-			<h2 class="text-sm font-semibold text-foreground">Confirm risky directory</h2>
+			<h2 class="text-sm font-semibold text-foreground">{$_('workspaces.confirmRisky')}</h2>
 			<p class="mt-1 text-xs text-muted-foreground">
 				<code class="rounded bg-warning/20 px-1 py-0.5 font-mono text-[11px]">{$daemon.scannedRoot ?? $daemon.riskyConfirmationToken}</code>
-				has no Git or NPM project markers. Adding it may cause the OS to stall. Are you sure?
+				{$_('workspaces.riskyIntro', { values: { path: $daemon.scannedRoot ?? $daemon.riskyConfirmationToken ?? '' } })}
 			</p>
 			<div class="mt-3 flex gap-2">
 				<Button
@@ -83,14 +84,14 @@
 					size="sm"
 					onclick={() => { if ($daemon.riskyConfirmationToken) actions.confirmRiskyWorkspace($daemon.riskyConfirmationToken); }}
 				>
-					Add it anyway
+					{$_('workspaces.addAnyway')}
 				</Button>
 				<Button
 					variant="outline"
 					size="sm"
 					onclick={() => { if ($daemon.riskyConfirmationToken) actions.cancelRiskyWorkspace($daemon.riskyConfirmationToken); }}
 				>
-					Cancel
+					{$_('common.cancel')}
 				</Button>
 			</div>
 		</section>
@@ -98,7 +99,7 @@
 
 	{#if $daemon.workspaces.length > 0}
 		<section class="space-y-2">
-			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Tracked roots</h2>
+			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('workspaces.trackedRoots')}</h2>
 			{#each $daemon.workspaces as ws (ws.path)}
 				<div class="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-sm">
 					<button class="truncate font-mono text-xs hover:underline" onclick={() => { scanPath = ws.path; doScan(); }}>
@@ -109,7 +110,7 @@
 						size="icon"
 						class="h-7 w-7"
 						onclick={() => pin(ws)}
-						aria-label="Toggle pin"
+						aria-label={$_('workspaces.togglePin')}
 					>
 						{#if ws.pinned}<IconPin class="h-3.5 w-3.5 text-brand" />{:else}<IconPinOff class="h-3.5 w-3.5" />{/if}
 					</Button>
@@ -122,14 +123,14 @@
 		<section class="space-y-2">
 			<div class="flex items-center justify-between">
 				<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-					Packages in <span class="font-mono">{scannedRoot.split('/').pop()}</span>
+					{$_('workspaces.packagesIn', { values: { name: scannedRoot.split('/').pop() ?? scannedRoot } })} <span class="font-mono">{scannedRoot.split('/').pop()}</span>
 				</h2>
-				<Badge variant="secondary">{scanned.length} package{scanned.length === 1 ? '' : 's'}</Badge>
+				<Badge variant="secondary">{$_('workspaces.packageCount', { values: { count: scanned.length } })}</Badge>
 			</div>
 
 			{#if scanned.length === 0}
 				<div class="rounded-md border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
-					No publishable packages for the active profile.
+					{$_('workspaces.noPackages')}
 				</div>
 			{:else}
 				{#each scanned as pkg (pkg.path)}
@@ -157,13 +158,13 @@
 										goto('/');
 									}}
 								>
-									<IconPublish class="h-3.5 w-3.5" /> Publish
+								<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
 								</Button>
 								<Button
 									variant="outline"
 									size="sm"
 									disabled={!pkg.repository}
-									title={pkg.repository ? 'Configure Trusted Publish' : 'Package repository metadata is required'}
+									title={pkg.repository ? $_('workspaces.configureTrustedPublish') : $_('workspaces.repositoryRequired')}
 									onclick={() => {
 										const payload = oidcPayload(pkg);
 										if (payload) {
@@ -172,7 +173,7 @@
 										}
 									}}
 								>
-									<IconShield class="h-3.5 w-3.5" /> OIDC
+									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.oidc')}
 								</Button>
 							</div>
 						</div>

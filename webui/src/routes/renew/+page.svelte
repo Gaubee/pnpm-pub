@@ -1,8 +1,9 @@
 <script lang="ts">
 	/**
 	 * Renew — surfaced when an event resolves as `expired` or `action-required`.
-	 * Reuses the onboarding flow: provide NPM password to silently re-apply a
-	 * token (read-after-burn). Falls back to manual paste like add-profile.
+	 * Reuses the onboarding flow: provide NPM password to mint a fresh token,
+	 * while the daemon keeps the credential pair in keychain for later renewal.
+	 * Falls back to manual paste like add-profile.
 	 */
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -15,6 +16,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import { _ } from 'svelte-i18n';
 
 	let password = $state('');
 	let manualToken = $state('');
@@ -45,7 +47,7 @@
 			});
 			const json = parseTokenApplyResponse(await res.json());
 			if (!json) {
-				error = 'Invalid daemon response.';
+				error = $_('renew.invalidDaemon');
 				return;
 			}
 			if (json.ok) {
@@ -56,7 +58,7 @@
 			}
 			if (json.needsManualToken) {
 				needsManual = true;
-				error = json.error ?? 'NPM refused the silent token apply.';
+				error = json.error ?? $_('renew.silentRefused');
 			} else {
 				error = json.error ?? projection.defaultError;
 			}
@@ -73,7 +75,7 @@
 
 <div class="mx-auto flex max-w-md flex-col gap-5 p-6">
 	<a href="/" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-		<IconArrowLeft class="h-3.5 w-3.5" /> Back
+	<IconArrowLeft class="h-3.5 w-3.5" /> {$_('common.back')}
 	</a>
 	<header>
 		<h1 class="text-lg font-semibold tracking-tight">{projection.heading}</h1>
@@ -81,28 +83,28 @@
 	</header>
 	<Card>
 		<CardHeader>
-			<CardTitle>Re-apply credentials</CardTitle>
-			<CardDescription>Provide your NPM password to silently mint a fresh token.</CardDescription>
+			<CardTitle>{$_('renew.cardTitle')}</CardTitle>
+			<CardDescription>{$_('renew.cardIntro')}</CardDescription>
 		</CardHeader>
 		<CardContent class="space-y-3">
 			<div class="space-y-1.5">
-				<Label for="u">Username</Label>
-				<Input id="u" bind:value={username} placeholder="john_doe" />
+		<Label for="u">{$_('renew.username')}</Label>
+		<Input id="u" bind:value={username} placeholder={$_('addProfile.usernamePlaceholder')} />
 			</div>
 			{#if !needsManual}
 				<div class="space-y-1.5">
-					<Label for="p">Password</Label>
-					<Input id="p" type="password" bind:value={password} />
+					<Label for="p">{$_('renew.password')}</Label>
+				<Input id="p" type="password" bind:value={password} />
 				</div>
 			{:else}
 				<div class="space-y-1.5">
-					<Label for="m">Manual token (fallback)</Label>
-					<Input id="m" bind:value={manualToken} placeholder="npm_..." />
+					<Label for="m">{$_('renew.manualToken')}</Label>
+					<Input id="m" bind:value={manualToken} placeholder={$_('renew.manualTokenPlaceholder')} />
 				</div>
 			{/if}
 			<div class="space-y-1.5">
-				<Label for="t">TOTP secret (if missing from keychain)</Label>
-				<Input id="t" bind:value={totpSecret} placeholder="JBSWY3DPEHPK3PXP" />
+				<Label for="t">{$_('renew.totpSecret')}</Label>
+				<Input id="t" bind:value={totpSecret} placeholder={$_('renew.totpPlaceholder')} />
 				</div>
 				{#if error}<p class="text-xs text-destructive">{error}</p>{/if}
 				<Button

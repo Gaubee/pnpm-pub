@@ -20,6 +20,17 @@ export interface OkResponse {
 	ok: boolean;
 }
 
+export interface NpmProfileLookupResponse {
+	ok: boolean;
+	profile?: {
+		username: string;
+		registry: string;
+		avatarUrl: string | null;
+		source: 'authenticated-profile' | 'registry-profile' | 'maintainer-gravatar' | 'none';
+	};
+	error?: string;
+}
+
 export function parseTokenApplyResponse(value: unknown): TokenApplyResponse | null {
 	if (!isRecord(value) || typeof value.ok !== 'boolean') return null;
 	if (!isOptionalBoolean(value.needsManualToken) || !isOptionalString(value.error)) return null;
@@ -54,8 +65,40 @@ export function parseOkResponse(value: unknown): OkResponse | null {
 	return { ok: value.ok };
 }
 
+export function parseNpmProfileLookupResponse(value: unknown): NpmProfileLookupResponse | null {
+	if (!isRecord(value) || typeof value.ok !== 'boolean' || !isOptionalString(value.error)) return null;
+	if (value.profile === undefined) return { ok: value.ok, error: value.error };
+	if (!isRecord(value.profile)) return null;
+	const source = value.profile.source;
+	if (
+		typeof value.profile.username !== 'string' ||
+		typeof value.profile.registry !== 'string' ||
+		!isOptionalNullableString(value.profile.avatarUrl) ||
+		(source !== 'authenticated-profile' &&
+			source !== 'registry-profile' &&
+			source !== 'maintainer-gravatar' &&
+			source !== 'none')
+	) {
+		return null;
+	}
+	return {
+		ok: value.ok,
+		profile: {
+			username: value.profile.username,
+			registry: value.profile.registry,
+			avatarUrl: value.profile.avatarUrl ?? null,
+			source,
+		},
+		error: value.error,
+	};
+}
+
 function isOptionalStringArray(value: unknown): value is string[] | undefined {
 	return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
+}
+
+function isOptionalNullableString(value: unknown): value is string | null | undefined {
+	return value === undefined || value === null || typeof value === 'string';
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
