@@ -777,14 +777,15 @@ function parseAddProfileBody(body: JsonObject): {
 
 function parseRenewProfileBody(body: JsonObject): {
   username: string;
-  password: string;
+  password?: string;
   registry?: string;
   manualToken?: string;
   totpSecret?: string;
 } {
   return {
     username: readString(body, 'username'),
-    password: readString(body, 'password'),
+    // password is OPTIONAL — when omitted, renewProfile uses the stored npm_pwd.
+    password: readOptionalString(body, 'password'),
     registry: readOptionalString(body, 'registry'),
     manualToken: readOptionalString(body, 'manualToken'),
     totpSecret: readOptionalString(body, 'totpSecret'),
