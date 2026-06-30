@@ -122,7 +122,7 @@ describe('publishPackage dist-tag document', () => {
     let capturedBody: string | null = null;
     fetchSpy.mockImplementation(async (_input, init) => {
       if (typeof init?.body === 'string') capturedBody = init.body;
-      return new Response(JSON.stringify({ ok: true }), {
+      return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -153,7 +153,7 @@ describe('publishPackage dist-tag document', () => {
     let capturedBody: string | null = null;
     fetchSpy.mockImplementation(async (_input, init) => {
       if (typeof init?.body === 'string') capturedBody = init.body;
-      return new Response(JSON.stringify({ ok: true }), {
+      return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
@@ -184,7 +184,7 @@ describe('publishPackage dist-tag document', () => {
     let capturedOtp: string | null = null;
     fetchSpy.mockImplementation(async (_input, init) => {
       capturedOtp = new Headers(init?.headers).get('npm-otp');
-      return new Response(JSON.stringify({ ok: true }), {
+      return new Response(JSON.stringify({ success: true }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });

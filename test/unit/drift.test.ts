@@ -36,7 +36,7 @@ beforeAll(async () => {
           attempts[n - 1]!.status = 403;
         } else {
           res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ success: true }));
           attempts[n - 1]!.status = 200;
         }
       } else {
