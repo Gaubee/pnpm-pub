@@ -20,6 +20,7 @@ import {
   type EventPayload,
 } from '../shared/index.js';
 import { profilesPath, workspacesPath, ensureAppDirs } from '../shared/paths.js';
+import { PnpmPubConfigSchema, WorkspacesConfigSchema } from '../shared/schemas.js';
 
 const DEFAULT_CONFIG: PnpmPubConfig = { default: '', profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
@@ -258,66 +259,34 @@ export class DaemonStore extends EventEmitter {
   }
 }
 
-function parsePnpmPubConfig(value: unknown): PnpmPubConfig | null {
-  if (!isRecord(value) || typeof value.default !== 'string' || !Array.isArray(value.profiles)) return null;
-  const profiles: Profile[] = [];
-  const usernames = new Set<string>();
-  for (const profile of value.profiles) {
-    const parsed = parseProfile(profile);
-    if (!parsed) return null;
-    if (usernames.has(parsed.username)) return null;
-    usernames.add(parsed.username);
-    profiles.push(parsed);
-  }
-  const defaultProfile = profiles.some((profile) => profile.username === value.default)
-    ? value.default
-    : (profiles[0]?.username ?? '');
-  return { default: defaultProfile, profiles };
-}
+// ---------------------------------------------------------------------------
+// Zod-backed config-file parsers (replaces all hand-written validators)
+// ---------------------------------------------------------------------------
 
-function parseProfile(value: unknown): Profile | null {
-  if (!isRecord(value) || typeof value.username !== 'string' || value.username.length === 0) return null;
-  if (!isOptionalString(value.registry) || !isOptionalString(value.avatarUrl)) return null;
-  if (value.ciPreferences !== undefined && !isRecord(value.ciPreferences)) return null;
-  const authStatus =
-    value.authStatus === 'authenticated' || value.authStatus === 'unauthenticated'
-      ? value.authStatus
-      : undefined;
-  return {
-    username: value.username,
-    registry: value.registry,
-    avatarUrl: value.avatarUrl,
-    ciPreferences: value.ciPreferences,
-    authStatus,
-  };
+function parsePnpmPubConfig(value: unknown): PnpmPubConfig | null {
+  const result = PnpmPubConfigSchema.safeParse(value);
+  if (!result.success) return null;
+  // Dedup usernames + validate default points to an existing profile.
+  const usernames = new Set<string>();
+  for (const p of result.data.profiles) {
+    if (usernames.has(p.username)) return null;
+    usernames.add(p.username);
+  }
+  const defaultProfile = result.data.profiles.some((p) => p.username === result.data.default)
+    ? result.data.default
+    : (result.data.profiles[0]?.username ?? '');
+  return { default: defaultProfile, profiles: result.data.profiles };
 }
 
 function parseWorkspacesConfig(value: unknown): WorkspacesConfig | null {
-  if (!isRecord(value) || !Array.isArray(value.paths)) return null;
-  const paths: WorkspaceEntry[] = [];
+  const result = WorkspacesConfigSchema.safeParse(value);
+  if (!result.success) return null;
+  // Dedup root paths.
   const roots = new Set<string>();
-  for (const entry of value.paths) {
-    const parsed = parseWorkspaceEntry(entry);
-    if (!parsed) return null;
-    if (roots.has(parsed.path)) return null;
-    roots.add(parsed.path);
-    paths.push(parsed);
+  for (const entry of result.data.paths) {
+    if (!path.isAbsolute(entry.path)) return null;
+    if (roots.has(entry.path)) return null;
+    roots.add(entry.path);
   }
-  return { paths };
-}
-
-function parseWorkspaceEntry(value: unknown): WorkspaceEntry | null {
-  if (!isRecord(value)) return null;
-  if (typeof value.path !== 'string' || value.path.length === 0 || !path.isAbsolute(value.path)) return null;
-  if (typeof value.pinned !== 'boolean') return null;
-  if (typeof value.addedAt !== 'number' || !Number.isInteger(value.addedAt) || value.addedAt < 0) return null;
-  return { path: value.path, pinned: value.pinned, addedAt: value.addedAt };
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return { paths: result.data.paths };
 }
