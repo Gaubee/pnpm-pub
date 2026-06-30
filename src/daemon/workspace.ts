@@ -234,9 +234,15 @@ function readDependencyNamesFromFields(pkg: Record<string, unknown>, fields: rea
 function normalizeRepository(value: string): string | undefined {
   const cleaned = value.trim().replace(/^git\+/, '');
   if (!cleaned) return undefined;
+  // GitHub: github.com:owner/name or github.com/owner/name
   const githubMatch = cleaned.match(/github\.com[:/](.+?)(?:\.git)?$/i);
-  if (!githubMatch?.[1]) return undefined;
-  return githubMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
+  if (githubMatch?.[1]) return githubMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
+  // GitLab: gitlab.com:group/project or gitlab.com/group/project
+  const gitlabMatch = cleaned.match(/gitlab\.com[:/](.+?)(?:\.git)?$/i);
+  if (gitlabMatch?.[1]) return gitlabMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
+  // Plain owner/name slug (already normalized)
+  if (/^[\w.@-]+\/[\w.@-]+$/.test(cleaned)) return cleaned;
+  return undefined;
 }
 
 /**

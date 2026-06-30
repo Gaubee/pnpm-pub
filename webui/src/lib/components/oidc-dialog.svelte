@@ -37,11 +37,14 @@
 		packageName = '',
 		config = undefined,
 		onChanged = () => {},
+		/** Repository hint from the package's git metadata (e.g. "owner/name" or "gitlab.com/group/proj"). */
+		repositoryHint = '',
 	}: {
 		open?: boolean;
 		packageName?: string;
 		config?: TrustedPublisherConfig | null;
 		onChanged?: () => void;
+		repositoryHint?: string;
 	} = $props();
 
 	type Tab = 'current' | TrustedPublisherType;
@@ -69,24 +72,58 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 
-	// 打开时初始化：已有配置默认选 current tab，否则 github tab。
-	// 已有配置时，表单字段也用 current 值预填（这样切到对应 provider tab 能看到已填的值）。
+	/** Detect provider + repo from repositoryHint (github.com / gitlab.com / plain owner/name). */
+	const inferredProvider = $derived.by((): TrustedPublisherType => {
+		const h = repositoryHint.toLowerCase();
+		if (h.includes('gitlab.com') || h.startsWith('gl:')) return 'gitlab';
+		if (h.includes('github.com') || h.includes('/') && !h.includes('circleci')) return 'github';
+		return 'github'; // default
+	});
+	const inferredRepo = $derived.by((): string => {
+		const h = repositoryHint.trim();
+		if (!h) return '';
+		// github.com:owner/name or github.com/owner/name
+		const ghMatch = h.match(/github\.com[:/](.+?)(?:\.git)?$/i);
+		if (ghMatch?.[1]) return ghMatch[1].replace(/^\/+/, '');
+		// gitlab.com/group/project
+		const glMatch = h.match(/gitlab\.com[:/](.+?)(?:\.git)?$/i);
+		if (glMatch?.[1]) return glMatch[1].replace(/^\/+/, '');
+		// plain owner/name
+		if (/^[\w.-]+\/[\w.-]+$/.test(h)) return h;
+		return h;
+	});
+
+	// 打开时初始化：已有配置默认选 current tab，否则推断 tab。
+	// 表单字段优先用已有配置预填；无配置时用 repositoryHint 推断。
 	$effect(() => {
 		if (!open) return;
 		error = null;
 		busy = false;
-		activeTab = isExisting ? 'current' : 'github';
 		const c = config;
-		repository = c?.type === 'github' ? c.claims.repository : c?.type === 'circleci' ? c.claims.repository : '';
-		workflowFile = c?.type === 'github' ? c.claims.workflow_ref.file : '';
-		context = c?.type === 'circleci' ? c.claims.context ?? '' : '';
-		project = c?.type === 'gitlab' ? c.claims.project : '';
-		ref = c?.type === 'gitlab' ? c.claims.ref ?? '' : '';
-		environment =
-			c?.type === 'github' ? c.claims.environment ?? ''
-			: c?.type === 'circleci' ? c.claims.environment ?? ''
-			: c?.type === 'gitlab' ? c.claims.environment ?? ''
-			: '';
+		if (c) {
+			activeTab = 'current';
+			repository = c.type === 'github' ? c.claims.repository : c.type === 'circleci' ? c.claims.repository : '';
+			workflowFile = c.type === 'github' ? c.claims.workflow_ref.file : '';
+			context = c.type === 'circleci' ? c.claims.context ?? '' : '';
+			project = c.type === 'gitlab' ? c.claims.project : '';
+			ref = c.type === 'gitlab' ? c.claims.ref ?? '' : '';
+			environment = c.claims.environment ?? '';
+		} else {
+			// 无已有配置：根据 repositoryHint 推断 provider + 字段
+			activeTab = inferredProvider;
+			provider = inferredProvider;
+			if (inferredProvider === 'gitlab') {
+				project = inferredRepo;
+				repository = '';
+			} else {
+				repository = inferredRepo;
+				project = '';
+			}
+			workflowFile = '';
+			context = '';
+			ref = '';
+			environment = '';
+		}
 	});
 
 	// 切到 provider tab 时同步 provider 状态
@@ -251,35 +288,35 @@
 				{#if provider === 'github'}
 					<div class="space-y-1.5">
 						<Label for="oidc-repo">{$_('oidc.repository')}</Label>
-						<Input id="oidc-repo" bind:value={repository} placeholder="owner/name" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-repo" bind:value={repository} placeholder="owner/name" disabled={busy} autocomplete="organization" spellcheck="false" />
 					</div>
 					<div class="space-y-1.5">
 						<Label for="oidc-wf">{$_('oidc.workflowFile')}</Label>
-						<Input id="oidc-wf" bind:value={workflowFile} placeholder={$_('oidc.workflowFilePlaceholder')} disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-wf" bind:value={workflowFile} placeholder={$_('oidc.workflowFilePlaceholder')} disabled={busy} autocomplete="on" spellcheck="false" />
 					</div>
 				{:else if provider === 'circleci'}
 					<div class="space-y-1.5">
 						<Label for="oidc-repo">{$_('oidc.repository')}</Label>
-						<Input id="oidc-repo" bind:value={repository} placeholder="owner/name" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-repo" bind:value={repository} placeholder="owner/name" disabled={busy} autocomplete="organization" spellcheck="false" />
 					</div>
 					<div class="space-y-1.5">
 						<Label for="oidc-ctx">{$_('oidc.context')}</Label>
-						<Input id="oidc-ctx" bind:value={context} placeholder="release" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-ctx" bind:value={context} placeholder="release" disabled={busy} autocomplete="on" spellcheck="false" />
 					</div>
 				{:else}
 					<div class="space-y-1.5">
 						<Label for="oidc-proj">{$_('oidc.project')}</Label>
-						<Input id="oidc-proj" bind:value={project} placeholder="group/project" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-proj" bind:value={project} placeholder="group/project" disabled={busy} autocomplete="organization" spellcheck="false" />
 					</div>
 					<div class="space-y-1.5">
 						<Label for="oidc-ref">{$_('oidc.ref')}</Label>
-						<Input id="oidc-ref" bind:value={ref} placeholder="main" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-ref" bind:value={ref} placeholder="main" disabled={busy} autocomplete="on" spellcheck="false" />
 					</div>
 				{/if}
 
 				<div class="space-y-1.5">
 					<Label for="oidc-env">{$_('oidc.environment')} <span class="font-normal text-muted-foreground">({$_('common.optional')})</span></Label>
-					<Input id="oidc-env" bind:value={environment} placeholder="release" disabled={busy} autocomplete="off" spellcheck="false" />
+					<Input id="oidc-env" bind:value={environment} placeholder="release" disabled={busy} autocomplete="on" spellcheck="false" />
 				</div>
 
 				{#if error}

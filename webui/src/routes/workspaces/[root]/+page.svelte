@@ -129,10 +129,12 @@
 	let oidcDialogOpen = $state(false);
 	let oidcDialogPkg = $state('');
 	let oidcDialogConfig = $state<TrustedPublisherConfig | null>(null);
+	let oidcDialogRepoHint = $state('');
 
 	function openOidcDialog(pkg: PublishTarget): void {
 		oidcDialogPkg = pkg.name;
 		oidcDialogConfig = oidcConfigs(pkg.name)[0] ?? null;
+		oidcDialogRepoHint = pkg.repository ?? '';
 		oidcDialogOpen = true;
 	}
 	function onOidcChanged(): void {
@@ -160,8 +162,14 @@
 
 	// --- Batch OIDC dialog ---
 	let batchOidcOpen = $state(false);
+	let batchRepoHint = $state('');
+
+	/** If all selected packages share the same repository, use it as the hint. */
 	function openBatchOidc(): void {
 		if (selected.size === 0) return;
+		const selectedPkgs = scanned.filter((p) => selected.has(p.name));
+		const repos = new Set(selectedPkgs.map((p) => p.repository ?? ''));
+		batchRepoHint = repos.size === 1 ? [...repos][0]! : '';
 		batchOidcOpen = true;
 	}
 
@@ -304,6 +312,7 @@
 	bind:open={oidcDialogOpen}
 	packageName={oidcDialogPkg}
 	config={oidcDialogConfig}
+	repositoryHint={oidcDialogRepoHint}
 	onChanged={onOidcChanged}
 />
 
@@ -312,6 +321,7 @@
 	bind:open={batchOidcOpen}
 	packageName={[...selected][0] ?? ''}
 	config={null}
+	repositoryHint={batchRepoHint}
 	onChanged={() => {
 		// Invalidate all selected packages' cache.
 		const next = { ...oidcState };
