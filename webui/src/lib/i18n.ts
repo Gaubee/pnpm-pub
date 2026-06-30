@@ -231,6 +231,7 @@ const en = {
 		providerGitlab: 'GitLab CI',
 		repository: 'Repository',
 		workflowFile: 'Workflow filename',
+		workflowFilePlaceholder: 'e.g. release.yml',
 		context: 'Context',
 		project: 'Project',
 		ref: 'Ref (branch)',

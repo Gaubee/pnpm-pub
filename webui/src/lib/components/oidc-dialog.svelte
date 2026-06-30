@@ -61,7 +61,7 @@
 	// 表单字段
 	let provider = $state<TrustedPublisherType>('github');
 	let repository = $state('');
-	let workflowFile = $state('publish.yml');
+	let workflowFile = $state('');
 	let context = $state('');
 	let project = $state('');
 	let ref = $state('');
@@ -69,19 +69,24 @@
 	let busy = $state(false);
 	let error = $state<string | null>(null);
 
-	// 打开时初始化：已有配置默认选 current tab，否则 github tab
+	// 打开时初始化：已有配置默认选 current tab，否则 github tab。
+	// 已有配置时，表单字段也用 current 值预填（这样切到对应 provider tab 能看到已填的值）。
 	$effect(() => {
 		if (!open) return;
 		error = null;
 		busy = false;
 		activeTab = isExisting ? 'current' : 'github';
-		provider = 'github';
-		repository = '';
-		workflowFile = 'publish.yml';
-		context = '';
-		project = '';
-		ref = '';
-		environment = '';
+		const c = config;
+		repository = c?.type === 'github' ? c.claims.repository : c?.type === 'circleci' ? c.claims.repository : '';
+		workflowFile = c?.type === 'github' ? c.claims.workflow_ref.file : '';
+		context = c?.type === 'circleci' ? c.claims.context ?? '' : '';
+		project = c?.type === 'gitlab' ? c.claims.project : '';
+		ref = c?.type === 'gitlab' ? c.claims.ref ?? '' : '';
+		environment =
+			c?.type === 'github' ? c.claims.environment ?? ''
+			: c?.type === 'circleci' ? c.claims.environment ?? ''
+			: c?.type === 'gitlab' ? c.claims.environment ?? ''
+			: '';
 	});
 
 	// 切到 provider tab 时同步 provider 状态
@@ -250,7 +255,7 @@
 					</div>
 					<div class="space-y-1.5">
 						<Label for="oidc-wf">{$_('oidc.workflowFile')}</Label>
-						<Input id="oidc-wf" bind:value={workflowFile} placeholder="publish.yml" disabled={busy} autocomplete="off" spellcheck="false" />
+						<Input id="oidc-wf" bind:value={workflowFile} placeholder={$_('oidc.workflowFilePlaceholder')} disabled={busy} autocomplete="off" spellcheck="false" />
 					</div>
 				{:else if provider === 'circleci'}
 					<div class="space-y-1.5">
