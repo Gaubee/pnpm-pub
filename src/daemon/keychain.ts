@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { KEYCHAIN_SERVICE, KEYCHAIN_SERVICE_SANDBOX, tokenKey, totpKey, authKey } from '../shared/index.js';
+import { ProfileSecretsSchema } from '../shared/schemas.js';
 
 // ESM-safe __dirname (tsdown shims __dirname in the bundle, but dev/tsx and
 // vitest run true ESM where it is undefined).
@@ -166,9 +167,7 @@ export interface ProfileSecrets {
 }
 
 function isProfileSecrets(value: unknown): value is ProfileSecrets {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.npm_token === 'string' && typeof v.totp_secret === 'string' && typeof v.npm_pwd === 'string';
+  return ProfileSecretsSchema.safeParse(value).success;
 }
 
 /** Read the merged profile-auth item; null when absent or malformed. */
@@ -178,7 +177,7 @@ export async function getProfileSecrets(username: string): Promise<ProfileSecret
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    return isProfileSecrets(parsed) ? parsed : null;
+    return isProfileSecrets(parsed) ? (parsed as ProfileSecrets) : null;
   } catch {
     return null;
   }
