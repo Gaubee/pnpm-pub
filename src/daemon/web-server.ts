@@ -187,7 +187,7 @@ export class WebServer {
           this.deps.log?.(`[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`);
           const auth = await this.resolveTrustAuth();
           if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
-          const result = await addTrustedPublisher(auth, parsed.package, parsed.config);
+          const result = await addTrustedPublisher(auth, parsed.package, parsed.config as import('safe-npm-sdk').TrustedPublisherConfigCreate);
           this.deps.log?.(`[oidc] POST trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
@@ -802,7 +802,8 @@ const PinWorkspaceBodySchema = z.object({
 
 const OidcTrustPostBodySchema = z.object({
   package: z.string().min(1),
-  config: TrustedPublisherConfigSchema,
+  // POST (create) uses the SDK's create schema (different from GET response).
+  config: z.record(z.string(), z.unknown()),
 });
 
 const OidcTrustDeleteBodySchema = z.object({

@@ -23,6 +23,9 @@ importers:
       otplib:
         specifier: ^12.0.1
         version: 12.0.1
+      safe-npm-sdk:
+        specifier: link:/Users/kzf/Dev/GitHub/api-npm-sdk/packages/safe-npm-sdk
+        version: link:../api-npm-sdk/packages/safe-npm-sdk
       yargs:
         specifier: ^17.7.2
         version: 17.7.3
