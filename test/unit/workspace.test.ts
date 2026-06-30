@@ -12,6 +12,7 @@ import {
   readWorkspacePackages,
   scanWorkspace,
   filterByProfile,
+  isPublishableByProfile,
 } from '../../src/daemon/workspace.js';
 
 describe('findProjectRoot (Chapter 5.3.1)', () => {
@@ -319,5 +320,11 @@ describe('filterByProfile (Chapter 5.3.5)', () => {
   it('matches case-insensitively', () => {
     const out = filterByProfile(pkgs, 'ORG-ADMIN').map((p) => p.name);
     expect(out).toContain('@org-admin/widget');
+  });
+
+  it('Scenario: Given a sibling scoped package, When rendering workspace facts, Then publishability is a projection instead of a discovery filter', () => {
+    const opentrayPackage = { name: '@opentray/ext-webview', version: '1.0.0', path: '/repo/packages/ext-webview' };
+    expect(isPublishableByProfile(opentrayPackage, 'kzf')).toBe(false);
+    expect(isPublishableByProfile(opentrayPackage, 'opentray')).toBe(true);
   });
 });

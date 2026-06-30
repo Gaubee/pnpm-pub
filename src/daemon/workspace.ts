@@ -455,16 +455,13 @@ export function filterByProfile(
   packages: ScannedPackage[],
   username: string,
 ): ScannedPackage[] {
+  return packages.filter((pkg) => isPublishableByProfile(pkg, username));
+}
+
+export function isPublishableByProfile(pkg: ScannedPackage, username: string): boolean {
+  if (pkg.private) return false;
   const scope = username.toLowerCase();
-  const out: ScannedPackage[] = [];
-  for (const pkg of packages) {
-    if (pkg.private) continue;
-    const m = pkg.name.match(/^@([^/]+)\//);
-    if (!m) {
-      out.push(pkg); // unscoped — show it
-      continue;
-    }
-    if (m[1]!.toLowerCase() === scope) out.push(pkg);
-  }
-  return out;
+  const m = pkg.name.match(/^@([^/]+)\//);
+  if (!m) return true;
+  return m[1]!.toLowerCase() === scope;
 }

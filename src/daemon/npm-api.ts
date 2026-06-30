@@ -3,13 +3,14 @@
  *
  * All write operations are funnelled through here so the daemon can keep a
  * single chokepoint for credentials, error parsing, and clock-drift recovery.
- *
- * The client deliberately stays protocol-pure (raw `fetch`) so it can target
- * either the real registry or a local Verdaccio instance (Chapter 10.3).
+ * Login/token creation is delegated to `npm-profile`; publish/OIDC operations
+ * stay on raw registry fetches so Verdaccio and the real registry share the
+ * same wire format.
  */
 import { Buffer } from 'node:buffer';
 import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
 import { burnBuffer } from './totp.js';
+import { loginWithPassword } from './npm-profile-client.js';
 
 export interface RegistryConfig {
   registry: string;
@@ -95,6 +96,30 @@ function errorToMessage(error: unknown): string {
   return bodyToText(error);
 }
 
+function readErrorCode(error: unknown): string | null {
+  if (!isRecord(error)) return null;
+  const code = error.code;
+  return typeof code === 'string' && code.trim().length > 0 ? code.trim() : null;
+}
+
+function readErrorStatus(error: unknown): number | null {
+  if (!isRecord(error)) return null;
+  for (const key of ['statusCode', 'status']) {
+    const status = error[key];
+    if (typeof status === 'number' && Number.isInteger(status)) return status;
+  }
+  const code = readErrorCode(error);
+  if (code?.match(/^E\d{3}$/)) return Number(code.slice(1));
+  return null;
+}
+
+function shouldFallbackToManualToken(error: unknown): boolean {
+  const status = readErrorStatus(error);
+  if (status === 401 || status === 403 || status === 429) return true;
+  const code = readErrorCode(error);
+  return code === 'EOTP' || code === 'EAUTHIP';
+}
+
 const OTP_FAILED_PATTERNS = [
   /otp validation failed/i,
   /one-time pass/i,
@@ -114,8 +139,9 @@ function isOtpFailure(body: unknown, status: number): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Exchange username/password(+otp) for a long-lived automation token by calling
- * the NPM token endpoint directly, bypassing `npm login` (Chapter 8.1).
+ * Exchange username/password(+otp) for the npm auth token returned by
+ * `npm-profile` login (Chapter 8.1). Profile/email/avatar resolution is a
+ * projection layer concern and must not decide whether the token fact exists.
  *
  * The password Buffer is overwritten with zeros after the request is sent.
  *
@@ -127,49 +153,29 @@ export async function applyToken(opts: {
   username: string;
   password: string;
   totpSecret: string;
-}): Promise<{ ok: boolean; token?: string; needsManualToken?: boolean; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  token?: string;
+  needsManualToken?: boolean;
+  error?: string;
+}> {
   const { registry, username, totpSecret } = opts;
   const pwBuf = Buffer.from(opts.password, 'utf8');
-  let bodyBuf: Buffer | null = null;
   try {
     const otp = generateTotp(totpSecret);
-    const url = `${registry.replace(/\/$/, '')}/-/npm/v1/tokens`;
-    bodyBuf = Buffer.from(
-      JSON.stringify({
-        name: username,
-        password: pwBuf.toString('utf8'),
-        otp,
-        readonly: false,
-        cidr_whitelist: [],
-        automation: true,
-      }),
-      'utf8',
-    );
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'npm-auth-type': 'legacy',
-      },
-      body: bodyBuf,
-    });
-    const responseBody = await readRegistryBody(res);
-
-    if (res.ok) {
-      const json = parseTokenResponse(responseBody);
-      if (json.token) return { ok: true, token: json.token };
-    }
-
-    // Fallback path: NPM refused the silent apply (Chapter 8.1 风控降级).
-    if (res.status === 403 || res.status === 401 || res.status === 429) {
-      return { ok: false, needsManualToken: true, error: parseNpmError(responseBody) };
-    }
-    return { ok: false, error: parseNpmError(responseBody) ?? `HTTP ${res.status}` };
+    const password = pwBuf.toString('utf8');
+    const session = await loginWithPassword(username, password, { registry, otp });
+    return {
+      ok: true,
+      token: session.token,
+    };
   } catch (err) {
+    if (shouldFallbackToManualToken(err)) {
+      return { ok: false, needsManualToken: true, error: errorToMessage(err) };
+    }
     return { ok: false, error: errorToMessage(err) };
   } finally {
-    if (bodyBuf) burnBuffer(bodyBuf);
-    burnBuffer(pwBuf); // burn-after-read (Chapter 8.1)
+    burnBuffer(pwBuf); // burn-after-read for the local buffer; npm-profile receives a JS string.
   }
 }
 

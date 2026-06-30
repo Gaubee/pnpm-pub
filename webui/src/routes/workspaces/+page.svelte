@@ -32,6 +32,10 @@
 		return { source: { kind: 'directory', path: pkg.path }, args: [], target: pkg };
 	}
 
+	function canPublish(pkg: PublishTarget): boolean {
+		return pkg.publishable !== false;
+	}
+
 	function oidcPayload(pkg: PublishTarget): { name: string; repo: string; path: string } | null {
 		if (!pkg.repository) return null;
 		return { name: pkg.name, repo: pkg.repository, path: pkg.path };
@@ -153,7 +157,10 @@
 								<Button
 									variant="brand"
 									size="sm"
+									disabled={!canPublish(pkg)}
+									title={canPublish(pkg) ? $_('workspaces.publish') : $_('workspaces.profileScopeMismatch')}
 									onclick={() => {
+										if (!canPublish(pkg)) return;
 										actions.createEvent('publish', publishPayload(pkg));
 										goto('/');
 									}}

@@ -128,7 +128,8 @@ function isPublishTarget(value: unknown): value is PublishTarget {
 		isOptionalString(value.previousVersion) &&
 		isOptionalString(value.description) &&
 		isOptionalString(value.repository) &&
-		isOptionalPublishConfig(value.publishConfig)
+		isOptionalPublishConfig(value.publishConfig) &&
+		isOptionalBoolean(value.publishable)
 	);
 }
 

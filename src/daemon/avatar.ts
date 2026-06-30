@@ -18,6 +18,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { avatarCacheDir } from '../shared/paths.js';
+import { readAuthenticatedProfile } from './npm-profile-client.js';
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export type NpmAvatarSource = 'authenticated-profile' | 'registry-profile' | 'maintainer-gravatar' | 'none';
 
@@ -28,6 +31,11 @@ export interface NpmProfileIdentity {
   source: NpmAvatarSource;
 }
 
+export interface AuthenticatedProfileProjection {
+  email?: string | null;
+  avatarUrl?: string | null;
+}
+
 /** Resolve the cached avatar file path for a username. */
 export function avatarCachePath(username: string): string {
   return path.join(avatarCacheDir(), `${username}.png`);
@@ -35,21 +43,21 @@ export function avatarCachePath(username: string): string {
 
 /** Is a cached avatar present on disk? */
 export function hasCachedAvatar(username: string): boolean {
-  return fs.existsSync(avatarCachePath(username));
+  return isCachedAvatarPng(avatarCachePath(username));
 }
 
 /**
  * Resolve the best currently available npm profile avatar projection.
  *
  * Source order:
- * 1. authenticated npm profile (`/-/npm/v1/user`) when a token is available;
+ * 1. authenticated npm profile through `npm-profile.get()` when available;
  * 2. registry profile endpoints for registries that still expose `.avatar`;
  * 3. registry search maintainer email -> verified Gravatar URL.
  */
 export async function lookupNpmProfileIdentity(
   username: string,
   registry = 'https://registry.npmjs.org/',
-  options: { token?: string } = {},
+  options: { token?: string; profile?: AuthenticatedProfileProjection } = {},
 ): Promise<NpmProfileIdentity> {
   const normalizedUsername = username.trim();
   const normalizedRegistry = normalizeRegistry(registry);
@@ -57,11 +65,8 @@ export async function lookupNpmProfileIdentity(
     return { username: normalizedUsername, registry: normalizedRegistry, avatarUrl: null, source: 'none' };
   }
 
-  if (options.token) {
-    const profile = await fetchJson(registryUrl(normalizedRegistry, '/-/npm/v1/user'), {
-      headers: { accept: 'application/json', authorization: `Bearer ${options.token}` },
-    });
-    const profileAvatar = normalizeAvatarUrl(readStringField(profile, 'avatar', 'avatarUrl', 'avatar_url'));
+  if (options.profile) {
+    const profileAvatar = normalizeAvatarUrl(options.profile.avatarUrl ?? null);
     if (profileAvatar) {
       return {
         username: normalizedUsername,
@@ -70,8 +75,7 @@ export async function lookupNpmProfileIdentity(
         source: 'authenticated-profile',
       };
     }
-    const profileEmail = readStringField(profile, 'email');
-    const profileGravatar = profileEmail ? await verifiedGravatarUrl(profileEmail) : null;
+    const profileGravatar = options.profile.email ? await verifiedGravatarUrl(options.profile.email) : null;
     if (profileGravatar) {
       return {
         username: normalizedUsername,
@@ -80,6 +84,11 @@ export async function lookupNpmProfileIdentity(
         source: 'authenticated-profile',
       };
     }
+  }
+
+  if (options.token) {
+    const identity = await lookupAuthenticatedIdentity(normalizedUsername, normalizedRegistry, options.token);
+    if (identity) return identity;
   }
 
   const registryProfiles = [
@@ -103,6 +112,38 @@ export async function lookupNpmProfileIdentity(
   return { username: normalizedUsername, registry: normalizedRegistry, avatarUrl: null, source: 'none' };
 }
 
+async function lookupAuthenticatedIdentity(
+  username: string,
+  registry: string,
+  token: string,
+): Promise<NpmProfileIdentity | null> {
+  try {
+    const profile = await readAuthenticatedProfile(token, registry);
+    const profileAvatar = normalizeAvatarUrl(profile.avatarUrl);
+    if (profileAvatar) {
+      return {
+        username,
+        registry,
+        avatarUrl: profileAvatar,
+        source: 'authenticated-profile',
+      };
+    }
+    const profileGravatar = profile.email ? await verifiedGravatarUrl(profile.email) : null;
+    if (profileGravatar) {
+      return {
+        username,
+        registry,
+        avatarUrl: profileGravatar,
+        source: 'authenticated-profile',
+      };
+    }
+  } catch {
+    // Authenticated profile is a projection source. Token persistence must not
+    // fail only because npm refuses `/-/npm/v1/user` for this token.
+  }
+  return null;
+}
+
 /**
  * Fetch a profile's avatar from NPM and cache it. Returns the local path on
  * success, or null when the avatar can't be resolved (network failure, missing
@@ -112,7 +153,7 @@ export async function fetchAndCacheAvatar(username: string, registry = 'https://
   // Fast path: serve from cache.
   const cached = avatarCachePath(username);
   try {
-    if (fs.existsSync(cached)) return cached;
+    if (isCachedAvatarPng(cached)) return cached;
   } catch {
     /* ignore */
   }
@@ -124,6 +165,7 @@ export async function fetchAndCacheAvatar(username: string, registry = 'https://
     const imgRes = await fetch(identity.avatarUrl);
     if (!imgRes.ok) return null;
     const buf = Buffer.from(await imgRes.arrayBuffer());
+    if (!isPngBuffer(buf)) return null;
     fs.mkdirSync(avatarCacheDir(), { recursive: true });
     fs.writeFileSync(cached, buf);
     return cached;
@@ -151,6 +193,28 @@ export function trayIconForProfile(username: string | undefined): string | null 
   // The cached avatar IS a real PNG (fetched from NPM), so it satisfies the
   // opentray rgba requirement for the native tray icon.
   return avatarCachePath(username);
+}
+
+function isCachedAvatarPng(file: string): boolean {
+  try {
+    if (!fs.existsSync(file)) return false;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const header = Buffer.alloc(PNG_SIGNATURE.length);
+      const read = fs.readSync(fd, header, 0, header.length, 0);
+      if (read === header.length && isPngBuffer(header)) return true;
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.unlinkSync(file);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function isPngBuffer(buf: Buffer): boolean {
+  return buf.length >= PNG_SIGNATURE.length && buf.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE);
 }
 
 function normalizeRegistry(registry: string): string {

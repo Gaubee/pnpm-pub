@@ -32,6 +32,7 @@ export interface PublishTarget {
 	path: string;
 	repository?: string;
 	publishConfig?: PublishConfig;
+	publishable?: boolean;
 }
 
 export type PublishSource =

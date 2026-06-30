@@ -13,7 +13,7 @@ import type { DaemonStore } from './store.js';
 import type { PublishScheduler } from './scheduler.js';
 import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
 import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage } from '../shared/index.js';
-import { findProjectRoot, scanWorkspace, filterByProfile, isRiskyRoot } from './workspace.js';
+import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken } from './npm-api.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret } from './keychain.js';
@@ -26,6 +26,7 @@ export interface WebServerDeps {
   scheduler: PublishScheduler;
   webToken: string;
   webuiDir: string;
+  log?: (message: string) => void;
 }
 
 const MIME: Record<string, string> = {
@@ -241,7 +242,13 @@ export class WebServer {
         });
         send({ type: 'workspaces', workspaces: this.deps.store.getWorkspaces() });
       },
-      onMessage: (msg, send) => this.handleClientMessage(msg, ws, send),
+      onMessage: (msg, send) => {
+        void this.handleClientMessage(msg, ws, send).catch((error: unknown) => {
+          const message = errorToMessage(error);
+          this.deps.log?.(`[ws] action failed: ${message}`);
+          send({ type: 'toast', level: 'error', message });
+        });
+      },
       onClose: () => {
         this.sockets.delete(ws);
         this.authedSockets.delete(ws);
@@ -337,18 +344,19 @@ export class WebServer {
     await store.addWorkspace({ path: found.root, pinned: false, addedAt: Date.now() });
     // Chapter 5.3.4: honor .gitignore so build/coverage outputs etc. are excluded.
     const pkgs = await scanWorkspace(found.root, realFs, { root: found.root, respectGitignore: true });
-    const scoped = filterByProfile(pkgs, store.getDefault());
-      send({
-        type: 'packages',
-        root: found.root,
-        packages: scoped.map((p) => ({
-          name: p.name,
-          version: p.version,
-          description: p.description,
-          path: p.path,
-          ...(p.repository ? { repository: p.repository } : {}),
-        })),
-      });
+    send({
+      type: 'packages',
+      root: found.root,
+      packages: pkgs.map((p) => ({
+        name: p.name,
+        version: p.version,
+        description: p.description,
+        path: p.path,
+        ...(p.repository ? { repository: p.repository } : {}),
+        ...(p.publishConfig ? { publishConfig: p.publishConfig } : {}),
+        publishable: isPublishableByProfile(p, store.getDefault()),
+      })),
+    });
   }
 
   private createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void): void {
@@ -413,7 +421,9 @@ export class WebServer {
     try {
       await setToken(body.username, token!);
       await setTotpSecret(body.username, body.totpSecret);
-      const identity = await lookupNpmProfileIdentity(body.username, registry, { token });
+      const identity = await lookupNpmProfileIdentity(body.username, registry, {
+        token,
+      });
       await this.deps.store.upsertProfile({
         username: body.username,
         registry,
@@ -468,7 +478,9 @@ export class WebServer {
       if (incomingTotpSecret && incomingTotpSecret !== previousTotpSecret) {
         await setTotpSecret(body.username, incomingTotpSecret);
       }
-      const identity = await lookupNpmProfileIdentity(body.username, registry, { token });
+      const identity = await lookupNpmProfileIdentity(body.username, registry, {
+        token,
+      });
       await this.deps.store.upsertProfile({
         ...profile,
         registry,

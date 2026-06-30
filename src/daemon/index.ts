@@ -187,6 +187,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     scheduler,
     webToken,
     webuiDir: resolveWebuiDir(opts.webuiDir),
+    log: (line) => log(line),
   });
   const port = await web.start(opts.port ?? 0);
 
@@ -248,6 +249,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     // host loop). The worker must NOT call process.exit on its own — tearing
     // down the IPC/socket/tray is enough; the host terminates the worker.
     const exit = stopOpts.exit ?? false;
+    log(`daemon stop requested (exit=${String(exit)})`);
     scheduler.drainAll();
     stopPlacement?.();
     await trayHost?.destroy();
@@ -258,8 +260,14 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
 
   const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, port, webToken, stop };
 
-  process.on('SIGINT', () => void stop());
-  process.on('SIGTERM', () => void stop());
+  process.on('SIGINT', () => {
+    log('received SIGINT — stopping daemon');
+    void stop();
+  });
+  process.on('SIGTERM', () => {
+    log('received SIGTERM — stopping daemon');
+    void stop();
+  });
 
   return daemonHandles;
 }
@@ -289,6 +297,18 @@ function log(message: string): void {
   } catch {
     /* best effort */
   }
+  if (isDevRuntime()) {
+    // eslint-disable-next-line no-console
+    console.error(`[daemon] ${message}`);
+  }
+}
+
+function isDevRuntime(): boolean {
+  return Boolean(
+    process.env.PNPM_PUB_DEV_SUPERVISOR_PID ||
+      process.env.PNPM_PUB_DEV_DAEMON_PORT ||
+      process.env.PNPM_PUB_DEV_WEBVIEW_URL,
+  );
 }
 
 export { keychain };

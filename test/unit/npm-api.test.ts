@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyToken, configureOidc, isExpiredToken, publishPackage } from '../../src/daemon/npm-api.js';
 
+const npmProfileMocks = vi.hoisted(() => ({
+  loginWithPassword: vi.fn(),
+}));
+
+vi.mock('../../src/daemon/npm-profile-client.js', () => ({
+  loginWithPassword: npmProfileMocks.loginWithPassword,
+}));
+
 const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
 afterEach(() => {
   fetchSpy.mockReset();
+  vi.clearAllMocks();
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -17,76 +26,10 @@ function readRecordField(record: Record<string, unknown>, key: string): Record<s
 }
 
 describe('applyToken (Chapter 8.1)', () => {
-  it('Scenario: Given credentials, When applying a token, Then it posts a burnable request body buffer', async () => {
-    let capturedBody: BodyInit | null | undefined;
-    fetchSpy.mockImplementation(async (_input, init) => {
-      capturedBody = init?.body;
-      return new Response(JSON.stringify({ token: 'npm_generated' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-
-    await expect(
-      applyToken({
-        registry: 'https://registry.example.test/',
-        username: 'alice',
-        password: 'secret-password',
-        totpSecret: 'JBSWY3DPEHPK3PXP',
-      }),
-    ).resolves.toEqual({ ok: true, token: 'npm_generated' });
-
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'https://registry.example.test/-/npm/v1/tokens',
-      expect.objectContaining({ method: 'POST' }),
-    );
-    expect(Buffer.isBuffer(capturedBody)).toBe(true);
-    if (!Buffer.isBuffer(capturedBody)) throw new Error('Expected burnable request body buffer');
-    expect(Buffer.from(capturedBody).every((byte) => byte === 0)).toBe(true);
-  });
-
-  it('Scenario: Given a malformed success response, When applying a token, Then no token fact is accepted', async () => {
-    fetchSpy.mockImplementation(async () => {
-      return new Response(JSON.stringify({ token: 42 }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-
-    await expect(
-      applyToken({
-        registry: 'https://registry.example.test/',
-        username: 'alice',
-        password: 'secret-password',
-        totpSecret: 'JBSWY3DPEHPK3PXP',
-      }),
-    ).resolves.toEqual({ ok: false, error: 'HTTP 200' });
-  });
-
-  it('Scenario: Given an empty token response, When applying a token, Then no credential fact is created', async () => {
-    fetchSpy.mockImplementation(async () => {
-      return new Response(JSON.stringify({ token: '   ' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    });
-
-    await expect(
-      applyToken({
-        registry: 'https://registry.example.test/',
-        username: 'alice',
-        password: 'secret-password',
-        totpSecret: 'JBSWY3DPEHPK3PXP',
-      }),
-    ).resolves.toEqual({ ok: false, error: 'HTTP 200' });
-  });
-
-  it('Scenario: Given a CouchDB-style token rejection, When applying a token, Then error and reason are projected together', async () => {
-    fetchSpy.mockImplementation(async () => {
-      return new Response(JSON.stringify({ error: 'forbidden', reason: 'captcha required' }), {
-        status: 403,
-        headers: { 'content-type': 'application/json' },
-      });
+  it('Scenario: Given credentials, When applying a token, Then npm-profile login creates the credential fact', async () => {
+    npmProfileMocks.loginWithPassword.mockResolvedValue({
+      token: 'npm_generated',
+      username: 'alice',
     });
 
     await expect(
@@ -97,16 +40,50 @@ describe('applyToken (Chapter 8.1)', () => {
         totpSecret: 'JBSWY3DPEHPK3PXP',
       }),
     ).resolves.toEqual({
-      ok: false,
-      needsManualToken: true,
-      error: 'forbidden: captcha required',
+      ok: true,
+      token: 'npm_generated',
     });
+
+    expect(npmProfileMocks.loginWithPassword).toHaveBeenCalledWith(
+      'alice',
+      'secret-password',
+      expect.objectContaining({
+        registry: 'https://registry.example.test/',
+        otp: expect.stringMatching(/^\d{6}$/),
+      }),
+    );
+  });
+
+  it('Scenario: Given npm-profile returns no login token, When applying a token, Then no credential fact is accepted', async () => {
+    npmProfileMocks.loginWithPassword.mockRejectedValue(new Error('npm-profile login returned no token.'));
+
+    await expect(
+      applyToken({
+        registry: 'https://registry.example.test/',
+        username: 'alice',
+        password: 'secret-password',
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      }),
+    ).resolves.toEqual({ ok: false, error: 'npm-profile login returned no token.' });
+  });
+
+  it('Scenario: Given npm rejects login, When applying a token, Then manual token fallback is requested', async () => {
+    const error = new Error('Unauthorized');
+    Object.assign(error, { code: 'E401' });
+    npmProfileMocks.loginWithPassword.mockRejectedValue(error);
+
+    await expect(
+      applyToken({
+        registry: 'https://registry.example.test/',
+        username: 'alice',
+        password: 'secret-password',
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      }),
+    ).resolves.toEqual({ ok: false, needsManualToken: true, error: 'Unauthorized' });
   });
 
   it('Scenario: Given fetch rejects with a non-Error value, When applying a token, Then the failure is projected without casts', async () => {
-    fetchSpy.mockImplementation(async () => {
-      throw 'network unavailable';
-    });
+    npmProfileMocks.loginWithPassword.mockRejectedValue('network unavailable');
 
     await expect(
       applyToken({
@@ -116,6 +93,27 @@ describe('applyToken (Chapter 8.1)', () => {
         totpSecret: 'JBSWY3DPEHPK3PXP',
       }),
     ).resolves.toEqual({ ok: false, error: 'network unavailable' });
+  });
+
+  it('Scenario: Given credentials, When applying a token, Then the local password buffer is zeroed', async () => {
+    npmProfileMocks.loginWithPassword.mockResolvedValue({
+      token: 'npm_generated',
+      username: 'alice',
+    });
+    const fillSpy = vi.spyOn(Buffer.prototype, 'fill');
+
+    try {
+      await applyToken({
+        registry: 'https://registry.example.test/',
+        username: 'alice',
+        password: 'secret-password',
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      });
+
+      expect(fillSpy).toHaveBeenCalledWith(0);
+    } finally {
+      fillSpy.mockRestore();
+    }
   });
 });
 

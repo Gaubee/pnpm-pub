@@ -159,6 +159,29 @@ describe('Feature: WebUI-created proactive events', () => {
     expect(created.event.payload.data.repo).toBe('acme/repo');
   });
 
+  it('Scenario: Given a WebUI-created publish event, When rejected, Then no registry action runs', async () => {
+    const packageDir = path.join(sandbox, 'publish-reject-detached');
+    await fsp.mkdir(packageDir, { recursive: true });
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice' });
+    const scheduler = new PublishScheduler(store);
+
+    const created = scheduler.createProactiveEvent('publish', 'alice', {
+      source: { kind: 'directory', path: packageDir },
+      args: [],
+      target: { name: 'pkg', version: '1.0.0', path: packageDir },
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(scheduler.reject(created.event.id)).toBe(true);
+    expect(store.getEvent(created.event.id)?.status).toBe('rejected');
+    expect(publishPackageMock).not.toHaveBeenCalled();
+  });
+
   it('Scenario: Given an existing OIDC workflow, When setup is confirmed without force, Then no registry action is performed', async () => {
     const packageDir = path.join(sandbox, 'pkg-existing-workflow');
     const workflowPath = path.join(packageDir, '.github/workflows/publish.yml');

@@ -18,6 +18,12 @@ interface ManagedChild {
   label: string;
 }
 
+interface ChildExit {
+  label: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
 const IS_WINDOWS = process.platform === 'win32';
 
 export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
@@ -77,6 +83,11 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
       },
     );
     const exit = await waitForFirstChildExit(webui, daemon);
+    if (!shuttingDown) {
+      console.error(
+        `[dev] child exited: ${exit.label} code=${String(exit.code)} signal=${String(exit.signal)}; stopping remaining dev children`,
+      );
+    }
     if (!shuttingDown && exit.code !== 0 && exit.code !== null) {
       process.exitCode = exit.code;
     }
@@ -106,8 +117,14 @@ function spawnManaged(
   const managed = { child, label: `${command} ${args.join(' ')}` };
   active.add(managed);
   const clear = () => active.delete(managed);
-  child.once('exit', clear);
-  child.once('close', clear);
+  child.once('exit', (code, signal) => {
+    console.error(`[dev] child exit: ${managed.label} code=${String(code)} signal=${String(signal)}`);
+    clear();
+  });
+  child.once('close', (code, signal) => {
+    console.error(`[dev] child close: ${managed.label} code=${String(code)} signal=${String(signal)}`);
+    clear();
+  });
   child.once('error', clear);
   return managed;
 }
@@ -133,16 +150,16 @@ function killChild(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
   });
 }
 
-function waitForChildExit(child: ChildProcess): Promise<number | null> {
-  return new Promise<number | null>((resolve, reject) => {
+function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once('error', reject);
-    child.once('exit', (code) => resolve(code));
+    child.once('exit', (code, signal) => resolve({ code, signal }));
   });
 }
 
-function waitForFirstChildExit(...children: ManagedChild[]): Promise<{ label: string; code: number | null }> {
+function waitForFirstChildExit(...children: ManagedChild[]): Promise<ChildExit> {
   return Promise.race(
-    children.map(({ child, label }) => waitForChildExit(child).then((code) => ({ label, code }))),
+    children.map(({ child, label }) => waitForChildExit(child).then((exit) => ({ label, ...exit }))),
   );
 }
 

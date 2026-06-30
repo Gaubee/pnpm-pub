@@ -209,6 +209,26 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
+  it('restores the pre-pending shown state when a pinned event resolves', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice' });
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, { title: 'pnpm-pub', initialVisible: true });
+
+    const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(host.getVisibility()).toBe('pinned');
+    expect(window.visible).toBe(true);
+
+    store.resolveEvent(evt.id, 'success', 'done');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(host.getVisibility()).toBe('shown');
+    expect(window.visible).toBe(true);
+    expect(window.keepOnTop).toBe(false);
+    await host.destroy();
+  });
+
   it('swaps to the badged icon while pending and back to base on release', async () => {
     const store = new DaemonStore();
     await store.load();

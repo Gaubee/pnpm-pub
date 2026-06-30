@@ -20,6 +20,7 @@ import { setHomeOverride } from '../shared/paths.js';
 import { resolveDevTrayMode } from './dev-mode.js';
 
 async function main(): Promise<void> {
+  installDevProcessDiagnostics();
   // Isolate dev state in its own home so we never touch real ~/.pnpm-pub.
   // Use a stable, short path so the macOS 104-char socket limit is respected
   // and so a separately-spawned CLI can agree on it via PNPM_PUB_HOME.
@@ -65,6 +66,19 @@ async function main(): Promise<void> {
 `);
 
   process.once('exit', stopSupervisorWatch);
+}
+
+function installDevProcessDiagnostics(): void {
+  process.once('exit', (code) => {
+    console.error(`[dev] daemon process exit: code=${String(code)}`);
+  });
+  process.once('uncaughtException', (error) => {
+    console.error('[dev] daemon uncaughtException:', error);
+    process.exit(1);
+  });
+  process.once('unhandledRejection', (reason) => {
+    console.error('[dev] daemon unhandledRejection:', reason);
+  });
 }
 
 function readOptionalPort(value: string | undefined): number | undefined {

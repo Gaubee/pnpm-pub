@@ -168,6 +168,8 @@ export interface PublishTarget {
   repository?: string;
   /** Package-scoped publish defaults derived from package.json publishConfig. */
   publishConfig?: PublishConfig;
+  /** Whether the active profile is allowed to publish this package. */
+  publishable?: boolean;
 }
 
 export type PublishSource =

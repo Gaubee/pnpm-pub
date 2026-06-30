@@ -62,6 +62,7 @@ export class TrayHost {
   private visibility: Visibility = 'hidden';
   private unsubs: Array<() => void> = [];
   private badgeApplied = false;
+  private prePinVisibility: Exclude<Visibility, 'pinned'> | null = null;
 
   constructor(
     private store: DaemonStore,
@@ -170,6 +171,7 @@ export class TrayHost {
    */
   private pin(): void {
     if (this.visibility === 'pinned') return;
+    this.prePinVisibility = this.visibility === 'shown' ? 'shown' : 'hidden';
     this.visibility = 'pinned';
     this.startFlash();
     this.log('pin (keepOnTop + flash)');
@@ -189,9 +191,12 @@ export class TrayHost {
     if (this.visibility !== 'pinned') return;
     this.safeCall('setStyle(keepOnTop=false)', this.window?.setStyle({ keepOnTop: false }));
     this.stopFlash();
-    // Resume the ghost idle state.
-    this.safeCall('hide', this.window?.hide());
-    this.visibility = 'hidden';
+    const restore = this.prePinVisibility ?? 'hidden';
+    this.prePinVisibility = null;
+    if (restore === 'hidden') {
+      this.safeCall('hide', this.window?.hide());
+    }
+    this.visibility = restore;
     this.log('release');
   }
 
