@@ -25,6 +25,9 @@ const mocks = vi.hoisted(() => ({
   deleteTokenMock: vi.fn(),
   deleteTotpSecretMock: vi.fn(),
   deleteProfileMock: vi.fn(),
+  getProfileSecretsMock: vi.fn(),
+  setProfileSecretsMock: vi.fn(),
+  deleteProfileSecretsMock: vi.fn(),
 }));
 
 vi.mock('../../src/daemon/npm-api.js', () => ({
@@ -46,6 +49,9 @@ vi.mock('../../src/daemon/keychain.js', () => ({
   deleteToken: mocks.deleteTokenMock,
   deleteTotpSecret: mocks.deleteTotpSecretMock,
   deleteProfile: mocks.deleteProfileMock,
+  getProfileSecrets: mocks.getProfileSecretsMock,
+  setProfileSecrets: mocks.setProfileSecretsMock,
+  deleteProfileSecrets: mocks.deleteProfileSecretsMock,
 }));
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-renew-${process.pid}-${Date.now()}`);
@@ -134,6 +140,10 @@ describe('renew flow keeps the stored secret', () => {
     setHomeOverride(sandbox);
     mocks.getTokenMock.mockResolvedValue('old-token');
     mocks.getTotpSecretMock.mockResolvedValue('SECRET');
+    // Merged item mocks: by default, pool already has creds so these aren't read.
+    mocks.getProfileSecretsMock.mockResolvedValue(null);
+    mocks.setProfileSecretsMock.mockResolvedValue(undefined);
+    mocks.deleteProfileSecretsMock.mockResolvedValue(undefined);
     mocks.lookupNpmProfileIdentityMock.mockImplementation((username: string, registry: string) =>
       Promise.resolve({
         username,
@@ -184,11 +194,15 @@ describe('renew flow keeps the stored secret', () => {
     expect(json).toEqual({ ok: true });
 
     expect(mocks.applyTokenMock).not.toHaveBeenCalled();
-    expect(mocks.setTokenMock).toHaveBeenCalledWith('alice', 'npm_manual_renewed');
-    expect(mocks.setTotpSecretMock).not.toHaveBeenCalled();
+    // renewProfile now writes the merged item (not split setToken/setTotpSecret).
+    expect(mocks.setProfileSecretsMock).toHaveBeenCalledWith('alice', expect.objectContaining({
+      npm_token: 'npm_manual_renewed',
+      totp_secret: 'SECRET',
+    }));
     expect(store.getCredentials('alice')).toEqual({
       token: 'npm_manual_renewed',
       totpSecret: 'SECRET',
+      npmPwd: 'ignored',
     });
   });
 
@@ -281,6 +295,7 @@ describe('renew flow keeps the stored secret', () => {
       username: 'bob',
       registry: 'https://registry.npmjs.org/',
       avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
+      authStatus: 'authenticated',
     });
   });
 
@@ -307,8 +322,12 @@ describe('renew flow keeps the stored secret', () => {
     expect(json.ok).toBe(false);
     expect(json.error).toBe('Failed to renew profile: persist failed');
 
-    expect(mocks.setTokenMock).toHaveBeenNthCalledWith(1, 'alice', 'npm_manual_renewed');
-    expect(mocks.setTokenMock).toHaveBeenNthCalledWith(2, 'alice', 'old-token');
+    // Success path writes merged item; rollback restores via legacy split items.
+    expect(mocks.setProfileSecretsMock).toHaveBeenCalledWith('alice', expect.objectContaining({
+      npm_token: 'npm_manual_renewed',
+    }));
+    // Rollback restores the old token via the split-item path.
+    expect(mocks.setTokenMock).toHaveBeenCalledWith('alice', 'old-token');
     expect(mocks.setTotpSecretMock).toHaveBeenCalledWith('alice', 'SECRET');
     expect(mocks.deleteTokenMock).not.toHaveBeenCalled();
     expect(mocks.deleteTotpSecretMock).not.toHaveBeenCalled();
@@ -341,11 +360,14 @@ describe('renew flow keeps the stored secret', () => {
     expect(json).toEqual({ ok: true });
 
     expect(mocks.applyTokenMock).not.toHaveBeenCalled();
-    expect(mocks.setTokenMock).toHaveBeenCalledWith('alice', 'npm_manual_renewed');
-    expect(mocks.setTotpSecretMock).toHaveBeenCalledWith('alice', 'NEWSECRET');
+    expect(mocks.setProfileSecretsMock).toHaveBeenCalledWith('alice', expect.objectContaining({
+      npm_token: 'npm_manual_renewed',
+      totp_secret: 'NEWSECRET',
+    }));
     expect(store.getCredentials('alice')).toEqual({
       token: 'npm_manual_renewed',
       totpSecret: 'NEWSECRET',
+      npmPwd: 'ignored',
     });
   });
 
@@ -377,11 +399,15 @@ describe('renew flow keeps the stored secret', () => {
       password: 'fresh-password',
       totpSecret: 'NEWSECRET',
     });
-    expect(mocks.setTokenMock).toHaveBeenCalledWith('alice', 'npm_silent_renewed');
-    expect(mocks.setTotpSecretMock).toHaveBeenCalledWith('alice', 'NEWSECRET');
+    expect(mocks.setProfileSecretsMock).toHaveBeenCalledWith('alice', expect.objectContaining({
+      npm_token: 'npm_silent_renewed',
+      totp_secret: 'NEWSECRET',
+      npm_pwd: 'fresh-password',
+    }));
     expect(store.getCredentials('alice')).toEqual({
       token: 'npm_silent_renewed',
       totpSecret: 'NEWSECRET',
+      npmPwd: 'fresh-password',
     });
   });
 
@@ -415,8 +441,12 @@ describe('renew flow keeps the stored secret', () => {
 
   it('exports profile credentials from keychain when the memory pool is empty', async () => {
     store.deleteCredentials('alice');
-    mocks.getTokenMock.mockResolvedValue('keychain-token');
-    mocks.getTotpSecretMock.mockResolvedValue('KEYCHAINSECRET');
+    // exportBundle now reads the merged item (getProfileSecrets) not split items.
+    mocks.getProfileSecretsMock.mockResolvedValue({
+      npm_token: 'keychain-token',
+      totp_secret: 'KEYCHAINSECRET',
+      npm_pwd: 'stored-pwd',
+    });
 
     const res = await fetch(`http://127.0.0.1:${port}/api/export`, {
       method: 'POST',

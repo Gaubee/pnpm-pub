@@ -13,35 +13,38 @@
  */
 
 /** Home / Events hub — 16:9 landscape. Fits the `max-w-2xl` content rail. */
-export const HOME_WINDOW_SIZE = { width: 680, height: 383 } as const;
+export const HOME_WINDOW_SIZE = { width: 680, height: 560 } as const;
 /** First-profile onboarding — near-square form surface. */
 export const ADD_PROFILE_WINDOW_SIZE = { width: 450, height: 464 } as const;
 
-const bridge = (): Navigator['opentrayWindow'] =>
-	navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
+const bridge = (): Navigator["opentrayWindow"] =>
+  navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
 
 /**
  * Resize the OS window. Safe to call on every page mount: it no-ops when the
  * bridge is absent, and only re-issues when the size actually changes (so
  * revisiting a route of the same size doesn't flicker).
  */
-export async function resizeWindow(size: { width: number; height: number }): Promise<void> {
-	const ot = bridge();
-	if (!ot?.resizeTo) return;
-	// Avoid redundant resizes: the host preserves the last-set size, so only
-	// call when the target differs from what we last requested this session.
-	if (
-		lastRequested?.width === size.width &&
-		lastRequested?.height === size.height
-	) {
-		return;
-	}
-	try {
-		await ot.resizeTo(size.width, size.height);
-		lastRequested = { ...size };
-	} catch {
-		// Resize is a UX nicety, never fatal — ignore host refusals.
-	}
+export async function resizeWindow(size: {
+  width: number;
+  height: number;
+}): Promise<void> {
+  const ot = bridge();
+  if (!ot?.resizeTo) return;
+  // Avoid redundant resizes: the host preserves the last-set size, so only
+  // call when the target differs from what we last requested this session.
+  if (
+    lastRequested?.width === size.width &&
+    lastRequested?.height === size.height
+  ) {
+    return;
+  }
+  try {
+    await ot.resizeTo(size.width, size.height);
+    lastRequested = { ...size };
+  } catch {
+    // Resize is a UX nicety, never fatal — ignore host refusals.
+  }
 }
 
 let lastRequested: { width: number; height: number } | null = null;

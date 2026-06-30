@@ -675,6 +675,10 @@ export class WebServer {
       }
       if (token && totpSecret) {
         secrets[profile.username] = { token, totp: totpSecret };
+        // Warm the pool so subsequent reads don't hit keychain again.
+        if (!creds) {
+          this.deps.store.setCredentials(profile.username, { token, totpSecret });
+        }
         continue;
       }
       // Chapter 8.2: warn when a configured profile has no complete credential
