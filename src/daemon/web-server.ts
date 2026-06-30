@@ -166,16 +166,21 @@ export class WebServer {
         // ----- Trusted Publishing (OIDC) — Chapter 8.5 -----
         if (url === '/api/oidc/trust' && method === 'GET') {
           const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const result = await this.listTrustCached(readQueryString(query, 'package'));
+          const pkg = readQueryString(query, 'package');
+          this.deps.log?.(`[oidc] GET trust: package=${pkg}`);
+          const result = await this.listTrustCached(pkg);
+          this.deps.log?.(`[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`);
           return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error });
         }
         if (url === '/api/oidc/trust' && method === 'POST') {
           const name = readString(body, 'package');
           const config = parseTrustedPublisher(body.config);
           if (!name || !config) return json(res, 400, { ok: false, error: 'Invalid package or config.' });
+          this.deps.log?.(`[oidc] POST trust: package=${name} type=${config.type}`);
           const auth = await this.resolveTrustAuth();
           if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
           const result = await addTrustedPublisher(auth, name, config);
+          this.deps.log?.(`[oidc] POST trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(name);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
@@ -183,9 +188,11 @@ export class WebServer {
           const name = readString(body, 'package');
           const uuid = readString(body, 'uuid');
           if (!name || !uuid) return json(res, 400, { ok: false, error: 'Invalid package or uuid.' });
+          this.deps.log?.(`[oidc] DELETE trust: package=${name} uuid=${uuid}`);
           const auth = await this.resolveTrustAuth();
           if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
           const result = await removeTrustedPublisher(auth, name, uuid);
+          this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(name);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
@@ -541,13 +548,19 @@ export class WebServer {
    */
   private async resolveTrustAuth(): Promise<{ token: string; totpSecret: string; registry: string } | null> {
     const username = this.deps.store.getDefault();
-    if (!username) return null;
+    if (!username) {
+      this.deps.log?.('[oidc] resolveTrustAuth: no default profile');
+      return null;
+    }
     const profile = this.deps.store.getProfile(username);
     const registry = profile?.registry ?? 'https://registry.npmjs.org/';
     const creds = this.deps.store.getCredentials(username);
     const token = creds?.token ?? (await getToken(username));
     const totpSecret = creds?.totpSecret ?? (await getTotpSecret(username));
-    if (!token || !totpSecret) return null;
+    if (!token || !totpSecret) {
+      this.deps.log?.(`[oidc] resolveTrustAuth: missing credentials for ${username} (token=${!!token}, totp=${!!totpSecret})`);
+      return null;
+    }
     return { token, totpSecret, registry };
   }
 
