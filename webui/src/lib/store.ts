@@ -23,12 +23,31 @@ import { parseOkResponse } from './rest-response.js';
 import { apiFetch } from './api-fetch.js';
 import { parseWsServerMessage } from './ws-message.js';
 
+/**
+ * Read the WebUI auth token. On first load the token arrives in the URL hash
+ * (`#token=HEX`). We immediately persist it to sessionStorage and clear the
+ * hash so SPA route navigation never loses it (SvelteKit's hash handling
+ * would otherwise swallow it). Subsequent reads come from sessionStorage.
+ */
+const SESSION_TOKEN_KEY = 'pnpm-pub-webtoken';
+
+function captureTokenFromHash(): void {
+	if (!browser) return;
+	const hash = window.location.hash.replace(/^#/, '');
+	const params = new URLSearchParams(hash);
+	const token = params.get('token');
+	if (token) {
+		sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+		// Clear the hash so SvelteKit router doesn't fight with it.
+		history.replaceState(null, '', window.location.pathname + window.location.search);
+	}
+}
+
 /** Exposed so pages can build authenticated REST requests (Chapter 3.2.2). */
 export function readWebToken(): string {
 	if (!browser) return '';
-	const hash = window.location.hash.replace(/^#/, '');
-	const params = new URLSearchParams(hash);
-	return params.get('token') ?? '';
+	captureTokenFromHash(); // idempotent — only captures if hash is present
+	return sessionStorage.getItem(SESSION_TOKEN_KEY) ?? '';
 }
 
 function derivePort(): string {
