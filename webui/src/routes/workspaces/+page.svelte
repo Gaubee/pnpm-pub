@@ -41,6 +41,18 @@
 		return !!s && s.configs.length > 0;
 	}
 
+	/** 'loading' while a fetch is in-flight and no cached result exists yet. */
+	function oidcLoading(pkgName: string): boolean {
+		return oidcFetched.has(pkgName) && !oidcState[pkgName];
+	}
+
+	/** The single line of OIDC status text shown on every card (always visible). */
+	function oidcStatusText(pkgName: string): string {
+		if (oidcLoading(pkgName)) return $_('oidc.loading');
+		if (isOidcConfigured(pkgName)) return oidcSummary(oidcConfigs(pkgName)[0]!);
+		return $_('oidc.notConfigured');
+	}
+
 	/** Short human label for a trusted-publisher config (e.g. "github · jixoai/opentray · npm-release"). */
 	function oidcSummary(cfg: TrustedPublisherConfig): string {
 		const repo =
@@ -221,13 +233,17 @@
 							{#if pkg.repository}
 								<p class="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{pkg.repository}</p>
 							{/if}
-							<!-- Trusted Publishing 配置（已配置则直接显示在卡片上） -->
-							{#each oidcConfigs(pkg.name) as cfg (cfg.id ?? oidcSummary(cfg))}
-								<div class="mt-1 flex items-center gap-1.5">
-									<IconShield class="h-3 w-3 shrink-0 text-success" />
-									<span class="truncate text-[11px] text-success/90">{oidcSummary(cfg)}</span>
-								</div>
-							{/each}
+							<!-- OIDC status line — always visible to avoid layout shift -->
+							<div class="mt-1 flex items-center gap-1.5">
+								<IconShield class="h-3 w-3 shrink-0 {isOidcConfigured(pkg.name) ? 'text-success' : 'text-muted-foreground/50'}" />
+								{#if isOidcConfigured(pkg.name)}
+									<span class="truncate text-[11px] text-success/90">{oidcStatusText(pkg.name)}</span>
+								{:else if oidcLoading(pkg.name)}
+									<span class="truncate text-[11px] shiny-text">{oidcStatusText(pkg.name)}</span>
+								{:else}
+									<span class="truncate text-[11px] text-muted-foreground/50">{oidcStatusText(pkg.name)}</span>
+								{/if}
+							</div>
 							{#if pkg.description}
 								<p class="mt-0.5 truncate text-xs text-muted-foreground">{pkg.description}</p>
 							{/if}
@@ -274,3 +290,33 @@
 	config={oidcDialogConfig}
 	onChanged={onOidcChanged}
 />
+
+<style>
+	/* Animated shiny text for the OIDC loading state (animated-shiny-text effect). */
+	.shiny-text {
+		background: linear-gradient(
+			90deg,
+			var(--muted-foreground) 0%,
+			var(--muted-foreground) 40%,
+			var(--foreground) 50%,
+			var(--muted-foreground) 60%,
+			var(--muted-foreground) 100%
+		);
+		background-size: 200% 100%;
+		background-clip: text;
+		-webkit-background-clip: text;
+		color: transparent;
+		animation: shiny-sweep 1.8s linear infinite;
+	}
+	@keyframes shiny-sweep {
+		0% { background-position: 100% 0; }
+		100% { background-position: -100% 0; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.shiny-text {
+			animation: none;
+			color: var(--muted-foreground);
+			background: none;
+		}
+	}
+</style>

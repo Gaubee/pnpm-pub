@@ -239,6 +239,8 @@ const en = {
 		add: 'Add',
 		update: 'Update',
 		remove: 'Remove',
+		loading: 'Checking trusted publishing…',
+		notConfigured: 'No trusted publishing configured',
 	},
 };
 
