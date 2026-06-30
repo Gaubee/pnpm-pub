@@ -72,15 +72,16 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
     if (shuttingDown) return;
 
     if (shuttingDown) return;
-    // Run the daemon via bun (not tsx). tsx compiles to CJS whose __dirname /
-    // require semantics differ from the ESM runtime, which made the keytar
-    // native binding and keychain reads silently fail in dev. bun runs TS as
-    // ESM natively, matching the bundled (production) runtime.
+    // Run the daemon via tsx (the production runtime is Node/bundled ESM; bun's
+    // node:http 'upgrade' event does not complete the raw-socket WebSocket
+    // handshake this daemon depends on, so the WebUI WS connection silently
+    // fails under bun). tsx matches Node's http semantics; keychain (keytar)
+    // works under tsx via the ESM __dirname shim in keychain.ts.
     const daemon = spawnManaged(
       spawnImpl,
       active,
-      'bun',
-      ['run', 'src/daemon/dev.ts'],
+      'pnpm',
+      ['exec', 'tsx', 'src/daemon/dev.ts'],
       {
         PNPM_PUB_DEV_DAEMON_PORT: daemonPort,
         PNPM_PUB_DEV_WEBVIEW_URL: webviewUrl,
