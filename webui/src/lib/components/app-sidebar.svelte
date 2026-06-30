@@ -111,7 +111,7 @@
 			</div>
 			{#each pinned as ws (ws.path)}
 				<a
-					href="/workspaces"
+					href="/workspaces/{btoa(ws.path)}"
 					class="flex items-center gap-2.5 truncate rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
 				>
 					<IconWorkspaces class="h-3.5 w-3.5 shrink-0" />

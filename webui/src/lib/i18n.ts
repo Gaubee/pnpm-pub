@@ -221,6 +221,11 @@ const en = {
 		configureTrustedPublish: 'Configure Trusted Publish',
 		repositoryRequired: 'Package repository metadata is required',
 		profileScopeMismatch: 'Package scope does not match the active profile',
+		batch: 'Batch',
+		batchMode: 'Toggle batch mode',
+		batchOidc: 'Batch OIDC',
+		filterPlaceholder: 'Filter packages…',
+		noFilterMatch: 'No packages match the filter.',
 	},
 	oidc: {
 		title: 'Trusted Publishing',
