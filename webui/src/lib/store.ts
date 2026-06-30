@@ -20,6 +20,7 @@ import type {
 } from './types';
 import { filterVisibleEvents, sortEvents } from './event-projection.js';
 import { parseOkResponse } from './rest-response.js';
+import { apiFetch } from './api-fetch.js';
 import { parseWsServerMessage } from './ws-message.js';
 
 /** Exposed so pages can build authenticated REST requests (Chapter 3.2.2). */
@@ -220,9 +221,9 @@ export const actions = {
 			send({ type: 'select-profile', username });
 		},
 	async deleteProfile(username: string): Promise<boolean> {
-		const res = await fetch('/api/profiles', {
+		const res = await apiFetch('/api/profiles', {
 			method: 'DELETE',
-			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ username }),
 		});
 		const json = parseOkResponse(await res.json());
@@ -239,9 +240,9 @@ export const actions = {
 	},
 	/** Confirm a staged risky-workspace add (Chapter 5.3.2). */
 	async confirmRiskyWorkspace(token: string): Promise<boolean> {
-		const res = await fetch('/api/workspace/confirm', {
+		const res = await apiFetch('/api/workspace/confirm', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ token }),
 		});
 		const json = parseOkResponse(await res.json());
@@ -251,9 +252,9 @@ export const actions = {
 	/** Cancel a staged risky-workspace add (Chapter 5.3.2). */
 	cancelRiskyWorkspace(token: string): Promise<void> {
 		daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
-		return fetch('/api/workspace/cancel', {
+		return apiFetch('/api/workspace/cancel', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ token }),
 		}).then(() => undefined, () => undefined);
 	},

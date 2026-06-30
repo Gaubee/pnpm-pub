@@ -12,7 +12,7 @@
 	import { parseBackupBundleJson } from '$lib/backup-bundle.js';
 	import { errorToMessage } from '$lib/error-projection.js';
 	import { parseExportResponse, parseImportResponse } from '$lib/rest-response.js';
-	import { readWebToken } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
 	import IconDownload from '@lucide/svelte/icons/download';
 	import IconUpload from '@lucide/svelte/icons/upload';
 	import { _ } from 'svelte-i18n';
@@ -34,9 +34,9 @@
 		exportError = null;
 		exportResult = null;
 		try {
-			const res = await fetch('/api/export', {
+			const res = await apiFetch('/api/export', {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ password: exportPassword }),
 			});
 			const json = parseExportResponse(await res.json());
@@ -85,9 +85,9 @@
 		}
 		try {
 			const bundle = parsed.bundle;
-			const res = await fetch('/api/import', {
+			const res = await apiFetch('/api/import', {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ bundle, password: importPassword, usernames: [...importSelected] }),
 			});
 			const json = parseImportResponse(await res.json());

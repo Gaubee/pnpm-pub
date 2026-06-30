@@ -4,7 +4,8 @@
 	 * Add a workspace root, scan it, render package cards, and trigger Events
 	 * from card actions (Chapter 6.3.3 — actions route back to Events).
 	 */
-	import { daemon, actions, readWebToken } from '$lib/store.js';
+	import { daemon, actions } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -64,9 +65,7 @@
 		const cached = oidcState[pkgName];
 		if (cached && Date.now() - cached.fetchedAt < OIDC_FRONTEND_TTL_MS) return;
 		oidcFetched = new Set(oidcFetched).add(pkgName);
-		fetch(`/api/oidc/trust?package=${encodeURIComponent(pkgName)}`, {
-			headers: { authorization: `Bearer ${readWebToken()}` },
-		})
+		apiFetch(`/api/oidc/trust?package=${encodeURIComponent(pkgName)}`)
 			.then((r) => r.json())
 			.then((raw) => {
 				const json = parseTrustListResponse(raw);
@@ -119,9 +118,9 @@
 	async function pin(ws: { path: string; pinned: boolean }): Promise<void> {
 		const next = !ws.pinned;
 		try {
-			await fetch('/api/workspace/pin', {
+			await apiFetch('/api/workspace/pin', {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ path: ws.path, pinned: next }),
 			});
 		} catch {

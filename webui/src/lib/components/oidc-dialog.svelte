@@ -23,7 +23,7 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
 	import { parseOkResponse } from '$lib/rest-response.js';
-	import { readWebToken } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
 	import type {
 		TrustedPublisherConfig,
 		TrustedPublisherPermission,
@@ -136,9 +136,9 @@
 		busy = true;
 		error = null;
 		try {
-			const res = await fetch('/api/oidc/trust', {
+			const res = await apiFetch('/api/oidc/trust', {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ package: packageName.trim(), config: buildConfig() }),
 			});
 			const json = parseOkResponse(await res.json());
@@ -164,9 +164,9 @@
 		busy = true;
 		error = null;
 		try {
-			const res = await fetch('/api/oidc/trust', {
+			const res = await apiFetch('/api/oidc/trust', {
 				method: 'DELETE',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ package: packageName.trim(), uuid: configId }),
 			});
 			const json = parseOkResponse(await res.json());

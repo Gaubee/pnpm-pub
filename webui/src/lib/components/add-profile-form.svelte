@@ -29,7 +29,7 @@
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
 	import { parseNpmProfileLookupResponse, parseTokenApplyResponse } from '$lib/rest-response.js';
-	import { readWebToken } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
 	import { parseTotpSecret, totpSecretError } from '$lib/totp.js';
 	import TotpScanner from '$lib/components/totp-scanner.svelte';
 	import IconAlert from '@lucide/svelte/icons/triangle-alert';
@@ -131,8 +131,8 @@
 					username: name,
 					registry: registryValue || 'https://registry.npmjs.org/',
 				});
-				const res = await fetch(`/api/npm-profile?${query.toString()}`, {
-					headers: { accept: 'application/json', authorization: `Bearer ${readWebToken()}` },
+				const res = await apiFetch(`/api/npm-profile?${query.toString()}`, {
+					headers: { accept: 'application/json' },
 				});
 				if (reqId !== avatarReqId) return; // superseded by a newer keystroke
 				if (!res.ok) {
@@ -164,9 +164,9 @@
 			// Reauth (existing profile, token invalid) → /api/renew; new profile → /api/add-profile.
 			// Both return the same TokenApplyResponse shape.
 			const endpoint = isReauth ? '/api/renew' : '/api/add-profile';
-			const res = await fetch(endpoint, {
+			const res = await apiFetch(endpoint, {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
 					username: trimmedUsername,
 					// Silent needs the password for the NPM exchange; manual skips it.

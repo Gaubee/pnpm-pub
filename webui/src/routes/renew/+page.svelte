@@ -12,7 +12,8 @@
 	import { errorToMessage } from '$lib/error-projection.js';
 	import { parseTokenApplyResponse } from '$lib/rest-response.js';
 	import { getRenewProjection, toRenewReason } from '$lib/renew-projection.js';
-	import { readWebToken, activeProfile } from '$lib/store.js';
+	import { activeProfile } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -35,9 +36,9 @@
 		error = null;
 		needsManual = false;
 		try {
-			const res = await fetch('/api/renew', {
+			const res = await apiFetch('/api/renew', {
 				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
+				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
 					username,
 					password,
