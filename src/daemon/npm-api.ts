@@ -11,6 +11,7 @@ import { Buffer } from 'node:buffer';
 import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
 import { burnBuffer } from './totp.js';
 import { loginWithPassword } from './npm-profile-client.js';
+import { createClient, publish as sdkPublish, type PublishPackument } from 'safe-npm-sdk';
 
 export interface RegistryConfig {
   registry: string;
@@ -227,130 +228,78 @@ export async function publishPackage(opts: {
   const { createHash } = await import('node:crypto');
 
   const version = String(metadata.version ?? opts.version);
-  const distTag = opts.distTag ?? 'latest';
   const tarballB64 = tarball.toString('base64');
   const integrity = createHash('sha512').update(tarball).digest('base64');
   const tarballFilename = `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`;
-  // The dist.tarball MUST be an absolute URL (a bare filename crashes registries
-  // like Verdaccio that parse it). This mirrors what `npm publish` sends.
   const registryBase = registry.replace(/\/$/, '');
   const tarballUrl = `${registryBase}/${name}/-/${tarballFilename}`;
 
-  // The `_attachments` form: metadata + version-pin dist + the base64 tarball.
-  const buildBody = (): Record<string, unknown> => {
-    const versions: Record<string, unknown> = {
+  // Build the canonical npm publish packument (same structure npm publish sends).
+  const packument: PublishPackument = {
+    name,
+    'dist-tags': { [opts.distTag ?? 'latest']: version },
+    ...(opts.access ? { access: opts.access } : {}),
+    versions: {
       [version]: {
         ...metadata,
         version,
-        dist: {
-          tarball: tarballUrl,
-          integrity: `sha512-${integrity}`,
-        },
+        dist: { tarball: tarballUrl, integrity: `sha512-${integrity}` },
       },
-    };
-    return {
-      name,
-      // Dist-tag defaults to `latest`, matching npm publish when --tag is absent.
-      'dist-tags': { [distTag]: version },
-      ...(opts.access ? { access: opts.access } : {}),
-      versions,
-      _attachments: {
-        [tarballFilename]: {
-          content_type: 'application/octet-stream',
-          data: tarballB64,
-          length: tarball.length,
-        },
+    },
+    _attachments: {
+      [tarballFilename]: {
+        content_type: 'application/octet-stream',
+        data: tarballB64,
+        length: tarball.length,
       },
-    };
-  };
+    },
+  } as PublishPackument;
 
-  const attempt = async (
-    otp: string,
-    attemptLabel: string,
-  ): Promise<{ result: PublishResult; dateHeader: string | null; body: unknown }> => {
-    const url = `${registry.replace(/\/$/, '')}/${encodeURIComponent(name).replace('%40', '@')}`;
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-        'npm-otp': otp,
-      },
-      body: JSON.stringify(buildBody()),
-    });
-    const body = await readRegistryBody(res);
-    const dateHeader = res.headers.get('date');
-    if (res.ok) {
-      return {
-        result: {
-          ok: true,
-          status: res.status,
-          stdout: `[${attemptLabel}] + ${name}@${version}`,
-          stderr: '',
-        },
-        dateHeader,
-        body,
-      };
-    }
-    return {
-      result: {
-        ok: false,
-        status: res.status,
-        error: parseNpmError(body) ?? `HTTP ${res.status}`,
-        stdout: '',
-        stderr: bodyToText(body),
-      },
-      dateHeader,
-      body,
-    };
-  };
+  // Construct a one-shot SDK client.
+  const client = createClient({ auth: { token }, registry: registryBase });
 
   const explicitOtp = nonEmptyString(opts.otp);
+  const otp = explicitOtp ?? generateTotp(totpSecret);
 
-  // First attempt with an explicit command OTP when supplied, otherwise with the current TOTP.
-  const first = await attempt(explicitOtp ?? generateTotp(totpSecret), 'publish');
-  if (first.result.ok) return first.result;
+  // Publish via the SDK — it handles auth headers, OTP, retries, response parsing.
+  const result = await sdkPublish(name, packument, { otp }, client);
 
-  const status = first.result.status;
+  if (result.ok) {
+    return {
+      ok: true,
+      status: result.response.status,
+      stdout: `[publish] + ${name}@${version}`,
+      stderr: '',
+    };
+  }
+
+  const errorStatus = result.error.status;
+  const errorMsg = result.error.message;
+  const errorBody = result.error.body;
 
   // Chapter 6.2.4: an expired/invalid/revoked token is NOT a generic failure.
-  // Mark it `expired` so the scheduler surfaces an Expired event + renew flow.
-  // Do NOT attempt clock-drift recovery for these — drift only compensates OTP
-  // skew, and retrying an expired token just wastes the OTP window.
-  if (isExpiredToken(status, first.body)) {
-    return { ...first.result, expired: true };
+  if (isExpiredToken(errorStatus, errorBody)) {
+    return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody), expired: true };
   }
 
-  if (explicitOtp) return first.result;
+  if (explicitOtp) {
+    return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody) };
+  }
 
-  // Clock-drift recovery branch (Chapter 8.4): retry ONLY on genuine OTP
-  // failures (403 "OTP validation failed"), never on arbitrary 401/403.
-  if (isOtpFailure(first.body, status)) {
-    const serverMs = parseHttpDate(first.dateHeader);
+  // Clock-drift recovery (Chapter 8.4): retry ONLY on OTP failures.
+  if (isOtpFailure(errorBody, errorStatus)) {
+    const serverMs = parseHttpDate(result.response.headers.get('date'));
     if (serverMs !== null) {
       const correctedOtp = totpAfterDrift(totpSecret, serverMs);
-      const retry = await attempt(correctedOtp, 'publish+drift');
-      if (retry.result.ok) return { ...retry.result, clockDriftRecovered: true };
-      return retry.result;
-    }
-    // No Date header on the failure — probe the packument for one.
-    try {
-      const probe = await fetch(`${registry.replace(/\/$/, '')}/${encodeURIComponent(name).replace('%40', '@')}`, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${token}` },
-      });
-      const probeMs = parseHttpDate(probe.headers.get('date'));
-      if (probeMs !== null) {
-        const correctedOtp = totpAfterDrift(totpSecret, probeMs);
-        const retry = await attempt(correctedOtp, 'publish+drift');
-        if (retry.result.ok) return { ...retry.result, clockDriftRecovered: true };
+      const retry = await sdkPublish(name, packument, { otp: correctedOtp }, client);
+      if (retry.ok) {
+        return { ok: true, status: retry.response.status, stdout: `[publish+drift] + ${name}@${version}`, stderr: '', clockDriftRecovered: true };
       }
-    } catch {
-      // ignore probe failure — surface the original error.
+      return { ok: false, status: retry.error.status, error: retry.error.message, stdout: '', stderr: bodyToText(retry.error.body) };
     }
   }
 
-  return first.result;
+  return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody) };
 }
 
 // ---------------------------------------------------------------------------
