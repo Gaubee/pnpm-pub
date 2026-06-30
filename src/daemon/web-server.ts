@@ -513,7 +513,10 @@ export class WebServer {
     }
     const creds = this.deps.store.getCredentials(body.username);
     const previousToken = creds?.token ?? null;
-    const previousTotpSecret = creds?.totpSecret ?? ((await getTotpSecret(body.username)) ?? null);
+    // TOTP comes from the pool, else the merged keychain item (one read) —
+    // never the legacy split items (would prompt + lack the password).
+    const fallbackSecrets = creds?.totpSecret ? null : await getProfileSecrets(body.username);
+    const previousTotpSecret = creds?.totpSecret ?? fallbackSecrets?.totp_secret ?? null;
     const incomingTotpSecret = body.totpSecret?.trim() || undefined;
     const totpSecret = previousTotpSecret ?? incomingTotpSecret;
     if (!totpSecret) {
@@ -660,13 +663,17 @@ export class WebServer {
     const skipped: string[] = [];
     for (const profile of this.deps.store.getProfiles()) {
       const creds = this.deps.store.getCredentials(profile.username);
-      const token = creds?.token ?? (await getToken(profile.username));
-      const totpSecret = creds?.totpSecret ?? (await getTotpSecret(profile.username));
+      let token = creds?.token;
+      let totpSecret = creds?.totpSecret;
+      // Fall back to the MERGED keychain item (one read) — not the legacy split
+      // items, which would prompt twice and still lack the password.
+      if ((!token || !totpSecret)) {
+        const s = await getProfileSecrets(profile.username);
+        token = token ?? s?.npm_token;
+        totpSecret = totpSecret ?? s?.totp_secret;
+      }
       if (token && totpSecret) {
         secrets[profile.username] = { token, totp: totpSecret };
-        if (!creds) {
-          this.deps.store.setCredentials(profile.username, { token, totpSecret });
-        }
         continue;
       }
       // Chapter 8.2: warn when a configured profile has no complete credential
@@ -695,7 +702,9 @@ export class WebServer {
       try {
         await setToken(username, entry.token);
         await setTotpSecret(username, entry.totp);
-        await this.deps.store.upsertProfile({ username });
+        // Imported backups have no npm password → mark unauthenticated so the
+        // user re-auths (which then writes the merged item with the password).
+        await this.deps.store.upsertProfile({ username, authStatus: 'unauthenticated' });
         this.deps.store.setCredentials(username, { token: entry.token, totpSecret: entry.totp });
         imported.push(username);
       } catch (error: unknown) {

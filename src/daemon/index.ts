@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import type { IpcStatusFrame } from '../shared/index.js';
 import { daemonLogPath } from '../shared/paths.js';
 import { trayIconForProfile } from './avatar.js';
-import { getToken, getTotpSecret, getProfileSecrets } from './keychain.js';
+import { getProfileSecrets } from './keychain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -273,11 +273,12 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
 }
 
 /**
- * Pull every profile's secrets from the keychain into the in-memory pool
- * (Chapter 3.1 runtime phase). Prefers the MERGED auth item (one read → all
- * secrets incl. npm password); falls back to the legacy split token/totp
- * items so pre-migration profiles still warm the pool until re-auth. Missing
- * entries are silently skipped.
+ * Pull every profile's secrets from the MERGED keychain item into the in-memory
+ * pool (Chapter 3.1 runtime phase). Only the merged `pnpm_pub-key<user>-auth`
+ * item is read — ONE keychain prompt per profile. A profile without a merged
+ * item is treated as not-yet-authenticated (the WebUI will force re-auth),
+ * rather than falling back to the legacy split items (which would double the
+ * keychain prompts and still lack the stored password).
  */
 export async function refreshCredentials(store: DaemonStore): Promise<void> {
   store.clearCredentials();
@@ -289,14 +290,11 @@ export async function refreshCredentials(store: DaemonStore): Promise<void> {
         totpSecret: secrets.totp_secret,
         npmPwd: secrets.npm_pwd,
       });
-      continue;
     }
-    // Legacy fallback (no merged item yet) — password stays absent until re-auth.
-    const token = await getToken(profile.username);
-    const totpSecret = await getTotpSecret(profile.username);
-    if (token && totpSecret) {
-      store.setCredentials(profile.username, { token, totpSecret });
-    }
+    // No merged item → leave pool empty for this profile; its authStatus stays
+    // 'unauthenticated' so the UI re-prompts for the password (which then
+    // writes the merged item). We deliberately do NOT read the legacy split
+    // items here.
   }
 }
 
