@@ -109,6 +109,7 @@ export class WebServer {
     // JSON API endpoints — all token-guarded (Chapter 3.2.2 强鉴权).
     if (url.startsWith('/api/')) {
       if (!this.checkAuth(req)) {
+        this.deps.log?.(`[api] 401 ${method} ${url} (auth failed — no/bad Bearer)`);
         return json(res, 401, { ok: false, error: 'Unauthorized' });
       }
       try {
