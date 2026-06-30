@@ -47,6 +47,7 @@
   "dependencies": {
     "@github/keytar": "^7.0.0",
     "@opentray/ext-webview": "link:../jixoai-labs/opentray/packages/ext-webview",
+    "npm-profile": "^12.0.2",
     "opentray": "link:../jixoai-labs/opentray/packages/cli",
     "otplib": "^12.0.1",
     "yargs": "^17.7.2"

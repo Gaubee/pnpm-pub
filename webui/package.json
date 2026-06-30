@@ -14,6 +14,7 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "geist": "^1.7.2",
+    "html5-qrcode": "^2.3.8",
     "mode-watcher": "^1.0.0",
     "svelte-i18n": "^4.0.1",
     "tailwind-merge": "^3.0.0"

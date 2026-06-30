@@ -24,12 +24,14 @@
 	 */
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { InputGroup, InputGroupAddon } from '$lib/components/ui/input-group/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
 	import { parseNpmProfileLookupResponse, parseTokenApplyResponse } from '$lib/rest-response.js';
 	import { readWebToken } from '$lib/store.js';
 	import { parseTotpSecret, totpSecretError } from '$lib/totp.js';
+	import TotpScanner from '$lib/components/totp-scanner.svelte';
 	import IconAlert from '@lucide/svelte/icons/triangle-alert';
 	import IconLoader from '@lucide/svelte/icons/loader-circle';
 	import IconKey from '@lucide/svelte/icons/key-round';
@@ -37,6 +39,7 @@
 	import IconExternal from '@lucide/svelte/icons/external-link';
 	import IconEye from '@lucide/svelte/icons/eye';
 	import IconEyeOff from '@lucide/svelte/icons/eye-off';
+	import IconScan from '@lucide/svelte/icons/scan-line';
 	import { _ } from 'svelte-i18n';
 
 	type Phase = 'silent' | 'manual' | 'success';
@@ -58,6 +61,7 @@
 	let showPassword = $state(false);
 	let busy = $state(false);
 	let error = $state<string | null>(null);
+	let scannerOpen = $state(false);
 
 	// --- npm identity preview (daemon-backed; initials remain UI-only fallback) ---
 	let avatarUrl = $state<string | null>(null);
@@ -242,17 +246,30 @@
 		<div class="space-y-1.5">
 			<Label for="ap-t">
 				{$_('addProfile.totpSecret')}
-				<span class="font-normal text-muted-foreground">{$_('addProfile.totpFormats')}</span>
 			</Label>
-			<Input
-				id="ap-t"
-				bind:value={totpRaw}
-				placeholder={$_('addProfile.totpPlaceholder')}
-				autocomplete="off"
-				autocapitalize="characters"
-				spellcheck="false"
-				disabled={busy}
-			/>
+			<InputGroup>
+				<Input
+					id="ap-t"
+					bind:value={totpRaw}
+					placeholder={$_('addProfile.totpFormats')}
+					autocomplete="off"
+					autocapitalize="characters"
+					spellcheck="false"
+					disabled={busy}
+				/>
+				<InputGroupAddon>
+					<button
+						type="button"
+						title="扫描二维码"
+						class="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+						onclick={() => (scannerOpen = true)}
+						disabled={busy}
+						aria-label="扫描二维码"
+					>
+						<IconScan class="h-4 w-4" />
+					</button>
+				</InputGroupAddon>
+			</InputGroup>
 			{#if totpBlocker}
 				<p class="text-[11px] text-destructive">{totpHint}</p>
 			{:else if totpSecret}
@@ -282,16 +299,16 @@
 		{#if phase === 'silent'}
 			<div class="space-y-1.5">
 				<Label for="ap-p">{$_('addProfile.password')}</Label>
-				<div class="relative">
-					<Input
-						id="ap-p"
-						class="pr-9"
-						type={showPassword ? 'text' : 'password'}
-						bind:value={password}
-						placeholder="••••••••"
-						autocomplete="current-password"
-						disabled={busy}
-					/>
+					<div class="relative">
+						<Input
+							id="ap-p"
+							class="pr-9"
+							type={showPassword ? 'text' : 'password'}
+							bind:value={password}
+							placeholder={$_('addProfile.passwordPlaceholder')}
+							autocomplete="current-password"
+							disabled={busy}
+						/>
 					<button
 						type="button"
 						tabindex="-1"
@@ -369,6 +386,9 @@
 					{$_('addProfile.trySilent')}
 				</button>
 			{/if}
-		</div>
-	</form>
+			</div>
+		</form>
 {/if}
+
+<!-- TOTP 扫码弹层（全局单实例，scannerOpen 控制）。扫到合法 secret 自动回填 totpRaw。 -->
+<TotpScanner bind:open={scannerOpen} onResult={(s) => (totpRaw = s)} />
