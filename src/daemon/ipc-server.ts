@@ -206,12 +206,12 @@ function writeExit(socket: net.Socket, code: number, message: string): void {
 }
 
 function isIpcHandshake(frame: IpcRequest): frame is IpcHandshake {
-  return isRecord(frame) && typeof frame.cliVersion === 'string';
+  return 'cliVersion' in frame && typeof frame.cliVersion === 'string';
 }
 
 function isIpcPublishRequest(frame: IpcRequest): frame is IpcPublishRequest {
   return (
-    isRecord(frame) &&
+    'command' in frame &&
     frame.command === 'publish' &&
     typeof frame.cwd === 'string' &&
     Array.isArray(frame.args) &&
