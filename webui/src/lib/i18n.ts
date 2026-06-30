@@ -35,6 +35,7 @@ const en = {
 		previous: 'Previous',
 		next: 'Next',
 		language: 'Language',
+		optional: 'optional',
 	},
 	titlebar: {
 		windowTitlebar: 'Window titlebar',
@@ -219,6 +220,22 @@ const en = {
 		repositoryRequired: 'Package repository metadata is required',
 		profileScopeMismatch: 'Package scope does not match the active profile',
 	},
+	oidc: {
+		title: 'Trusted Publishing',
+		provider: 'CI/CD provider',
+		providerGithub: 'GitHub Actions',
+		providerCircleci: 'CircleCI',
+		providerGitlab: 'GitLab CI',
+		repository: 'Repository',
+		workflowFile: 'Workflow filename',
+		context: 'Context',
+		project: 'Project',
+		ref: 'Ref (branch)',
+		environment: 'Environment',
+		add: 'Add',
+		update: 'Update',
+		remove: 'Remove',
+	},
 };
 
 type MessageTree = { [key: string]: string | MessageTree };
@@ -239,6 +256,7 @@ const zh: Messages = mapMessages(en, {
 		previous: '上一页',
 		next: '下一页',
 		language: '语言',
+		optional: '可选',
 	},
 	titlebar: {
 		windowTitlebar: '窗口标题栏',
@@ -425,6 +443,22 @@ const zh: Messages = mapMessages(en, {
 		configureTrustedPublish: '配置 Trusted Publish',
 		repositoryRequired: 'package 需要 repository 元数据',
 		profileScopeMismatch: 'package scope 与当前 profile 不匹配',
+	},
+	oidc: {
+		title: 'Trusted Publishing',
+		provider: 'CI/CD 提供方',
+		providerGithub: 'GitHub Actions',
+		providerCircleci: 'CircleCI',
+		providerGitlab: 'GitLab CI',
+		repository: '仓库',
+		workflowFile: 'Workflow 文件名',
+		context: 'Context',
+		project: '项目',
+		ref: '分支（ref）',
+		environment: '环境',
+		add: '添加',
+		update: '更新',
+		remove: '删除',
 	},
 });
 const es: Messages = mapMessages(en, {

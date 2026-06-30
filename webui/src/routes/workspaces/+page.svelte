@@ -9,19 +9,79 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import OidcDialog from '$lib/components/oidc-dialog.svelte';
+	import { parseTrustListResponse } from '$lib/rest-response.js';
 	import IconScan from '@lucide/svelte/icons/scan-search';
 	import IconPin from '@lucide/svelte/icons/pin';
 	import IconPinOff from '@lucide/svelte/icons/pin-off';
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconShield from '@lucide/svelte/icons/shield-check';
 	import { goto } from '$app/navigation';
-	import type { PublishTarget } from '$lib/types.js';
+	import type { PublishTarget, TrustedPublisherConfig } from '$lib/types.js';
 	import { _ } from 'svelte-i18n';
 
 	let scanPath = $state('');
 
 	const scanned = $derived($daemon.packages);
 	const scannedRoot = $derived($daemon.scannedRoot);
+
+	// ----- Trusted Publishing (OIDC) hover-check + 配置对话框 -----
+	// hover 时按 package 拉 `/api/oidc/trust`，结果缓存在前端 30s（与后端一致），
+	// 已配置的包 OIDC 按钮变 success 色。点击开对话框（已配置则预填）。
+	const OIDC_FRONTEND_TTL_MS = 30_000;
+	let oidcState = $state<Record<string, { configs: TrustedPublisherConfig[]; fetchedAt: number }>>({});
+	let oidcDialogOpen = $state(false);
+	let oidcDialogPkg = $state('');
+	let oidcDialogConfig = $state<TrustedPublisherConfig | null>(null);
+	let oidcFetched = $state<Set<string>>(new Set()); // 已发起过 fetch 的包，避免重复
+
+	function isOidcConfigured(pkgName: string): boolean {
+		const s = oidcState[pkgName];
+		return !!s && s.configs.length > 0;
+	}
+
+	function maybeFetchOidc(pkgName: string): void {
+		if (oidcFetched.has(pkgName)) return;
+		const cached = oidcState[pkgName];
+		if (cached && Date.now() - cached.fetchedAt < OIDC_FRONTEND_TTL_MS) return;
+		oidcFetched = new Set(oidcFetched).add(pkgName);
+		fetch(`/api/oidc/trust?package=${encodeURIComponent(pkgName)}`, {
+			headers: { authorization: `Bearer ${readWebToken()}` },
+		})
+			.then((r) => r.json())
+			.then((raw) => {
+				const json = parseTrustListResponse(raw);
+				if (json?.ok && json.configs) {
+					oidcState = { ...oidcState, [pkgName]: { configs: json.configs, fetchedAt: Date.now() } };
+				}
+			})
+			.catch(() => {
+				// OIDC 状态是辅助信息，失败静默。
+			})
+			.finally(() => {
+				// 允许下次 hover 重新检查（在 TTL 内不会真发请求）。
+				const next = new Set(oidcFetched);
+				next.delete(pkgName);
+				oidcFetched = next;
+			});
+	}
+
+	function openOidcDialog(pkg: PublishTarget): void {
+		oidcDialogPkg = pkg.name;
+		// 用已缓存的配置预填（取第一条）；未缓存则为新增态。
+		const existing = oidcState[pkg.name]?.configs[0] ?? null;
+		oidcDialogConfig = existing;
+		oidcDialogOpen = true;
+	}
+
+	function onOidcChanged(): void {
+		// 提交/删除后失效该包的缓存，下次 hover 重新拉。
+		if (oidcDialogPkg) {
+			const next = { ...oidcState };
+			delete next[oidcDialogPkg];
+			oidcState = next;
+		}
+	}
 
 	function doScan(): void {
 		const trimmed = scanPath.trim();
@@ -34,11 +94,6 @@
 
 	function canPublish(pkg: PublishTarget): boolean {
 		return pkg.publishable !== false;
-	}
-
-	function oidcPayload(pkg: PublishTarget): { name: string; repo: string; path: string } | null {
-		if (!pkg.repository) return null;
-		return { name: pkg.name, repo: pkg.repository, path: pkg.path };
 	}
 
 	/** Toggle the pinned flag for a tracked workspace (Chapter 6.1.2 sidebar). */
@@ -168,17 +223,13 @@
 								<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
 								</Button>
 								<Button
-									variant="outline"
+									variant={isOidcConfigured(pkg.name) ? 'brand' : 'outline'}
 									size="sm"
 									disabled={!pkg.repository}
 									title={pkg.repository ? $_('workspaces.configureTrustedPublish') : $_('workspaces.repositoryRequired')}
-									onclick={() => {
-										const payload = oidcPayload(pkg);
-										if (payload) {
-											actions.createEvent('setup-oidc', payload);
-											goto('/');
-										}
-									}}
+									onpointerenter={() => maybeFetchOidc(pkg.name)}
+									onfocus={() => maybeFetchOidc(pkg.name)}
+									onclick={() => openOidcDialog(pkg)}
 								>
 									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.oidc')}
 								</Button>
@@ -190,3 +241,11 @@
 		</section>
 	{/if}
 </div>
+
+<!-- OIDC Trusted Publishing 配置对话框（全局单实例）。 -->
+<OidcDialog
+	bind:open={oidcDialogOpen}
+	packageName={oidcDialogPkg}
+	config={oidcDialogConfig}
+	onChanged={onOidcChanged}
+/>

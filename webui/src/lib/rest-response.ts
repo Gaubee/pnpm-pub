@@ -1,3 +1,5 @@
+import type { TrustedPublisherConfig } from './types.js';
+
 export interface TokenApplyResponse {
 	ok: boolean;
 	needsManualToken?: boolean;
@@ -91,6 +93,29 @@ export function parseNpmProfileLookupResponse(value: unknown): NpmProfileLookupR
 		},
 		error: value.error,
 	};
+}
+
+export interface TrustListResponse {
+	ok: boolean;
+	configs?: TrustedPublisherConfig[];
+	error?: string;
+}
+
+/**
+ * Parse the `GET /api/oidc/trust` response. The daemon already validated each
+ * config via `parseTrustedPublisher`, so we only enforce the envelope here and
+ * trust the inner shape (it mirrors src/shared/index.ts).
+ */
+export function parseTrustListResponse(value: unknown): TrustListResponse | null {
+	if (!isRecord(value) || typeof value.ok !== 'boolean' || !isOptionalString(value.error)) return null;
+	if (value.ok && value.configs !== undefined) {
+		if (!Array.isArray(value.configs)) return null;
+		// Light structural check: each entry must be a record with a `type`.
+		for (const c of value.configs) {
+			if (!isRecord(c) || typeof c.type !== 'string') return null;
+		}
+	}
+	return { ok: value.ok, configs: value.configs as TrustedPublisherConfig[] | undefined, error: value.error };
 }
 
 function isOptionalStringArray(value: unknown): value is string[] | undefined {

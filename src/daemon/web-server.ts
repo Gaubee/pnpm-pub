@@ -12,7 +12,7 @@ import { Buffer } from 'node:buffer';
 import type { DaemonStore } from './store.js';
 import type { PublishScheduler } from './scheduler.js';
 import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
-import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage } from '../shared/index.js';
+import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage, TrustedPublisherConfig } from '../shared/index.js';
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken } from './npm-api.js';
@@ -20,6 +20,12 @@ import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTo
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
 import { lookupNpmProfileIdentity } from './avatar.js';
+import {
+	listTrustedPublishers,
+	addTrustedPublisher,
+	removeTrustedPublisher,
+	parseTrustedPublisher,
+} from './oidc-trust.js';
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -51,6 +57,14 @@ export class WebServer {
   private server?: http.Server;
   private sockets = new Set<WebSocketConnection>();
   private authedSockets = new WeakSet<WebSocketConnection>();
+
+  /**
+   * Trusted-publisher lookup cache (Chapter 8.5). npm's `/trust` list is a
+   * network call behind 2FA, so we (a) dedup concurrent in-flight checks per
+   * package (share one promise) and (b) keep results for 30s before re-querying.
+   */
+  private trustCache = new Map<string, { promise: Promise<TrustedPublisherConfig[]>; expiresAt: number }>();
+  private static readonly TRUST_CACHE_TTL_MS = 30_000;
 
   constructor(private deps: WebServerDeps) {
     // Relay store events to every authed WebUI client.
@@ -148,6 +162,32 @@ export class WebServer {
         if (url === '/api/workspace/cancel' && method === 'POST') {
           this.deps.store.cancelRiskyWorkspace(readString(body, 'token'));
           return json(res, 200, { ok: true });
+        }
+        // ----- Trusted Publishing (OIDC) — Chapter 8.5 -----
+        if (url === '/api/oidc/trust' && method === 'GET') {
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const result = await this.listTrustCached(readQueryString(query, 'package'));
+          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error });
+        }
+        if (url === '/api/oidc/trust' && method === 'POST') {
+          const name = readString(body, 'package');
+          const config = parseTrustedPublisher(body.config);
+          if (!name || !config) return json(res, 400, { ok: false, error: 'Invalid package or config.' });
+          const auth = await this.resolveTrustAuth();
+          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          const result = await addTrustedPublisher(auth, name, config);
+          this.invalidateTrust(name);
+          return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
+        }
+        if (url === '/api/oidc/trust' && method === 'DELETE') {
+          const name = readString(body, 'package');
+          const uuid = readString(body, 'uuid');
+          if (!name || !uuid) return json(res, 400, { ok: false, error: 'Invalid package or uuid.' });
+          const auth = await this.resolveTrustAuth();
+          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          const result = await removeTrustedPublisher(auth, name, uuid);
+          this.invalidateTrust(name);
+          return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
         return json(res, 404, { ok: false, error: 'not found' });
       } catch (err) {
@@ -492,6 +532,54 @@ export class WebServer {
     }
     this.deps.store.setCredentials(body.username, { token: token!, totpSecret });
     return { ok: true };
+  }
+
+  /**
+   * Resolve the active profile's token + TOTP secret for an npm `/trust` call.
+   * The credentials pool is the fast path; keychain is the fallback (mirrors
+   * `renewProfile`). Returns null when there is no active profile or no token.
+   */
+  private async resolveTrustAuth(): Promise<{ token: string; totpSecret: string; registry: string } | null> {
+    const username = this.deps.store.getDefault();
+    if (!username) return null;
+    const profile = this.deps.store.getProfile(username);
+    const registry = profile?.registry ?? 'https://registry.npmjs.org/';
+    const creds = this.deps.store.getCredentials(username);
+    const token = creds?.token ?? (await getToken(username));
+    const totpSecret = creds?.totpSecret ?? (await getTotpSecret(username));
+    if (!token || !totpSecret) return null;
+    return { token, totpSecret, registry };
+  }
+
+  /**
+   * List trusted publishers for a package, with 30s caching + in-flight dedup
+   * (same package → share one promise). Mutating routes (add/remove) invalidate
+   * the cached entry so the next list reflects the change.
+   */
+  private async listTrustCached(name: string): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string }> {
+    const cached = this.trustCache.get(name);
+    const now = Date.now();
+    if (cached && cached.expiresAt > now) {
+      const configs = await cached.promise;
+      return { ok: true, configs };
+    }
+    const auth = await this.resolveTrustAuth();
+    if (!auth) return { ok: false, status: 401, error: 'No active profile credentials for this operation.' };
+    const promise = listTrustedPublishers(auth, name).then((r) => (r.ok ? r.configs : Promise.reject(r)));
+    this.trustCache.set(name, { promise, expiresAt: now + WebServer.TRUST_CACHE_TTL_MS });
+    try {
+      const configs = await promise;
+      return { ok: true, configs };
+    } catch (err) {
+      // Rejection carries the structured failure object from listTrustedPublishers.
+      this.trustCache.delete(name);
+      const fail = err as { ok: false; status: number; error: string };
+      return { ok: false, status: fail.status, error: fail.error };
+    }
+  }
+
+  private invalidateTrust(name: string): void {
+    this.trustCache.delete(name);
   }
 
   private async restoreRenewCredentialState(

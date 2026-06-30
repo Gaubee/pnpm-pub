@@ -194,6 +194,71 @@ export interface OidcContext {
   force?: boolean;
 }
 
+/**
+ * npm Trusted Publishing (OIDC) "trusted publisher" config — the shape carried
+ * by npm's `/-/package/{package}/trust` endpoints (GET list / POST add /
+ * DELETE by uuid). One config binds a package to one CI/CD provider; the
+ * `type` discriminates the provider-specific `claims`.
+ *
+ * See https://api-docs.npmjs.com/ — these endpoints require an npm Bearer token
+ * + a 2FA OTP. The daemon owns the network call (token + OTP from keychain),
+ * the webui only ever mirrors these types.
+ */
+export type TrustedPublisherType = 'github' | 'circleci' | 'gitlab';
+
+/** Permissions granted to the trusted publisher (npm defaults to both). */
+export type TrustedPublisherPermission =
+  | 'createPackage'
+  | 'createStagedPackage';
+
+export interface TrustedPublisherBase {
+  /** Server-assigned config id; present on GET/DELETE, omitted on POST add. */
+  id?: string;
+  /** Permissions granted; required on POST, present on GET. */
+  permissions: TrustedPublisherPermission[];
+}
+
+export interface GithubActionsPublisher extends TrustedPublisherBase {
+  type: 'github';
+  claims: {
+    /** owner/name slug. */
+    repository: string;
+    /** Workflow filename, e.g. publish.yml. */
+    workflow_ref: { file: string };
+    /** Optional npm environment binding. */
+    environment?: string;
+  };
+}
+
+export interface CircleCiPublisher extends TrustedPublisherBase {
+  type: 'circleci';
+  claims: {
+    /** VCS slug owner/name. */
+    repository: string;
+    /** CircleCI context name. */
+    context?: string;
+    /** Optional npm environment binding. */
+    environment?: string;
+  };
+}
+
+export interface GitlabCiPublisher extends TrustedPublisherBase {
+  type: 'gitlab';
+  claims: {
+    /** GitLab project path, e.g. group/project. */
+    project: string;
+    /** Optional ref (branch) filter. */
+    ref?: string;
+    /** Optional npm environment binding. */
+    environment?: string;
+  };
+}
+
+export type TrustedPublisherConfig =
+  | GithubActionsPublisher
+  | CircleCiPublisher
+  | GitlabCiPublisher;
+
 export interface CreatePlaceholderContext {
   /** Package name to reserve by publishing a generated v0.0.0 artifact. */
   name: string;

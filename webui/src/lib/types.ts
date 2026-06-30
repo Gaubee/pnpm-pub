@@ -53,6 +53,34 @@ export interface OidcContext {
 	force?: boolean;
 }
 
+/**
+ * npm Trusted Publishing (OIDC) trusted-publisher config — mirrors the
+ * `TrustedPublisherConfig` in src/shared/index.ts (the daemon owns the network
+ * call; the webui only ever mirrors these types).
+ */
+export type TrustedPublisherType = 'github' | 'circleci' | 'gitlab';
+export type TrustedPublisherPermission = 'createPackage' | 'createStagedPackage';
+export interface TrustedPublisherBase {
+	id?: string;
+	permissions: TrustedPublisherPermission[];
+}
+export interface GithubActionsPublisher extends TrustedPublisherBase {
+	type: 'github';
+	claims: { repository: string; workflow_ref: { file: string }; environment?: string };
+}
+export interface CircleCiPublisher extends TrustedPublisherBase {
+	type: 'circleci';
+	claims: { repository: string; context?: string; environment?: string };
+}
+export interface GitlabCiPublisher extends TrustedPublisherBase {
+	type: 'gitlab';
+	claims: { project: string; ref?: string; environment?: string };
+}
+export type TrustedPublisherConfig =
+	| GithubActionsPublisher
+	| CircleCiPublisher
+	| GitlabCiPublisher;
+
 export interface CreatePlaceholderContext {
 	name: string;
 }

@@ -9,6 +9,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
+	import OidcDialog from '$lib/components/oidc-dialog.svelte';
 	import { actions } from '$lib/store.js';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
@@ -18,9 +19,9 @@
 
 	let showActions = $state(false);
 	let placeholderName = $state('');
+	// OIDC 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
 	let oidcName = $state('');
-	let oidcRepo = $state('');
-	let oidcPath = $state('');
+	let oidcDialogOpen = $state(false);
 
 	function createPlaceholder(): void {
 		const name = placeholderName.trim();
@@ -30,16 +31,10 @@
 		placeholderName = '';
 	}
 
-	function createOidc(): void {
-		const name = oidcName.trim();
-		const repo = oidcRepo.trim();
-		const path = oidcPath.trim();
-		if (!name || !repo || !path) return;
-		actions.createEvent('setup-oidc', { name, repo, path });
+	function openOidcDialog(): void {
+		if (!oidcName.trim()) return;
 		showActions = false;
-		oidcName = '';
-		oidcRepo = '';
-		oidcPath = '';
+		oidcDialogOpen = true;
 	}
 </script>
 
@@ -69,10 +64,8 @@
 						<div class="space-y-1.5 border-t border-border pt-3">
 							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>
 							<Label class="sr-only" for="oidc-name">{$_('events.packageName')}</Label>
-							<Input id="oidc-name" bind:value={oidcName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Input bind:value={oidcRepo} placeholder={$_('events.repositoryPlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Input bind:value={oidcPath} placeholder={$_('events.packagePathPlaceholder')} onkeydown={(e) => e.key === 'Enter' && createOidc()} />
-							<Button variant="brand" size="sm" class="w-full" onclick={createOidc}>{$_('events.configureTrustedPublish')}</Button>
+							<Input id="oidc-name" bind:value={oidcName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && openOidcDialog()} />
+							<Button variant="brand" size="sm" class="w-full" disabled={!oidcName.trim()} onclick={openOidcDialog}>{$_('events.configureTrustedPublish')}</Button>
 						</div>
 						<div class="space-y-1.5 border-t border-border pt-3">
 							<Button
@@ -123,3 +116,11 @@
 		{/if}
 	</section>
 </div>
+
+<!-- OIDC Trusted Publishing 配置对话框（从 New Action 菜单触发）。 -->
+<OidcDialog
+	bind:open={oidcDialogOpen}
+	packageName={oidcName.trim()}
+	config={null}
+	onChanged={() => {}}
+/>
