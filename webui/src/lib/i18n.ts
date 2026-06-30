@@ -225,6 +225,7 @@ const en = {
 	oidc: {
 		title: 'Trusted Publishing',
 		provider: 'CI/CD provider',
+		currentConfig: 'Current',
 		providerGithub: 'GitHub Actions',
 		providerCircleci: 'CircleCI',
 		providerGitlab: 'GitLab CI',
