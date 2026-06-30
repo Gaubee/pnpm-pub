@@ -39,6 +39,9 @@ export default defineConfig({
       '@pnpm-pub/shared': path.resolve(__dirname, 'src/shared/index.ts'),
       // Allow webui tests to import $shared/schemas.js → src/shared/schemas.ts
       '$shared': path.resolve(__dirname, 'src/shared/'),
+      // svelte-i18n lives in webui/node_modules; resolve it for daemon-side tests
+      // that import webui modules which transitively use svelte-i18n.
+      'svelte-i18n': path.resolve(__dirname, 'webui/node_modules/svelte-i18n/dist/runtime.js'),
     },
   },
   test: {
