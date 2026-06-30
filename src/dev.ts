@@ -72,11 +72,15 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
     if (shuttingDown) return;
 
     if (shuttingDown) return;
+    // Run the daemon via bun (not tsx). tsx compiles to CJS whose __dirname /
+    // require semantics differ from the ESM runtime, which made the keytar
+    // native binding and keychain reads silently fail in dev. bun runs TS as
+    // ESM natively, matching the bundled (production) runtime.
     const daemon = spawnManaged(
       spawnImpl,
       active,
-      'pnpm',
-      ['exec', 'tsx', 'src/daemon/dev.ts'],
+      'bun',
+      ['run', 'src/daemon/dev.ts'],
       {
         PNPM_PUB_DEV_DAEMON_PORT: daemonPort,
         PNPM_PUB_DEV_WEBVIEW_URL: webviewUrl,
