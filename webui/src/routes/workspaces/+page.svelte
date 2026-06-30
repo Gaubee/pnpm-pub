@@ -25,9 +25,9 @@
 	const scanned = $derived($daemon.packages);
 	const scannedRoot = $derived($daemon.scannedRoot);
 
-	// ----- Trusted Publishing (OIDC) hover-check + 配置对话框 -----
-	// hover 时按 package 拉 `/api/oidc/trust`，结果缓存在前端 30s（与后端一致），
-	// 已配置的包 OIDC 按钮变 success 色。点击开对话框（已配置则预填）。
+	// ----- Trusted Publishing (OIDC) -----
+	// 包列表出现后自动预取每个包的 trust 配置（结果前端缓存 30s，与后端一致）。
+	// 已配置的包：OIDC 按钮变 brand 色 + 卡片直接显示配置摘要。点击开对话框。
 	const OIDC_FRONTEND_TTL_MS = 30_000;
 	let oidcState = $state<Record<string, { configs: TrustedPublisherConfig[]; fetchedAt: number }>>({});
 	let oidcDialogOpen = $state(false);
@@ -39,6 +39,25 @@
 		const s = oidcState[pkgName];
 		return !!s && s.configs.length > 0;
 	}
+
+	/** Short human label for a trusted-publisher config (e.g. "github · jixoai/opentray · npm-release"). */
+	function oidcSummary(cfg: TrustedPublisherConfig): string {
+		const repo =
+			cfg.type === 'gitlab' ? cfg.claims.project : cfg.claims.repository;
+		const env = cfg.claims.environment;
+		const parts = [cfg.type, repo];
+		if (env) parts.push(env);
+		return parts.filter(Boolean).join(' · ');
+	}
+	function oidcConfigs(pkgName: string): TrustedPublisherConfig[] {
+		return oidcState[pkgName]?.configs ?? [];
+	}
+
+	// 包列表一出现就预取每个包的 trust 配置（hover/focus 仍可手动刷新）。
+	$effect(() => {
+		void scanned;
+		for (const pkg of scanned) maybeFetchOidc(pkg.name);
+	});
 
 	function maybeFetchOidc(pkgName: string): void {
 		if (oidcFetched.has(pkgName)) return;
@@ -203,6 +222,13 @@
 							{#if pkg.repository}
 								<p class="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{pkg.repository}</p>
 							{/if}
+							<!-- Trusted Publishing 配置（已配置则直接显示在卡片上） -->
+							{#each oidcConfigs(pkg.name) as cfg (cfg.id ?? oidcSummary(cfg))}
+								<div class="mt-1 flex items-center gap-1.5">
+									<IconShield class="h-3 w-3 shrink-0 text-success" />
+									<span class="truncate text-[11px] text-success/90">{oidcSummary(cfg)}</span>
+								</div>
+							{/each}
 							{#if pkg.description}
 								<p class="mt-0.5 truncate text-xs text-muted-foreground">{pkg.description}</p>
 							{/if}
