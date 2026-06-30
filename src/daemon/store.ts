@@ -166,6 +166,15 @@ export class DaemonStore extends EventEmitter {
     this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
   }
 
+  async removeWorkspace(path: string): Promise<boolean> {
+    const idx = this.workspaces.paths.findIndex((w) => w.path === path);
+    if (idx < 0) return false;
+    this.workspaces.paths.splice(idx, 1);
+    await this.writeJson(workspacesPath(), this.workspaces);
+    this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
+    return true;
+  }
+
   /**
    * Risk-boundary confirmation state machine (Chapter 5.3.2).
    *

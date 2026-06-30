@@ -13,6 +13,7 @@
 	import IconPin from '@lucide/svelte/icons/pin';
 	import IconPinOff from '@lucide/svelte/icons/pin-off';
 	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
+	import IconTrash from '@lucide/svelte/icons/trash-2';
 	import { goto } from '$app/navigation';
 	import { _ } from 'svelte-i18n';
 
@@ -46,6 +47,19 @@
 				method: 'POST',
 				headers: { 'content-type': 'application/json', authorization: `Bearer ${sessionStorage.getItem('pnpm-pub-webtoken') ?? ''}` },
 				body: JSON.stringify({ path: ws.path, pinned: next }),
+			});
+		} catch {
+			/* best-effort */
+		}
+	}
+
+	/** Remove a tracked workspace root. */
+	async function removeWorkspace(ws: { path: string }): Promise<void> {
+		try {
+			await fetch('/api/workspace/remove', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json', authorization: `Bearer ${sessionStorage.getItem('pnpm-pub-webtoken') ?? ''}` },
+				body: JSON.stringify({ path: ws.path }),
 			});
 		} catch {
 			/* best-effort */
@@ -91,15 +105,27 @@
 						<span class="truncate font-mono text-xs">{ws.path}</span>
 						<IconChevronRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
 					</button>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="h-7 w-7 shrink-0"
-						onclick={() => pin(ws)}
-						aria-label={$_('workspaces.togglePin')}
-					>
-						{#if ws.pinned}<IconPin class="h-3.5 w-3.5 text-brand" />{:else}<IconPinOff class="h-3.5 w-3.5" />{/if}
-					</Button>
+					<div class="flex shrink-0 items-center gap-0.5">
+						<Button
+							variant="ghost"
+							size="icon"
+							class="h-7 w-7"
+							onclick={() => pin(ws)}
+							aria-label={$_('workspaces.togglePin')}
+						>
+							{#if ws.pinned}<IconPin class="h-3.5 w-3.5 text-brand" />{:else}<IconPinOff class="h-3.5 w-3.5" />{/if}
+						</Button>
+						<Button
+							variant="ghost"
+							size="icon"
+							class="h-7 w-7 text-muted-foreground hover:text-destructive"
+							onclick={() => removeWorkspace(ws)}
+							aria-label={$_('workspaces.removeRoot')}
+							title={$_('workspaces.removeRoot')}
+						>
+							<IconTrash class="h-3.5 w-3.5" />
+						</Button>
+					</div>
 				</div>
 			{/each}
 		</section>

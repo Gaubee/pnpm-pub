@@ -162,6 +162,11 @@ export class WebServer {
           await this.deps.store.pinWorkspace(parsed.path, parsed.pinned);
           return json(res, 200, { ok: true });
         }
+        if (url === '/api/workspace/remove' && method === 'POST') {
+          const parsed = parseOrThrow(z.object({ path: z.string().min(1) }), body, 'remove workspace body');
+          const ok = await this.deps.store.removeWorkspace(parsed.path);
+          return json(res, ok ? 200 : 404, { ok });
+        }
         if (url === '/api/workspace/confirm' && method === 'POST') {
           const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, 'token').token;
           const ok = await this.deps.store.confirmRiskyWorkspace(token);

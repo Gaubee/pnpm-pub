@@ -226,6 +226,7 @@ const en = {
 		batchOidc: 'Batch OIDC',
 		filterPlaceholder: 'Filter packages…',
 		noFilterMatch: 'No packages match the filter.',
+		removeRoot: 'Remove root',
 	},
 	oidc: {
 		title: 'Trusted Publishing',
