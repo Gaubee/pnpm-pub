@@ -279,11 +279,16 @@ function parseProfile(value: unknown): Profile | null {
   if (!isRecord(value) || typeof value.username !== 'string' || value.username.length === 0) return null;
   if (!isOptionalString(value.registry) || !isOptionalString(value.avatarUrl)) return null;
   if (value.ciPreferences !== undefined && !isRecord(value.ciPreferences)) return null;
+  const authStatus =
+    value.authStatus === 'authenticated' || value.authStatus === 'unauthenticated'
+      ? value.authStatus
+      : undefined;
   return {
     username: value.username,
     registry: value.registry,
     avatarUrl: value.avatarUrl,
     ciPreferences: value.ciPreferences,
+    authStatus,
   };
 }
 
