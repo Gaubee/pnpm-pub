@@ -204,8 +204,8 @@ export const PubEventSchema = z.object({
   status: EventStatusSchema,
   profile: z.string(),
   profileOverride: z.string().optional(),
-  createdAt: z.number(),
-  resolvedAt: z.number().optional(),
+  createdAt: z.number().int().nonnegative(),
+  resolvedAt: z.number().int().nonnegative().optional(),
   payload: EventPayloadSchema.optional(),
   result: z.string().optional(),
   clockDriftRecovered: z.boolean().optional(),
@@ -227,7 +227,7 @@ export type TrustedPublisherPermission = z.infer<typeof TrustedPublisherPermissi
 
 const TrustedPublisherBaseSchema = z.object({
   id: z.string().optional(),
-  permissions: z.array(TrustedPublisherPermissionSchema),
+  permissions: z.array(TrustedPublisherPermissionSchema).default(['createPackage', 'createStagedPackage']),
 });
 
 export const GithubActionsPublisherSchema = TrustedPublisherBaseSchema.extend({

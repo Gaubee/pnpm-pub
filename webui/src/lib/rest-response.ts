@@ -1,139 +1,101 @@
+/**
+ * REST response parsers — the frontend's deserialization boundary for daemon
+ * REST (`/api/*`) responses. Each parser delegates to a Zod schema via
+ * `safeParse`, returning null on validation failure (mirrors the old hand-
+ * written validators but with full structural coverage).
+ */
+import { z } from 'zod';
+import { TrustedPublisherConfigSchema } from '$shared/schemas.js';
 import type { TrustedPublisherConfig } from './types.js';
 
-export interface TokenApplyResponse {
-	ok: boolean;
-	needsManualToken?: boolean;
-	error?: string;
-}
+// ---------------------------------------------------------------------------
+// Response schemas (passthrough for forward-compat with new daemon fields)
+// ---------------------------------------------------------------------------
 
-export interface ExportResponse {
-	ok: boolean;
-	bundle?: unknown;
-	error?: string;
-}
+const TokenApplyResponseSchema = z.object({
+  ok: z.boolean(),
+  needsManualToken: z.boolean().optional(),
+  error: z.string().optional(),
+});
 
-export interface ImportResponse {
-	ok: boolean;
-	imported?: string[];
-	error?: string;
-}
+const ExportResponseSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+  // bundle is untyped opaque JSON; accept anything when present.
+  bundle: z.unknown().optional(),
+});
 
-export interface OkResponse {
-	ok: boolean;
-}
+const ImportResponseSchema = z.object({
+  ok: z.boolean(),
+  imported: z.array(z.string()).optional(),
+  error: z.string().optional(),
+});
 
-export interface NpmProfileLookupResponse {
-	ok: boolean;
-	profile?: {
-		username: string;
-		registry: string;
-		avatarUrl: string | null;
-		source: 'authenticated-profile' | 'registry-profile' | 'maintainer-gravatar' | 'none';
-	};
-	error?: string;
-}
+const OkResponseSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+});
+
+const NpmProfileLookupResponseSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional(),
+  profile: z
+    .object({
+      username: z.string(),
+      registry: z.string(),
+      avatarUrl: z.string().nullable(),
+      source: z.enum(['authenticated-profile', 'registry-profile', 'maintainer-gravatar', 'none']),
+    })
+    .optional(),
+});
+
+const TrustListResponseSchema = z.object({
+  ok: z.boolean(),
+  configs: z.array(TrustedPublisherConfigSchema).optional(),
+  error: z.string().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Derived types (re-exported for callers)
+// ---------------------------------------------------------------------------
+
+export type TokenApplyResponse = z.infer<typeof TokenApplyResponseSchema>;
+export type ExportResponse = z.infer<typeof ExportResponseSchema>;
+export type ImportResponse = z.infer<typeof ImportResponseSchema>;
+export type OkResponse = z.infer<typeof OkResponseSchema>;
+export type NpmProfileLookupResponse = z.infer<typeof NpmProfileLookupResponseSchema>;
+export type TrustListResponse = { ok: boolean; configs?: TrustedPublisherConfig[]; error?: string };
+
+// ---------------------------------------------------------------------------
+// Parsers
+// ---------------------------------------------------------------------------
 
 export function parseTokenApplyResponse(value: unknown): TokenApplyResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean') return null;
-	if (!isOptionalBoolean(value.needsManualToken) || !isOptionalString(value.error)) return null;
-	return {
-		ok: value.ok,
-		needsManualToken: value.needsManualToken,
-		error: value.error,
-	};
+  return safeOrNull(TokenApplyResponseSchema, value);
 }
 
 export function parseExportResponse(value: unknown): ExportResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean' || !isOptionalString(value.error)) return null;
-	return {
-		ok: value.ok,
-		bundle: value.bundle,
-		error: value.error,
-	};
+  return safeOrNull(ExportResponseSchema, value);
 }
 
 export function parseImportResponse(value: unknown): ImportResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean') return null;
-	if (!isOptionalStringArray(value.imported) || !isOptionalString(value.error)) return null;
-	return {
-		ok: value.ok,
-		imported: value.imported,
-		error: value.error,
-	};
+  return safeOrNull(ImportResponseSchema, value);
 }
 
 export function parseOkResponse(value: unknown): OkResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean') return null;
-	return { ok: value.ok };
+  return safeOrNull(OkResponseSchema, value);
 }
 
 export function parseNpmProfileLookupResponse(value: unknown): NpmProfileLookupResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean' || !isOptionalString(value.error)) return null;
-	if (value.profile === undefined) return { ok: value.ok, error: value.error };
-	if (!isRecord(value.profile)) return null;
-	const source = value.profile.source;
-	if (
-		typeof value.profile.username !== 'string' ||
-		typeof value.profile.registry !== 'string' ||
-		!isOptionalNullableString(value.profile.avatarUrl) ||
-		(source !== 'authenticated-profile' &&
-			source !== 'registry-profile' &&
-			source !== 'maintainer-gravatar' &&
-			source !== 'none')
-	) {
-		return null;
-	}
-	return {
-		ok: value.ok,
-		profile: {
-			username: value.profile.username,
-			registry: value.profile.registry,
-			avatarUrl: value.profile.avatarUrl ?? null,
-			source,
-		},
-		error: value.error,
-	};
+  return safeOrNull(NpmProfileLookupResponseSchema, value);
 }
 
-export interface TrustListResponse {
-	ok: boolean;
-	configs?: TrustedPublisherConfig[];
-	error?: string;
-}
-
-/**
- * Parse the `GET /api/oidc/trust` response. The daemon already validated each
- * config via `parseTrustedPublisher`, so we only enforce the envelope here and
- * trust the inner shape (it mirrors src/shared/index.ts).
- */
 export function parseTrustListResponse(value: unknown): TrustListResponse | null {
-	if (!isRecord(value) || typeof value.ok !== 'boolean' || !isOptionalString(value.error)) return null;
-	if (value.ok && value.configs !== undefined) {
-		if (!Array.isArray(value.configs)) return null;
-		// Light structural check: each entry must be a record with a `type`.
-		for (const c of value.configs) {
-			if (!isRecord(c) || typeof c.type !== 'string') return null;
-		}
-	}
-	return { ok: value.ok, configs: value.configs as TrustedPublisherConfig[] | undefined, error: value.error };
+  return safeOrNull(TrustListResponseSchema, value);
 }
 
-function isOptionalStringArray(value: unknown): value is string[] | undefined {
-	return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
-}
-
-function isOptionalNullableString(value: unknown): value is string | null | undefined {
-	return value === undefined || value === null || typeof value === 'string';
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-	return value === undefined || typeof value === 'string';
-}
-
-function isOptionalBoolean(value: unknown): value is boolean | undefined {
-	return value === undefined || typeof value === 'boolean';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
+/** Run safeParse; return the data on success, null on failure. */
+function safeOrNull<T>(schema: z.ZodType<T>, value: unknown): T | null {
+  const result = schema.safeParse(value);
+  return result.success ? result.data : null;
 }

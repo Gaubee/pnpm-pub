@@ -139,7 +139,12 @@ export class WebServer {
           return json(res, 200, result);
         }
         if (url === '/api/import' && method === 'POST') {
-          const parsed = parseOrThrow(ImportBodySchema, body, 'import body');
+          let parsed;
+          try {
+            parsed = parseOrThrow(ImportBodySchema, body, 'import body');
+          } catch {
+            return json(res, 400, { ok: false, error: 'Invalid backup bundle.' });
+          }
           const result = await this.importBundle(parsed.bundle, parsed.password, parsed.usernames);
           return json(res, 200, result);
         }

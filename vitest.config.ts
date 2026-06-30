@@ -37,6 +37,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@pnpm-pub/shared': path.resolve(__dirname, 'src/shared/index.ts'),
+      // Allow webui tests to import $shared/schemas.js → src/shared/schemas.ts
+      '$shared': path.resolve(__dirname, 'src/shared/'),
     },
   },
   test: {

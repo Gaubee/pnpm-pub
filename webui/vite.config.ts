@@ -2,11 +2,19 @@ import tailwindcss from '@tailwindcss/vite';
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
 import type { ServerOptions } from 'vite';
 
 // Chapter 4.4.1: adapter-static compiles the SvelteKit app to a pure SPA whose
 // output the daemon serves from dist/webui.
 export default defineConfig({
+	resolve: {
+		alias: {
+			// Allow the webui to import the shared Zod schemas from the repo root
+			// (src/shared/schemas.ts is pure Zod — no Node APIs).
+			'$shared': fileURLToPath(new URL('../src/shared/', import.meta.url)),
+		},
+	},
 	plugins: [
 		tailwindcss(),
 		sveltekit({
