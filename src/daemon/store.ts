@@ -225,6 +225,7 @@ export class DaemonStore extends EventEmitter {
     profile: string;
     profileOverride?: string;
     payload?: EventPayload;
+    groupId?: string;
   }): PubEvent {
     const evt: PubEvent = {
       id: randomUUID(),
@@ -234,6 +235,7 @@ export class DaemonStore extends EventEmitter {
       profileOverride: opts.profileOverride,
       createdAt: Date.now(),
       payload: opts.payload,
+      groupId: opts.groupId,
     };
     this.events.unshift(evt);
     this.emit('event', { type: 'event' as const, event: evt });

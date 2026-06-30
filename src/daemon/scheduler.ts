@@ -1105,7 +1105,7 @@ export class PublishScheduler {
    * create the Event through the store, then register it in the executable
    * pending map before any confirm action can reach NPM or the filesystem.
    */
-  createProactiveEvent(kind: EventKind, profile: string, payload: unknown): ProactiveEventResult {
+  createProactiveEvent(kind: EventKind, profile: string, payload: unknown, groupId?: string): ProactiveEventResult {
     if (!this.store.getProfile(profile)) {
       return { ok: false, error: `Profile "${profile}" not found. Add it via the tray GUI first.` };
     }
@@ -1113,7 +1113,7 @@ export class PublishScheduler {
     if (!parsed) {
       return { ok: false, error: `Invalid or unsupported payload for ${kind}.` };
     }
-    const event = this.store.createEvent({ kind, profile, payload: parsed });
+    const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
     this.pending.set(event.id, { event, client: DETACHED_CLIENT });
     return { ok: true, event };
   }

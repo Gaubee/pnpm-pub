@@ -277,9 +277,9 @@ export const actions = {
 			body: JSON.stringify({ token }),
 		}).then(() => undefined, () => undefined);
 	},
-	createEvent<K extends EventKind>(kind: K, payload: EventPayloadData<K>): void {
-		send({ type: 'create-event', kind, payload });
-	},
+	createEvent<K extends EventKind>(kind: K, payload: EventPayloadData<K>, groupId?: string): void {
+			send({ type: 'create-event', kind, payload, ...(groupId ? { groupId } : {}) });
+		},
 	// import/export are handled via REST (/api/export, /api/import), not WS.
 };
 

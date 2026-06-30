@@ -118,6 +118,8 @@ export interface PubEvent {
 	payload?: EventPayload;
 	result?: string;
 	clockDriftRecovered?: boolean;
+	/** Batch correlation id — events sharing a groupId were created together. */
+	groupId?: string;
 }
 
 export interface BackupBundle {
@@ -142,4 +144,4 @@ export type WsClientMessage =
 	| { type: 'confirm-event'; id: string }
 	| { type: 'reject-event'; id: string }
 	| { type: 'scan-workspace'; root: string }
-	| { type: 'create-event'; kind: EventKind; payload: unknown };
+	| { type: 'create-event'; kind: EventKind; payload: unknown; groupId?: string };

@@ -359,7 +359,7 @@ export class WebServer {
         break;
       }
       case 'create-event': {
-        this.createProactiveEvent(msg.kind, msg.payload, send);
+        this.createProactiveEvent(msg.kind, msg.payload, send, msg.groupId);
         break;
       }
     }
@@ -412,13 +412,13 @@ export class WebServer {
     });
   }
 
-  private createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void): void {
+  private createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void, groupId?: string): void {
     const profile = this.deps.store.getDefault();
     if (!profile) {
       send({ type: 'toast', level: 'error', message: 'Select a profile first.' });
       return;
     }
-    const result = this.deps.scheduler.createProactiveEvent(kind, profile, payload);
+    const result = this.deps.scheduler.createProactiveEvent(kind, profile, payload, groupId);
     if (!result.ok) {
       send({ type: 'toast', level: 'error', message: result.error });
       return;

@@ -209,6 +209,8 @@ export const PubEventSchema = z.object({
   payload: EventPayloadSchema.optional(),
   result: z.string().optional(),
   clockDriftRecovered: z.boolean().optional(),
+  /** Batch correlation id — events sharing a groupId were created together. */
+  groupId: z.string().optional(),
 });
 export type PubEvent = z.infer<typeof PubEventSchema>;
 
@@ -297,7 +299,7 @@ export const WsClientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('confirm-event'), id: z.string() }),
   z.object({ type: z.literal('reject-event'), id: z.string() }),
   z.object({ type: z.literal('scan-workspace'), root: z.string() }),
-  z.object({ type: z.literal('create-event'), kind: EventKindSchema, payload: z.unknown() }),
+  z.object({ type: z.literal('create-event'), kind: EventKindSchema, payload: z.unknown(), groupId: z.string().optional() }),
 ]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 
