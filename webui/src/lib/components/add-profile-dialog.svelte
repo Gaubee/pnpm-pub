@@ -13,11 +13,15 @@
 		DialogTitle,
 	} from '$lib/components/ui/dialog/index.js';
 	import AddProfileForm from '$lib/components/add-profile-form.svelte';
-	import { closeAddProfile, daemon, ui } from '$lib/store.js';
+	import { closeAddProfile, daemon, ui, activeProfile } from '$lib/store.js';
 	import { _ } from 'svelte-i18n';
 
 	/** Dismissable only once a profile exists (the no-profile case uses the route). */
 	const hasProfiles = $derived($daemon.profiles.length > 0);
+	/** Reauth mode when the active profile is not authenticated. */
+	const isReauth = $derived(
+		hasProfiles && ($activeProfile?.authStatus ?? 'unauthenticated') !== 'authenticated',
+	);
 
 	let open = $derived($ui.addProfileOpen);
 
@@ -29,7 +33,11 @@
 
 <Dialog bind:open={() => open, setOpen}>
 	<DialogContent class="max-w-[440px]" showCloseButton={hasProfiles} aria-describedby={undefined}>
-		<DialogTitle class="sr-only">{$_('addProfile.heading')}</DialogTitle>
-		<AddProfileForm onSuccess={() => closeAddProfile(true)} />
+		<DialogTitle class="sr-only">{$_(isReauth ? 'addProfile.reauthHeading' : 'addProfile.heading')}</DialogTitle>
+		<AddProfileForm
+			mode={isReauth ? 'reauth' : 'add'}
+			username={isReauth ? $activeProfile?.username : undefined}
+			onSuccess={() => closeAddProfile(true)}
+		/>
 	</DialogContent>
 </Dialog>

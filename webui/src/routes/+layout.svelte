@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { connect, daemon, pendingEvents } from '$lib/store.js';
+	import { connect, daemon, pendingEvents, activeProfile, openAddProfile, ui } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
@@ -57,6 +57,23 @@
 	$effect(() => {
 		if (!needsOnboarding || isAddProfileRoute) return;
 		goto(`/add-profile${window.location.hash}`, { replaceState: true });
+	});
+
+	/**
+	 * Re-auth gate: a profile exists but the active one is NOT authenticated
+	 * (token expired / password changed / never finished auth). Force the Add
+	 * Profile dialog open as a "re-authenticate" surface — the user re-enters
+	 * the password and the daemon silently re-mints a token. Does NOT redirect
+	 * to a route (keeps the current page mounted behind the dialog).
+	 */
+	const needsReauth = $derived(
+		$daemon.profilesLoaded &&
+			$daemon.profiles.length > 0 &&
+			($activeProfile?.authStatus ?? 'unauthenticated') !== 'authenticated',
+	);
+	$effect(() => {
+		// Only re-open when the dialog isn't already open (avoid fighting user closes).
+		if (needsReauth && !$ui.addProfileOpen) openAddProfile();
 	});
 
 	/**

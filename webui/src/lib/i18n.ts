@@ -58,8 +58,10 @@ const en = {
 	addProfile: {
 		title: 'Add Profile · pnpm-pub',
 		heading: 'Add profile',
+		reauthHeading: 'Re-authenticate',
 		manualHeading: 'Add profile · manual',
 		intro: 'Password is exchanged for a token, while the secret is stored in keychain for later renewal.',
+		reauthIntro: 'Your token is no longer valid. Re-enter your password to re-mint it.',
 		manualIntro: 'Silent apply failed — paste a publish token instead.',
 		profileAdded: 'Profile added',
 		username: 'Username',
@@ -279,8 +281,10 @@ const zh: Messages = mapMessages(en, {
 	addProfile: {
 		title: '添加 Profile · pnpm-pub',
 		heading: '添加 profile',
+		reauthHeading: '重新认证',
 		manualHeading: '添加 profile · 手动',
 		intro: '密码会换成 token，而密钥会被保存在 keychain 中，方便后续续期。',
+		reauthIntro: '你的 token 已失效。重新输入密码以重新获取 token。',
 		manualIntro: '静默应用失败 - 请粘贴 publish token。',
 		profileAdded: 'profile 已添加',
 		username: '用户名',

@@ -11,7 +11,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { KEYCHAIN_SERVICE, KEYCHAIN_SERVICE_SANDBOX, tokenKey, totpKey } from '../shared/index.js';
+import { KEYCHAIN_SERVICE, KEYCHAIN_SERVICE_SANDBOX, tokenKey, totpKey, authKey } from '../shared/index.js';
 
 // ESM-safe __dirname (tsdown shims __dirname in the bundle, but dev/tsx and
 // vitest run true ESM where it is undefined).
@@ -143,8 +143,57 @@ export async function getTotpSecret(username: string): Promise<string | null> {
 }
 
 export async function deleteProfile(username: string): Promise<void> {
+  // Best-effort: clear the merged auth item AND the legacy split items so no
+  // stale secret survives a profile removal regardless of which format wrote it.
+  await deleteProfileSecrets(username).catch(() => {});
   await deleteToken(username);
   await deleteTotpSecret(username);
+}
+
+// ---------------------------------------------------------------------------
+// Merged profile-auth item (Chapter 4.2) — stores ALL of a profile's secrets
+// (token + totp + npm password) as ONE JSON string under `authKey(username)`.
+// One keychain read (one OS auth prompt) yields everything, vs. the legacy
+// split format which required a prompt per field.
+// ---------------------------------------------------------------------------
+
+/** Every persisted secret for one profile, stored together in the keychain. */
+export interface ProfileSecrets {
+  npm_token: string;
+  totp_secret: string;
+  /** Stored so an expired token can be silently re-minted without re-entering. */
+  npm_pwd: string;
+}
+
+function isProfileSecrets(value: unknown): value is ProfileSecrets {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.npm_token === 'string' && typeof v.totp_secret === 'string' && typeof v.npm_pwd === 'string';
+}
+
+/** Read the merged profile-auth item; null when absent or malformed. */
+export async function getProfileSecrets(username: string): Promise<ProfileSecrets | null> {
+  const k = await loadKeytar();
+  const raw = await k.getPassword(activeService(), authKey(username));
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isProfileSecrets(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write (or overwrite) the merged profile-auth item. */
+export async function setProfileSecrets(username: string, secrets: ProfileSecrets): Promise<void> {
+  const k = await loadKeytar();
+  await k.setPassword(activeService(), authKey(username), JSON.stringify(secrets));
+}
+
+/** Remove the merged profile-auth item. */
+export async function deleteProfileSecrets(username: string): Promise<void> {
+  const k = await loadKeytar();
+  await k.deletePassword(activeService(), authKey(username));
 }
 
 export async function listStoredAccounts(): Promise<string[]> {

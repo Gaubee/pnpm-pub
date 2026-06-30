@@ -10,6 +10,7 @@ export interface Profile {
 	registry?: string;
 	avatarUrl?: string;
 	ciPreferences?: Record<string, unknown>;
+	authStatus?: 'authenticated' | 'unauthenticated';
 }
 
 export interface WorkspaceEntry {

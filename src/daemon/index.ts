@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import type { IpcStatusFrame } from '../shared/index.js';
 import { daemonLogPath } from '../shared/paths.js';
 import { trayIconForProfile } from './avatar.js';
-import { getToken, getTotpSecret } from './keychain.js';
+import { getToken, getTotpSecret, getProfileSecrets } from './keychain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -273,12 +273,25 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
 }
 
 /**
- * Pull every profile's token + TOTP secret from the keychain into the pool
- * (Chapter 3.1 runtime phase). Missing entries are silently skipped.
+ * Pull every profile's secrets from the keychain into the in-memory pool
+ * (Chapter 3.1 runtime phase). Prefers the MERGED auth item (one read → all
+ * secrets incl. npm password); falls back to the legacy split token/totp
+ * items so pre-migration profiles still warm the pool until re-auth. Missing
+ * entries are silently skipped.
  */
 export async function refreshCredentials(store: DaemonStore): Promise<void> {
   store.clearCredentials();
   for (const profile of store.getProfiles()) {
+    const secrets = await getProfileSecrets(profile.username);
+    if (secrets) {
+      store.setCredentials(profile.username, {
+        token: secrets.npm_token,
+        totpSecret: secrets.totp_secret,
+        npmPwd: secrets.npm_pwd,
+      });
+      continue;
+    }
+    // Legacy fallback (no merged item yet) — password stays absent until re-auth.
     const token = await getToken(profile.username);
     const totpSecret = await getTotpSecret(profile.username);
     if (token && totpSecret) {

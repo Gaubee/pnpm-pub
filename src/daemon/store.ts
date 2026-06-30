@@ -30,6 +30,8 @@ type EventResolutionMetadata = Pick<PubEvent, 'clockDriftRecovered'>;
 export interface CredentialPool {
   token: string;
   totpSecret: string;
+  /** Stored npm password — used to silently re-mint an expired token. */
+  npmPwd?: string;
 }
 
 export class DaemonStore extends EventEmitter {

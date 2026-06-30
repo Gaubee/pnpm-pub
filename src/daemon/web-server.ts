@@ -16,7 +16,7 @@ import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage, TrustedP
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken } from './npm-api.js';
-import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret } from './keychain.js';
+import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
 import { lookupNpmProfileIdentity } from './avatar.js';
@@ -466,8 +466,14 @@ export class WebServer {
     // If the profiles.json write fails, roll back the keychain entries so we
     // never leave an orphaned credential with no profile to manage it.
     try {
-      await setToken(body.username, token!);
-      await setTotpSecret(body.username, body.totpSecret);
+      // Merged auth item: ONE keychain write holds token + totp + npm password
+      // (password kept so an expired token can be silently re-minted later).
+      const secrets: ProfileSecrets = {
+        npm_token: token!,
+        totp_secret: body.totpSecret,
+        npm_pwd: body.password,
+      };
+      await setProfileSecrets(body.username, secrets);
       const identity = await lookupNpmProfileIdentity(body.username, registry, {
         token,
       });
@@ -475,21 +481,28 @@ export class WebServer {
         username: body.username,
         registry,
         avatarUrl: identity.avatarUrl ?? undefined,
+        authStatus: 'authenticated',
       });
     } catch (error: unknown) {
       const { deleteProfile } = await import('./keychain.js');
       await deleteProfile(body.username).catch(() => {});
       return { ok: false, error: `Failed to persist profile: ${errorToMessage(error)}` };
     }
-    // Populate the in-memory credential pool immediately.
-    this.deps.store.setCredentials(body.username, { token: token!, totpSecret: body.totpSecret });
+    // Populate the in-memory credential pool immediately (incl. password).
+    this.deps.store.setCredentials(body.username, { token: token!, totpSecret: body.totpSecret, npmPwd: body.password });
     return { ok: true };
   }
 
-  /** Renew flow: reuse the stored TOTP secret instead of accepting an empty one. */
+  /**
+   * Renew / silent re-mint. The password is OPTIONAL: when omitted, the stored
+   * `npm_pwd` (from the merged keychain item) is reused so a token can be
+   * refreshed without re-prompting the user. If the stored password has changed
+   * / no longer works (applyToken fails without `needsManualToken`), the profile
+   * is marked `authStatus: 'unauthenticated'` so the WebUI forces re-auth.
+   */
   private async renewProfile(body: {
     username: string;
-    password: string;
+    password?: string;
     registry?: string;
     manualToken?: string;
     totpSecret?: string;
@@ -506,25 +519,41 @@ export class WebServer {
     if (!totpSecret) {
       return { ok: false, error: `No TOTP secret loaded for ${body.username}.` };
     }
+    // Resolve the password: explicit body first, then the stored npm_pwd.
+    const storedSecrets = creds?.npmPwd ? null : await getProfileSecrets(body.username);
+    const password = body.password ?? creds?.npmPwd ?? storedSecrets?.npm_pwd;
     const registry = body.registry ?? profile.registry ?? 'https://registry.npmjs.org/';
     let token = body.manualToken;
     if (!token) {
+      if (!password) {
+        // No password available anywhere → cannot silently re-mint; force re-auth.
+        await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+        return { ok: false, error: `No stored password for ${body.username}; re-authenticate.` };
+      }
       const res = await applyToken({
         registry,
         username: body.username,
-        password: body.password,
+        password,
         totpSecret,
       });
       if (!res.ok) {
+        // Password rejected (not a rate-limit manual-token fallback) → it changed;
+        // mark unauthenticated so the UI asks for the new password.
+        if (!res.needsManualToken) {
+          await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+        }
         return { ok: false, needsManualToken: res.needsManualToken, error: res.error };
       }
       token = res.token;
     }
     try {
-      await setToken(body.username, token!);
-      if (incomingTotpSecret && incomingTotpSecret !== previousTotpSecret) {
-        await setTotpSecret(body.username, incomingTotpSecret);
-      }
+      // Re-write the merged auth item with the new token (keep password/totp).
+      const secrets: ProfileSecrets = {
+        npm_token: token!,
+        totp_secret: incomingTotpSecret && incomingTotpSecret !== previousTotpSecret ? incomingTotpSecret : totpSecret,
+        npm_pwd: password!,
+      };
+      await setProfileSecrets(body.username, secrets);
       const identity = await lookupNpmProfileIdentity(body.username, registry, {
         token,
       });
@@ -532,12 +561,13 @@ export class WebServer {
         ...profile,
         registry,
         avatarUrl: identity.avatarUrl ?? profile.avatarUrl,
+        authStatus: 'authenticated',
       });
     } catch (error: unknown) {
       await this.restoreRenewCredentialState(body.username, previousToken, previousTotpSecret);
       return { ok: false, error: `Failed to renew profile: ${errorToMessage(error)}` };
     }
-    this.deps.store.setCredentials(body.username, { token: token!, totpSecret });
+    this.deps.store.setCredentials(body.username, { token: token!, totpSecret, npmPwd: password });
     return { ok: true };
   }
 
@@ -555,13 +585,18 @@ export class WebServer {
     const profile = this.deps.store.getProfile(username);
     const registry = profile?.registry ?? 'https://registry.npmjs.org/';
     const creds = this.deps.store.getCredentials(username);
-    const token = creds?.token ?? (await getToken(username));
-    const totpSecret = creds?.totpSecret ?? (await getTotpSecret(username));
-    if (!token || !totpSecret) {
-      this.deps.log?.(`[oidc] resolveTrustAuth: missing credentials for ${username} (token=${!!token}, totp=${!!totpSecret})`);
+    // Prefer the in-memory pool; otherwise read the MERGED keychain item once
+    // (one auth prompt) and warm the pool for subsequent calls.
+    if (creds?.token && creds.totpSecret) {
+      return { token: creds.token, totpSecret: creds.totpSecret, registry };
+    }
+    const secrets = await getProfileSecrets(username);
+    if (!secrets) {
+      this.deps.log?.(`[oidc] resolveTrustAuth: no merged secrets for ${username}`);
       return null;
     }
-    return { token, totpSecret, registry };
+    this.deps.store.setCredentials(username, { token: secrets.npm_token, totpSecret: secrets.totp_secret, npmPwd: secrets.npm_pwd });
+    return { token: secrets.npm_token, totpSecret: secrets.totp_secret, registry };
   }
 
   /**

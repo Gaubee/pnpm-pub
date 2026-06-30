@@ -47,10 +47,26 @@
 	let {
 		onSuccess = () => {},
 		showAvatar = true,
-	}: { onSuccess?: () => void; showAvatar?: boolean } = $props();
+		/** 'add' (new profile) or 'reauth' (existing profile, token invalid). */
+		mode = 'add',
+		/** Pre-filled username in reauth mode (the profile being re-authenticated). */
+		username: usernameProp,
+	}: {
+		onSuccess?: () => void;
+		showAvatar?: boolean;
+		mode?: 'add' | 'reauth';
+		username?: string;
+	} = $props();
+
+	const isReauth = $derived(mode === 'reauth');
 
 	// --- form fields ---
 	let username = $state('');
+	// In reauth mode, pre-fill the username once the prop is available. (Add
+	// mode leaves it empty for the user to type.)
+	$effect(() => {
+		if (isReauth && usernameProp) username = usernameProp;
+	});
 	let password = $state('');
 	let totpRaw = $state(''); // whatever the user pasted (URI / spaced / base32)
 	let registry = $state('https://registry.npmjs.org/');
@@ -145,7 +161,10 @@
 		error = null;
 		const secret = totpSecret; // capture pre-send
 		try {
-			const res = await fetch('/api/add-profile', {
+			// Reauth (existing profile, token invalid) → /api/renew; new profile → /api/add-profile.
+			// Both return the same TokenApplyResponse shape.
+			const endpoint = isReauth ? '/api/renew' : '/api/add-profile';
+			const res = await fetch(endpoint, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', authorization: `Bearer ${readWebToken()}` },
 				body: JSON.stringify({
@@ -222,6 +241,8 @@
 			<p class="flex items-center gap-1.5 text-sm font-medium leading-none">
 				{#if phase === 'manual'}
 					<IconKey class="h-3.5 w-3.5 text-warning" /> {$_('addProfile.manualHeading')}
+				{:else if isReauth}
+					<IconShield class="h-3.5 w-3.5 text-warning" /> {$_('addProfile.reauthHeading')}
 				{:else}
 					<IconShield class="h-3.5 w-3.5" /> {$_('addProfile.heading')}
 				{/if}
@@ -229,6 +250,8 @@
 			<p class="mt-1 text-xs text-muted-foreground">
 				{#if phase === 'manual'}
 					{$_('addProfile.manualIntro')}
+				{:else if isReauth}
+					{$_('addProfile.reauthIntro')}
 				{:else}
 					{$_('addProfile.intro')}
 				{/if}

@@ -12,7 +12,7 @@
 // Chapter 4.1 — Local configuration: ~/.pnpm-pub/profiles.json
 // ---------------------------------------------------------------------------
 
-/** A single NPM identity profile. NEVER holds secrets (token/totp live in keychain). */
+/** A single NPM identity profile. NEVER holds secrets (token/totp/pwd live in keychain). */
 export interface Profile {
   /** Username — the unique profile id, kept consistent with NPM. */
   username: string;
@@ -22,6 +22,13 @@ export interface Profile {
   avatarUrl?: string;
   /** Extension: branch / preferences used by the auto-generated GitHub Action script (optional). */
   ciPreferences?: Record<string, unknown>;
+  /**
+   * Whether this profile's stored credentials are known-valid. When
+   * `'unauthenticated'` (or absent), the WebUI forces a re-auth dialog so the
+   * user can re-enter the password / re-mint a token. Persisted in
+   * profiles.json (no secrets — just a status flag).
+   */
+  authStatus?: 'authenticated' | 'unauthenticated';
 }
 
 /** Top-level shape of ~/.pnpm-pub/profiles.json. Contains NO secrets. */
@@ -56,10 +63,16 @@ export interface WorkspacesConfig {
 /** Fixed keychain service name (Chapter 4.2). */
 export const KEYCHAIN_SERVICE = 'pnpm-pub' as const;
 
-/** Build the keychain account key for an NPM token. */
+/** Build the keychain account key for an NPM token. (Legacy — see authKey.) */
 export const tokenKey = (username: string): string => `${username}_npm_token`;
-/** Build the keychain account key for a TOTP secret. */
+/** Build the keychain account key for a TOTP secret. (Legacy — see authKey.) */
 export const totpKey = (username: string): string => `${username}_totp_secret`;
+/**
+ * Build the keychain account key for the MERGED profile-auth item. This stores
+ * `{ npm_token, totp_secret, npm_pwd }` as ONE JSON string so a single keychain
+ * read (one OS auth prompt) yields every secret for the profile.
+ */
+export const authKey = (username: string): string => `pnpm_pub-key${username}-auth`;
 
 /** Sandbox service name used in tests so we never touch the dev's real credentials (Chapter 10.2). */
 export const KEYCHAIN_SERVICE_SANDBOX = 'pnpm-pub-test-sandbox' as const;
