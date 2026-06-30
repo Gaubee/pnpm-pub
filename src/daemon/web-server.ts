@@ -13,6 +13,8 @@ import type { DaemonStore } from './store.js';
 import type { PublishScheduler } from './scheduler.js';
 import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
 import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage, TrustedPublisherConfig } from '../shared/index.js';
+import { z } from 'zod';
+import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken } from './npm-api.js';
@@ -24,7 +26,6 @@ import {
 	listTrustedPublishers,
 	addTrustedPublisher,
 	removeTrustedPublisher,
-	parseTrustedPublisher,
 } from './oidc-trust.js';
 
 export interface WebServerDeps {
@@ -116,8 +117,10 @@ export class WebServer {
         const body = method !== 'GET' ? await readJson(req) : {};
         if (url === '/api/npm-profile' && method === 'GET') {
           const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const username = query.get('username');
+          if (!username) throw new Error('Invalid or missing username.');
           const result = await lookupNpmProfileIdentity(
-            readQueryString(query, 'username'),
+            username,
             query.get('registry') ?? 'https://registry.npmjs.org/',
           );
           return json(res, 200, { ok: true, profile: result });
@@ -131,19 +134,17 @@ export class WebServer {
           return json(res, 200, result);
         }
         if (url === '/api/export' && method === 'POST') {
-          const result = await this.exportBundle(readString(body, 'password'));
+          const parsed = parseOrThrow(ExportBodySchema, body, 'export body');
+          const result = await this.exportBundle(parsed.password);
           return json(res, 200, result);
         }
         if (url === '/api/import' && method === 'POST') {
-          const result = await this.importBundle(
-            readBackupBundle(body, 'bundle'),
-            readString(body, 'password'),
-            readStringArray(body, 'usernames'),
-          );
+          const parsed = parseOrThrow(ImportBodySchema, body, 'import body');
+          const result = await this.importBundle(parsed.bundle, parsed.password, parsed.usernames);
           return json(res, 200, result);
         }
         if (url === '/api/profiles' && method === 'DELETE') {
-          const username = readString(body, 'username');
+          const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
           const ok = await this.deps.store.removeProfile(username);
           return json(
             res,
@@ -152,49 +153,48 @@ export class WebServer {
           );
         }
         if (url === '/api/workspace/pin' && method === 'POST') {
-          await this.deps.store.pinWorkspace(readString(body, 'path'), readBoolean(body, 'pinned'));
+          const parsed = parseOrThrow(PinWorkspaceBodySchema, body, 'pin body');
+          await this.deps.store.pinWorkspace(parsed.path, parsed.pinned);
           return json(res, 200, { ok: true });
         }
         if (url === '/api/workspace/confirm' && method === 'POST') {
-          // Chapter 5.3.2: persist a previously-staged risky workspace.
-          const ok = await this.deps.store.confirmRiskyWorkspace(readString(body, 'token'));
+          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, 'token').token;
+          const ok = await this.deps.store.confirmRiskyWorkspace(token);
           return json(res, ok ? 200 : 404, { ok });
         }
         if (url === '/api/workspace/cancel' && method === 'POST') {
-          this.deps.store.cancelRiskyWorkspace(readString(body, 'token'));
+          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, 'token').token;
+          this.deps.store.cancelRiskyWorkspace(token);
           return json(res, 200, { ok: true });
         }
         // ----- Trusted Publishing (OIDC) — Chapter 8.5 -----
         if (url === '/api/oidc/trust' && method === 'GET') {
           const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const pkg = readQueryString(query, 'package');
+          const pkg = query.get('package');
+          if (!pkg) throw new Error('Invalid or missing package.');
           this.deps.log?.(`[oidc] GET trust: package=${pkg}`);
           const result = await this.listTrustCached(pkg);
           this.deps.log?.(`[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`);
           return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error });
         }
         if (url === '/api/oidc/trust' && method === 'POST') {
-          const name = readString(body, 'package');
-          const config = parseTrustedPublisher(body.config);
-          if (!name || !config) return json(res, 400, { ok: false, error: 'Invalid package or config.' });
-          this.deps.log?.(`[oidc] POST trust: package=${name} type=${config.type}`);
+          const parsed = parseOrThrow(OidcTrustPostBodySchema, body, 'oidc trust body');
+          this.deps.log?.(`[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`);
           const auth = await this.resolveTrustAuth();
           if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
-          const result = await addTrustedPublisher(auth, name, config);
+          const result = await addTrustedPublisher(auth, parsed.package, parsed.config);
           this.deps.log?.(`[oidc] POST trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
-          this.invalidateTrust(name);
+          this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
         if (url === '/api/oidc/trust' && method === 'DELETE') {
-          const name = readString(body, 'package');
-          const uuid = readString(body, 'uuid');
-          if (!name || !uuid) return json(res, 400, { ok: false, error: 'Invalid package or uuid.' });
-          this.deps.log?.(`[oidc] DELETE trust: package=${name} uuid=${uuid}`);
+          const parsed = parseOrThrow(OidcTrustDeleteBodySchema, body, 'oidc trust delete body');
+          this.deps.log?.(`[oidc] DELETE trust: package=${parsed.package} uuid=${parsed.uuid}`);
           const auth = await this.resolveTrustAuth();
           if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
-          const result = await removeTrustedPublisher(auth, name, uuid);
+          const result = await removeTrustedPublisher(auth, parsed.package, parsed.uuid);
           this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
-          this.invalidateTrust(name);
+          this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
         return json(res, 404, { ok: false, error: 'not found' });
@@ -759,86 +759,69 @@ async function readJson(req: http.IncomingMessage): Promise<JsonObject> {
   }
 }
 
-function parseAddProfileBody(body: JsonObject): {
-  username: string;
-  password: string;
-  totpSecret: string;
-  registry?: string;
-  manualToken?: string;
-} {
-  return {
-    username: readString(body, 'username'),
-    password: readString(body, 'password'),
-    totpSecret: readString(body, 'totpSecret'),
-    registry: readOptionalString(body, 'registry'),
-    manualToken: readOptionalString(body, 'manualToken'),
-  };
+// ---------------------------------------------------------------------------
+// Zod-backed REST body + WS message parsers (replaces all hand-written read*/is* helpers)
+// ---------------------------------------------------------------------------
+
+const AddProfileBodySchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+  totpSecret: z.string().min(1),
+  registry: z.string().optional(),
+  manualToken: z.string().optional(),
+});
+
+const RenewProfileBodySchema = z.object({
+  username: z.string().min(1),
+  // password is OPTIONAL — when omitted, renewProfile uses the stored npm_pwd.
+  password: z.string().optional(),
+  registry: z.string().optional(),
+  manualToken: z.string().optional(),
+  totpSecret: z.string().optional(),
+});
+
+const ExportBodySchema = z.object({
+  password: z.string().min(1),
+});
+
+const ImportBodySchema = z.object({
+  bundle: BackupBundleSchema,
+  password: z.string().min(1),
+  usernames: z.array(z.string().min(1)),
+});
+
+const PinWorkspaceBodySchema = z.object({
+  path: z.string().min(1),
+  pinned: z.boolean(),
+});
+
+const OidcTrustPostBodySchema = z.object({
+  package: z.string().min(1),
+  config: TrustedPublisherConfigSchema,
+});
+
+const OidcTrustDeleteBodySchema = z.object({
+  package: z.string().min(1),
+  uuid: z.string().min(1),
+});
+
+function parseAddProfileBody(body: unknown): z.infer<typeof AddProfileBodySchema> {
+  return parseOrThrow(AddProfileBodySchema, body, 'add-profile body');
 }
 
-function parseRenewProfileBody(body: JsonObject): {
-  username: string;
-  password?: string;
-  registry?: string;
-  manualToken?: string;
-  totpSecret?: string;
-} {
-  return {
-    username: readString(body, 'username'),
-    // password is OPTIONAL — when omitted, renewProfile uses the stored npm_pwd.
-    password: readOptionalString(body, 'password'),
-    registry: readOptionalString(body, 'registry'),
-    manualToken: readOptionalString(body, 'manualToken'),
-    totpSecret: readOptionalString(body, 'totpSecret'),
-  };
+function parseRenewProfileBody(body: unknown): z.infer<typeof RenewProfileBodySchema> {
+  return parseOrThrow(RenewProfileBodySchema, body, 'renew body');
 }
 
-function readString(body: JsonObject, key: string): string {
-  const value = body[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Invalid or missing ${key}.`);
+/** Validate with a Zod schema or throw an Error with a readable message. */
+function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    const first = result.error.issues[0];
+    const path = first?.path.join('.') ?? '?';
+    throw new Error(`Invalid or missing ${label}: ${path} ${first?.message ?? ''}`);
   }
-  return value;
-}
-
-function readOptionalString(body: JsonObject, key: string): string | undefined {
-  const value = body[key];
-  if (value === undefined) return undefined;
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Invalid ${key}.`);
-  }
-  return value;
-}
-
-function readQueryString(query: URLSearchParams, key: string): string {
-  const value = query.get(key);
-  if (!value) {
-    throw new Error(`Invalid or missing ${key}.`);
-  }
-  return value;
-}
-
-function readBoolean(body: JsonObject, key: string): boolean {
-  const value = body[key];
-  if (typeof value !== 'boolean') {
-    throw new Error(`Invalid or missing ${key}.`);
-  }
-  return value;
-}
-
-function readStringArray(body: JsonObject, key: string): string[] {
-  const value = body[key];
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.length === 0)) {
-    throw new Error(`Invalid or missing ${key}.`);
-  }
-  return value;
-}
-
-function readBackupBundle(body: JsonObject, key: string): BackupBundle {
-  const value = body[key];
-  if (!isBackupBundle(value)) {
-    throw new Error('Invalid backup bundle.');
-  }
-  return value;
+  return result.data;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -853,43 +836,6 @@ function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const EVENT_KINDS: readonly string[] = [
-  'publish',
-  'setup-oidc',
-  'create-placeholder',
-  'refresh-token',
-];
-
 function isWsClientMessage(value: unknown): value is WsClientMessage {
-  if (!isJsonObject(value) || typeof value.type !== 'string') return false;
-  switch (value.type) {
-    case 'auth':
-      return typeof value.webToken === 'string';
-    case 'select-profile':
-      return typeof value.username === 'string';
-    case 'confirm-event':
-    case 'reject-event':
-      return typeof value.id === 'string';
-    case 'scan-workspace':
-      return typeof value.root === 'string';
-    case 'create-event':
-      return isEventKind(value.kind);
-    default:
-      return false;
-  }
-}
-
-function isEventKind(value: unknown): value is PubEvent['kind'] {
-  return typeof value === 'string' && EVENT_KINDS.includes(value);
-}
-
-function isBackupBundle(value: unknown): value is BackupBundle {
-  return (
-    isJsonObject(value) &&
-    Array.isArray(value.profiles) &&
-    value.profiles.every((profile) => typeof profile === 'string' && profile.length > 0) &&
-    typeof value.salt === 'string' &&
-    typeof value.iv === 'string' &&
-    typeof value.ciphertext === 'string'
-  );
+  return WsClientMessageSchema.safeParse(value).success;
 }
