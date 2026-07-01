@@ -31,16 +31,14 @@
 	import IconCopy from '@lucide/svelte/icons/copy';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconMail from '@lucide/svelte/icons/mail';
-	import IconShieldCheck from '@lucide/svelte/icons/shield-check';
-	import IconShieldOff from '@lucide/svelte/icons/shield-x';
 	import IconGithub from '@lucide/svelte/icons/code';
 	import IconTwitter from '@lucide/svelte/icons/at-sign';
 	import IconLink from '@lucide/svelte/icons/globe';
-	import IconCalendar from '@lucide/svelte/icons/calendar';
 	import { apiFetch } from '$lib/api-fetch.js';
 	import { parseProfileTokenResponse, parseProfileDetailResponse } from '$lib/rest-response.js';
 	import type { ProfileDetail } from '$lib/types.js';
 	import { _ } from 'svelte-i18n';
+	import { untrack } from 'svelte';
 
 	let deleteOpen = $state(false);
 	let deleting = $state(false);
@@ -131,7 +129,7 @@
 		}
 	}
 
-	// Reset token state when navigating between profiles.
+	// Reset token + detail state when navigating between profiles.
 	$effect(() => {
 		void username;
 		token = null;
@@ -139,6 +137,9 @@
 		tokenLoading = false;
 		showToken = false;
 		copied = false;
+		detail = null;
+		detailError = null;
+		activeDetailReq++;
 	});
 
 	// ----- profile detail (email / social / 2FA / created) -----
@@ -147,45 +148,43 @@
 	let detail = $state<ProfileDetail | null>(null);
 	let detailLoading = $state(false);
 	let detailError = $state<string | null>(null);
+	// Guards against duplicate / racing fetches when the effect re-runs.
+	let activeDetailReq = 0;
 
 	const isActive = $derived(profile?.username === $daemon.defaultProfile);
 
 	$effect(() => {
+		// Track only the inputs that should (re)trigger a fetch.
 		const u = username;
 		const active = isActive;
-		detail = null;
-		detailError = null;
-		if (!active) return;
-		// Fetch on mount / when the active profile matches this route.
-		void u;
-		loadDetail();
+		const token = $daemon.defaultProfile;
+		void token;
+		if (!active || !u) return;
+		// Perform the fetch + state writes outside the effect's reactive
+		// tracking so writing detail/detailLoading doesn't re-trigger us.
+		void untrack(() => loadDetail());
 	});
 
 	async function loadDetail(): Promise<void> {
-		if (detailLoading || detail) return;
+		const reqId = ++activeDetailReq;
 		detailLoading = true;
 		detailError = null;
 		try {
 			const res = await apiFetch('/api/profile-detail');
+			// Stale response guard: a newer request superseded this one.
+			if (reqId !== activeDetailReq) return;
 			const json = parseProfileDetailResponse(await res.json());
+			if (reqId !== activeDetailReq) return;
 			if (json?.ok && json.detail) {
 				detail = json.detail;
 			} else {
 				detailError = json?.error ?? $_('profile.detailLoadError');
 			}
 		} catch {
+			if (reqId !== activeDetailReq) return;
 			detailError = $_('profile.detailLoadError');
 		} finally {
-			detailLoading = false;
-		}
-	}
-
-	function formatDate(iso: string | null): string {
-		if (!iso) return '';
-		try {
-			return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-		} catch {
-			return iso.slice(0, 10);
+			if (reqId === activeDetailReq) detailLoading = false;
 		}
 	}
 </script>
@@ -207,7 +206,15 @@
 				</Avatar>
 				<div class="min-w-0">
 					<h1 class="flex flex-wrap items-center gap-2 text-lg font-semibold tracking-tight">
-						<span class="truncate">{profile.username}</span>
+						<span class="truncate">
+							{#if detail?.fullname}
+								{detail.fullname}
+							{:else if isActive && detailLoading}
+								{profile.username}
+							{:else}
+								{profile.username}
+							{/if}
+						</span>
 						{#if profile.username === $daemon.defaultProfile}
 							<Tooltip>
 								<TooltipTrigger>
@@ -219,7 +226,13 @@
 							</Tooltip>
 						{/if}
 					</h1>
-					<p class="truncate text-xs text-muted-foreground">{profile.registry ?? 'https://registry.npmjs.org/'}</p>
+					<p class="truncate text-xs text-muted-foreground">
+						{#if isActive && detailLoading && !detail}
+							{$_('common.loading')}
+						{:else}
+							{profile.registry ?? 'https://registry.npmjs.org/'}
+						{/if}
+					</p>
 				</div>
 			</div>
 			<AlertDialog bind:open={deleteOpen}>
@@ -265,68 +278,61 @@
 						<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
 							<IconUser /> {$_('profile.identity')}
 						</div>
-						{#if detailLoading}
+						{#if isActive && detailLoading}
 							<IconLoader class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
 						{/if}
 					</div>
-					<p class="mt-2 truncate text-sm font-medium">{profile.username}</p>
-					{#if !isActive}
-						<p class="mt-1 text-xs text-muted-foreground">{$_('profile.defaultNo')}</p>
-					{:else if detailError}
-						<p class="mt-1 text-xs text-destructive">{detailError}</p>
-					{:else if detail}
-						<dl class="mt-2 space-y-1.5">
-							{#if detail.email}
-								<div class="flex items-center gap-2 text-xs">
-									<IconMail class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									<a href={`mailto:${detail.email}`} class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.email}</a>
-									{#if detail.emailVerified === false}
-										<span class="shrink-0 text-[10px] text-warning">({$_('profile.emailUnverified')})</span>
-									{/if}
-								</div>
+					<dl class="mt-2.5 space-y-2.5">
+						<!-- id (always available) -->
+						<div class="flex items-center gap-2 text-xs">
+							<span class="w-20 shrink-0 text-muted-foreground">{$_('profile.idLabel')}</span>
+							<span class="truncate font-mono text-foreground">{profile.username}</span>
+						</div>
+						{#if isActive}
+							{#if detailError}
+								<p class="text-xs text-destructive">{detailError}</p>
+							{:else if detail}
+								<!-- email -->
+								{#if detail.email}
+									<div class="flex items-center gap-2 text-xs">
+										<span class="w-20 shrink-0 text-muted-foreground">{$_('profile.email')}</span>
+										<a href={`mailto:${detail.email}`} class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.email}</a>
+										{#if detail.emailVerified === false}
+											<span class="shrink-0 text-[10px] text-warning">({$_('profile.emailUnverified')})</span>
+										{/if}
+									</div>
+								{/if}
+								<!-- Linked Accounts -->
+								{#if detail.github || detail.twitter || detail.homepage}
+									<div class="space-y-1 pt-0.5">
+										<span class="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{$_('profile.linkedAccounts')}</span>
+										{#if detail.github}
+											<div class="flex items-center gap-2 text-xs">
+												<IconGithub class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+												<a href={`https://github.com/${detail.github}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.github}</a>
+											</div>
+										{/if}
+										{#if detail.twitter}
+											<div class="flex items-center gap-2 text-xs">
+												<IconTwitter class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+												<a href={`https://twitter.com/${detail.twitter}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">@{detail.twitter}</a>
+											</div>
+										{/if}
+										{#if detail.homepage}
+											<div class="flex items-center gap-2 text-xs">
+												<IconLink class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+												<a href={detail.homepage} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.homepage}</a>
+											</div>
+										{/if}
+									</div>
+								{/if}
+							{:else if detailLoading}
+								<p class="text-xs text-muted-foreground">{$_('common.loading')}</p>
 							{/if}
-							{#if detail.tfaEnabled !== null}
-								<div class="flex items-center gap-2 text-xs">
-									{#if detail.tfaEnabled}
-										<IconShieldCheck class="h-3.5 w-3.5 shrink-0 text-success" />
-									{:else}
-										<IconShieldOff class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									{/if}
-									<span class="text-muted-foreground">{$_('profile.twoFactor')}</span>
-									<span class={detail.tfaEnabled ? 'text-success' : 'text-muted-foreground'}>
-										{detail.tfaEnabled ? $_('profile.twoFactorOn') : $_('profile.twoFactorOff')}
-									</span>
-								</div>
-							{/if}
-							{#if detail.github}
-								<div class="flex items-center gap-2 text-xs">
-									<IconGithub class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									<a href={`https://github.com/${detail.github}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.github}</a>
-								</div>
-							{/if}
-							{#if detail.twitter}
-								<div class="flex items-center gap-2 text-xs">
-									<IconTwitter class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									<a href={`https://twitter.com/${detail.twitter}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">@{detail.twitter}</a>
-								</div>
-							{/if}
-							{#if detail.homepage}
-								<div class="flex items-center gap-2 text-xs">
-									<IconLink class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									<a href={detail.homepage} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.homepage}</a>
-								</div>
-							{/if}
-							{#if detail.createdAt}
-								<div class="flex items-center gap-2 text-xs">
-									<IconCalendar class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-									<span class="text-muted-foreground">{$_('profile.memberSince')}</span>
-									<span>{formatDate(detail.createdAt)}</span>
-								</div>
-							{/if}
-						</dl>
-					{:else if detailLoading}
-						<p class="mt-1 text-xs text-muted-foreground">{$_('common.loading')}</p>
-					{/if}
+						{:else}
+							<p class="text-xs text-muted-foreground">{$_('profile.inactiveDetailHint')}</p>
+						{/if}
+					</dl>
 				</div>
 			<div class="rounded-lg border border-border bg-card p-4">
 				<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
