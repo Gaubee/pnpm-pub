@@ -4,12 +4,16 @@
 	 * Renders a Pending (with Diff + Confirm/Reject), Success, Failed, or
 	 * Expired event. Honors context-override (Chapter 5.4.5 / 6.2.2).
 	 */
-	import type { EventStatus, PubEvent, PublishTarget } from '$lib/types.js';
+	import type { EventStatus, PubEvent, PublishTarget, TarballSummary } from '$lib/types.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { Badge, type BadgeVariant } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Card, CardContent, CardHeader } from '$lib/components/ui/card/index.js';
 	import { actions, daemon } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
+	import { parseOkResponse } from '$lib/rest-response.js';
+	import { errorToMessage } from '$lib/error-projection.js';
+	import TarballTree from '$lib/components/tarball-tree.svelte';
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconOidc from '@lucide/svelte/icons/shield-check';
 	import IconPlaceholder from '@lucide/svelte/icons/package';
@@ -18,6 +22,12 @@
 	import IconClock from '@lucide/svelte/icons/clock';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconX from '@lucide/svelte/icons/x';
+	import IconRotateCw from '@lucide/svelte/icons/rotate-cw';
+	import IconTrash from '@lucide/svelte/icons/trash-2';
+	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
+	import IconFolder from '@lucide/svelte/icons/folder';
+	import IconFile from '@lucide/svelte/icons/file';
+	import IconLoader from '@lucide/svelte/icons/loader-circle';
 	import { _ } from 'svelte-i18n';
 
 	let { event }: { event: PubEvent } = $props();
@@ -84,6 +94,58 @@
 	const oidcCtx = $derived(event.payload?.kind === 'setup-oidc' ? event.payload.data : null);
 
 	const timeLabel = $derived(new Date(event.createdAt).toLocaleTimeString());
+
+	// Tarball file-tree preview — collapsed by default.
+	let showFiles = $state(false);
+
+	// Publish actions (retry / unpublish) — only for publish events.
+	const isPublish = $derived(event.payload?.kind === 'publish');
+	const publishData = $derived(
+		event.payload?.kind === 'publish' ? event.payload.data : null,
+	);
+	const tarballSummary = $derived(event.tarballSummary ?? null);
+	const isRetryable = $derived(isPublish && (event.status === 'failed' || event.status === 'expired'));
+	const isUnpublishable = $derived(isPublish && event.status === 'success');
+	let actionBusy = $state(false);
+	let actionError = $state<string | null>(null);
+	let confirmUnpublish = $state(false);
+
+	function retry(): void {
+		if (!publishData) return;
+		// Re-create the publish event with the SAME payload + SAME groupId so it
+		// folds into the same group in the Events Hub.
+		actions.createEvent('publish', publishData, event.groupId);
+	}
+
+	async function doUnpublish(): Promise<void> {
+		if (!publishData || actionBusy) return;
+		actionBusy = true;
+		actionError = null;
+		const name = publishData.target.name;
+		const version = publishData.target.version;
+		try {
+			const res = await apiFetch('/api/unpublish', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ package: name, version }),
+			});
+			const json = parseOkResponse(await res.json());
+			if (!json) { actionError = $_('eventCard.unpublishFailed'); return; }
+			if (!json.ok) { actionError = json.error ?? $_('eventCard.unpublishFailed'); return; }
+			confirmUnpublish = false;
+		} catch (err) {
+			actionError = errorToMessage(err);
+		} finally {
+			actionBusy = false;
+		}
+	}
+
+	/** Human-readable byte size. */
+	function humanSize(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+	}
 </script>
 
 <Card class="transition-shadow {isPending ? 'ring-2 ring-brand/40 shadow-md' : ''}">
@@ -153,8 +215,36 @@
 		{/if}
 
 		{#if !isPending && event.result}
-			<div class="rounded-md bg-muted/40 px-3 py-2 font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}">
+			<div class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}">
 				{event.result}
+			</div>
+		{/if}
+
+		{#if tarballSummary}
+			<div class="rounded-md border border-border">
+				<button
+					type="button"
+					class="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+					onclick={() => (showFiles = !showFiles)}
+				>
+					<IconChevronRight class="h-3 w-3 transition-transform {showFiles ? 'rotate-90' : ''}" />
+					<IconFolder class="h-3 w-3" />
+					<span>{$_('eventCard.tarballContents')}</span>
+					<span class="ml-auto font-mono text-muted-foreground/70">
+						{$_('eventCard.tarballSummary', { values: { n: tarballSummary.files.length, size: humanSize(tarballSummary.unpackedSize) } })}
+					</span>
+				</button>
+				{#if showFiles}
+					<div class="max-h-56 overflow-auto border-t border-border px-2 py-1.5">
+						<TarballTree files={tarballSummary.files} />
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if actionError}
+			<div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive" role="alert">
+				{actionError}
 			</div>
 		{/if}
 
@@ -178,6 +268,38 @@
 			>
 				{isExpired ? $_('eventCard.tokenExpired') : $_('eventCard.credentialRequired')} — {$_('eventCard.renewNow')}
 			</Button>
+		{/if}
+
+		{#if !isPending && (isRetryable || isUnpublishable)}
+			{#if confirmUnpublish}
+				<div class="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+					<p class="text-[11px] text-destructive">
+						{$_('eventCard.unpublishConfirm', { values: { name: publishData?.target.name ?? '', version: publishData?.target.version ?? '' } })}
+					</p>
+					<div class="flex items-center gap-2">
+						<Button variant="destructive" size="sm" class="flex-1" disabled={actionBusy} onclick={doUnpublish}>
+							{#if actionBusy}<IconLoader class="h-3.5 w-3.5 animate-spin" />{/if}
+							{$_('eventCard.unpublish')}
+						</Button>
+						<Button variant="outline" size="sm" disabled={actionBusy} onclick={() => (confirmUnpublish = false)}>
+							{$_('common.cancel')}
+						</Button>
+					</div>
+				</div>
+			{:else}
+				<div class="flex items-center gap-2 pt-1">
+					{#if isRetryable}
+						<Button variant="brand" size="sm" class="flex-1" onclick={retry}>
+							<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
+						</Button>
+					{/if}
+					{#if isUnpublishable}
+						<Button variant="outline" size="sm" class={isRetryable ? '' : 'flex-1'} onclick={() => (confirmUnpublish = true)}>
+							<IconTrash class="h-3.5 w-3.5" /> {$_('eventCard.unpublish')}
+						</Button>
+					{/if}
+				</div>
+			{/if}
 		{/if}
 	</CardContent>
 </Card>

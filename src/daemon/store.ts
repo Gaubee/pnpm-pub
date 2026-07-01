@@ -25,7 +25,9 @@ import { PnpmPubConfigSchema, WorkspacesConfigSchema } from '../shared/schemas.j
 const DEFAULT_CONFIG: PnpmPubConfig = { default: '', profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
 
-type EventResolutionMetadata = Pick<PubEvent, 'clockDriftRecovered'>;
+type EventResolutionMetadata = Pick<PubEvent, 'clockDriftRecovered'> & {
+  tarballSummary?: PubEvent['tarballSummary'];
+};
 
 /** In-memory credential pool (Chapter 3.1 runtime phase). */
 export interface CredentialPool {
@@ -264,6 +266,9 @@ export class DaemonStore extends EventEmitter {
     if (result !== undefined) evt.result = result;
     if (metadata?.clockDriftRecovered !== undefined) {
       evt.clockDriftRecovered = metadata.clockDriftRecovered;
+    }
+    if (metadata?.tarballSummary !== undefined) {
+      evt.tarballSummary = metadata.tarballSummary;
     }
     this.emit('event', { type: 'event' as const, event: evt });
     return evt;

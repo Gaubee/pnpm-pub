@@ -198,6 +198,26 @@ export type EventPayload = z.infer<typeof EventPayloadSchema>;
 
 export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
 
+// ---------------------------------------------------------------------------
+// Tarball file-tree summary — cached on publish events so the WebUI can
+// preview the packed contents without re-packing.
+// ---------------------------------------------------------------------------
+
+export const TarballFileSchema = z.object({
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  mode: z.number().int().nonnegative(),
+});
+export type TarballFile = z.infer<typeof TarballFileSchema>;
+
+export const TarballSummarySchema = z.object({
+  files: z.array(TarballFileSchema),
+  unpackedSize: z.number().int().nonnegative(),
+  entryCount: z.number().int().nonnegative(),
+  bundled: z.array(z.string()),
+});
+export type TarballSummary = z.infer<typeof TarballSummarySchema>;
+
 export const PubEventSchema = z.object({
   id: z.string(),
   kind: EventKindSchema,
@@ -211,6 +231,8 @@ export const PubEventSchema = z.object({
   clockDriftRecovered: z.boolean().optional(),
   /** Batch correlation id — events sharing a groupId were created together. */
   groupId: z.string().optional(),
+  /** Packed-tarball file list, cached when the publish runs (dry or real). */
+  tarballSummary: TarballSummarySchema.optional(),
 });
 export type PubEvent = z.infer<typeof PubEventSchema>;
 

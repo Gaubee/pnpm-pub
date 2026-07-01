@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
-import { applyToken } from './npm-api.js';
+import { applyToken, unpublishVersion } from './npm-api.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
@@ -206,6 +206,22 @@ export class WebServer {
           this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
+        }
+        // ----- Unpublish (remove a single published version) -----
+        if (url === '/api/unpublish' && method === 'POST') {
+          const parsed = parseOrThrow(UnpublishBodySchema, body, 'unpublish body');
+          this.deps.log?.(`[unpublish] package=${parsed.package} version=${parsed.version}`);
+          const auth = await this.resolveTrustAuth();
+          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          const result = await unpublishVersion({
+            registry: auth.registry,
+            token: auth.token,
+            totpSecret: auth.totpSecret,
+            name: parsed.package,
+            version: parsed.version,
+          });
+          this.deps.log?.(`[unpublish] ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
+          return json(res, result.ok ? 200 : (result.status || 500), { ok: result.ok, error: result.error });
         }
         return json(res, 404, { ok: false, error: 'not found' });
       } catch (err) {
@@ -814,6 +830,11 @@ const OidcTrustPostBodySchema = z.object({
 const OidcTrustDeleteBodySchema = z.object({
   package: z.string().min(1),
   uuid: z.string().min(1),
+});
+
+const UnpublishBodySchema = z.object({
+  package: z.string().min(1),
+  version: z.string().min(1),
 });
 
 function parseAddProfileBody(body: unknown): z.infer<typeof AddProfileBodySchema> {

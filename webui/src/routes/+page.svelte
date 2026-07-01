@@ -4,7 +4,7 @@
 	 * Timeline of Pending / Success / Failed events, plus proactive action
 	 * triggers at the top (Chapter 6.2.3).
 	 */
-	import { pendingEvents, historyEvents, daemon } from '$lib/store.js';
+	import { pendingEvents, groupedHistoryEvents, daemon } from '$lib/store.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -15,6 +15,7 @@
 	import IconPackage from '@lucide/svelte/icons/package';
 	import IconShield from '@lucide/svelte/icons/shield-check';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
+	import IconChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { _ } from 'svelte-i18n';
 
 	let showActions = $state(false);
@@ -22,6 +23,16 @@
 	// OIDC 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
 	let oidcName = $state('');
 	let oidcDialogOpen = $state(false);
+	// Expanded collapsed groups (by group id). A group in this set shows all
+	// its members; otherwise only the latest event is rendered.
+	let expandedGroups = $state<Set<string>>(new Set());
+
+	function toggleGroup(id: string): void {
+		const next = new Set(expandedGroups);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expandedGroups = next;
+	}
 
 	function createPlaceholder(): void {
 		const name = placeholderName.trim();
@@ -102,7 +113,7 @@
 
 	<section class="space-y-2.5">
 		<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.history')}</h2>
-		{#if $historyEvents.length === 0 && $pendingEvents.length === 0}
+		{#if $groupedHistoryEvents.length === 0 && $pendingEvents.length === 0}
 			<div class="rounded-xl border border-dashed border-border p-10 text-center">
 				<p class="text-sm text-muted-foreground">{$_('events.noEvents')}</p>
 				<p class="mt-1 text-xs text-muted-foreground/70">
@@ -110,8 +121,36 @@
 				</p>
 			</div>
 		{:else}
-			{#each $historyEvents as event (event.id)}
-				<EventCard {event} />
+			{#each $groupedHistoryEvents as group (group.id)}
+				{#if group.collapsed && !expandedGroups.has(group.id)}
+					<!-- Collapsed group: show only the latest event + an expand toggle. -->
+					<div class="space-y-1">
+						<EventCard event={group.latest} />
+						<button
+							type="button"
+							class="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+							onclick={() => toggleGroup(group.id)}
+						>
+							<IconChevronDown class="h-3 w-3" />
+							{$_('eventCard.groupMore', { values: { n: group.events.length - 1 } })}
+						</button>
+					</div>
+				{:else}
+					<!-- Standalone or expanded group: render all members (newest-first). -->
+					{#if group.collapsed}
+						<button
+							type="button"
+							class="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+							onclick={() => toggleGroup(group.id)}
+						>
+							<IconChevronDown class="h-3 w-3 rotate-180" />
+							{$_('eventCard.collapse')}
+						</button>
+					{/if}
+					{#each group.events as event (event.id)}
+						<EventCard {event} />
+					{/each}
+				{/if}
 			{/each}
 		{/if}
 	</section>

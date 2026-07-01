@@ -113,6 +113,19 @@ export type EventPayload =
 /** Payload data shape for one concrete Event kind. */
 export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
 
+export interface TarballFile {
+	path: string;
+	size: number;
+	mode: number;
+}
+
+export interface TarballSummary {
+	files: TarballFile[];
+	unpackedSize: number;
+	entryCount: number;
+	bundled: string[];
+}
+
 export interface PubEvent {
 	id: string;
 	kind: EventKind;
@@ -126,6 +139,8 @@ export interface PubEvent {
 	clockDriftRecovered?: boolean;
 	/** Batch correlation id — events sharing a groupId were created together. */
 	groupId?: string;
+	/** Packed-tarball file list, cached when the publish runs (dry or real). */
+	tarballSummary?: TarballSummary;
 }
 
 export interface BackupBundle {

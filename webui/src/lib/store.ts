@@ -217,6 +217,34 @@ function handleServerMessage(msg: WsServerMessage): void {
 export const visibleEvents = derived(daemon, ($d) => filterVisibleEvents($d.events, $d.defaultProfile));
 export const pendingEvents = derived(visibleEvents, ($events) => $events.filter((e) => e.status === 'pending'));
 export const historyEvents = derived(visibleEvents, ($events) => $events.filter((e) => e.status !== 'pending'));
+
+/**
+ * History events grouped by `groupId`. Each entry is either a standalone
+ * event (no groupId) or a collapsed group (latest first, "+N more" hidden).
+ * `events` is sorted newest-first within a group; `latest` is events[0].
+ */
+export interface HistoryGroup {
+	id: string; // groupId, or the event id when standalone
+	latest: PubEvent;
+	events: PubEvent[]; // newest-first
+	collapsed: boolean; // true when more than one member
+}
+export const groupedHistoryEvents = derived(historyEvents, ($events): HistoryGroup[] => {
+	// historyEvents is already newest-first. Preserve that order.
+	const byGroup = new Map<string, PubEvent[]>();
+	for (const e of $events) {
+		const key = e.groupId ?? e.id;
+		const arr = byGroup.get(key);
+		if (arr) arr.push(e);
+		else byGroup.set(key, [e]);
+	}
+	return [...byGroup.values()].map((events) => ({
+		id: events[0]!.groupId ?? events[0]!.id,
+		latest: events[0]!,
+		events,
+		collapsed: events.length > 1,
+	}));
+});
 export const activeProfile = derived(daemon, ($d) =>
 	$d.profiles.find((p) => p.username === $d.defaultProfile) ?? null,
 );

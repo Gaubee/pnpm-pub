@@ -29,7 +29,7 @@ import type {
   PubEvent,
   RefreshTokenContext,
 } from '../shared/index.js';
-import type { PackageTarballFile } from './packer.js';
+import type { PackageTarballFile, PackageTarballSummary } from './packer.js';
 import { publishPackage, configureOidc } from './npm-api.js';
 import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
 import { promises as fsp } from 'node:fs';
@@ -476,9 +476,18 @@ interface PublishJsonProjection {
   bundled?: string[];
 }
 
-async function buildPublishJsonProjection(name: string, version: string, tarball: Buffer): Promise<PublishJsonProjection> {
-  const { summarizePackageTarball } = await import('./packer.js');
-  const summary = await summarizePackageTarball(tarball).catch(() => null);
+async function buildPublishJsonProjection(
+  name: string,
+  version: string,
+  tarball: Buffer,
+  /** Pre-computed summary (avoids a second packer pass when the caller already has one). */
+  existingSummary?: PackageTarballSummary | null,
+): Promise<PublishJsonProjection> {
+  const summary =
+    existingSummary !== undefined ? existingSummary : await (async () => {
+      const { summarizePackageTarball } = await import('./packer.js');
+      return summarizePackageTarball(tarball).catch(() => null);
+    })();
   return {
     id: `${name}@${version}`,
     name,
@@ -502,8 +511,13 @@ async function buildPublishJsonProjection(name: string, version: string, tarball
   };
 }
 
-async function formatPublishJson(name: string, version: string, tarball: Buffer): Promise<string> {
-  const projection = await buildPublishJsonProjection(name, version, tarball);
+async function formatPublishJson(
+  name: string,
+  version: string,
+  tarball: Buffer,
+  existingSummary?: PackageTarballSummary | null,
+): Promise<string> {
+  const projection = await buildPublishJsonProjection(name, version, tarball, existingSummary);
   return JSON.stringify(projection, null, 2) + '\n';
 }
 
@@ -514,9 +528,11 @@ async function formatDryRunNpmNotice(params: {
   registry: string;
   distTag?: string;
   access?: string;
+  /** Pre-computed summary (avoids a second packer pass when the caller already has one). */
+  summary?: PackageTarballSummary | null;
 }): Promise<string> {
   const { summarizePackageTarball } = await import('./packer.js');
-  const summary = await summarizePackageTarball(params.tarball).catch(() => null);
+  const summary = params.summary !== undefined ? params.summary : await summarizePackageTarball(params.tarball).catch(() => null);
   if (!summary) return '';
   const shasum = createHash('sha1').update(params.tarball).digest('hex');
   const integrity = `sha512-${createHash('sha512').update(params.tarball).digest('base64')}`;
@@ -1246,6 +1262,11 @@ export class PublishScheduler {
       const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
       const publishedVersion = readMetadataString(packed.metadata, 'version') ?? version;
 
+      // Cache the packed file-tree so the WebUI can preview contents. Best-effort:
+      // a failure here must not block the publish flow.
+      const { summarizePackageTarball } = await import('./packer.js');
+      const tarballSummary = await summarizePackageTarball(packed.tarball).catch(() => undefined);
+
       const result = await publishPackage({
         registry,
         token,
@@ -1264,21 +1285,22 @@ export class PublishScheduler {
         if (reportSummary) {
           await writePublishSummary(source, publishedName, publishedVersion);
         }
-        const successOutput = json ? await formatPublishJson(publishedName, publishedVersion, packed.tarball) : result.stdout;
+        const successOutput = json ? await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null) : result.stdout;
         if (json) client.log('stdout', successOutput);
         this.store.resolveEvent(event.id, 'success', result.stdout, {
           clockDriftRecovered: result.clockDriftRecovered,
+          ...(tarballSummary ? { tarballSummary } : {}),
         });
         client.exit(0);
       } else if (result.expired) {
         // Chapter 6.2.4: token expired/revoked → special Expired event so the
         // UI can prompt for renewal instead of showing a generic failure.
         const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
-        this.store.resolveEvent(event.id, 'expired', msg);
+        this.store.resolveEvent(event.id, 'expired', msg, tarballSummary ? { tarballSummary } : undefined);
         client.log('stderr', msg + '\n');
         client.exit(1, msg);
       } else {
-        this.store.resolveEvent(event.id, 'failed', result.error);
+        this.store.resolveEvent(event.id, 'failed', result.error, tarballSummary ? { tarballSummary } : undefined);
         client.exit(1, result.error);
       }
     } catch (error: unknown) {
@@ -1301,6 +1323,9 @@ export class PublishScheduler {
       const msg = 'Dry run complete; no registry write performed.';
       const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
       const publishedVersion = readMetadataString(packed.metadata, 'version') ?? ctx.target.version;
+      // Cache the packed file-tree preview for the WebUI.
+      const { summarizePackageTarball } = await import('./packer.js');
+      const tarballSummary = await summarizePackageTarball(packed.tarball).catch(() => undefined);
       const profileRegistry = this.store.getProfile(event.profile)?.registry ?? 'https://registry.npmjs.org/';
       const noticeTarget = {
         registry: resolvePublishRegistry(ctx.args, ctx.target.publishConfig?.registry ?? profileRegistry),
@@ -1308,19 +1333,20 @@ export class PublishScheduler {
         access: resolvePublishAccess(ctx.args, ctx.target.publishConfig?.access),
       };
       if (json) {
-        client.log('stdout', await formatPublishJson(publishedName, publishedVersion, packed.tarball));
+        client.log('stdout', await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null));
         client.log('stderr', configWarnings + formatDryRunPublishDestinationNotice(noticeTarget));
       } else {
         const notice = await formatDryRunNpmNotice({
           name: publishedName,
           version: publishedVersion,
           tarball: packed.tarball,
+          summary: tarballSummary ?? null,
           ...noticeTarget,
         });
         if (notice || configWarnings) client.log('stderr', configWarnings + notice);
         client.log('stdout', `+ ${publishedName}@${publishedVersion}\n`);
       }
-      this.store.resolveEvent(event.id, 'success', msg);
+      this.store.resolveEvent(event.id, 'success', msg, tarballSummary ? { tarballSummary } : undefined);
       client.exit(0);
     } catch (error: unknown) {
       const msg = errorToMessage(error);

@@ -178,7 +178,21 @@
 		return pkg.publishable !== false;
 	}
 	function publishPayload(pkg: PublishTarget) {
-		return { source: { kind: 'directory' as const, path: pkg.path }, args: [], target: pkg };
+		const access = pkgAccess[pkg.name] ?? 'public';
+		return { source: { kind: 'directory' as const, path: pkg.path }, args: ['--access', access], target: pkg };
+	}
+	/** Whether the package name is scoped (`@scope/name`) — only scoped packages
+	 *  honor `--access` (non-scoped are always public). */
+	function isScoped(name: string): boolean {
+		return name.startsWith('@');
+	}
+	// Per-package publish access preference (public / restricted), default public.
+	let pkgAccess = $state<Record<string, 'public' | 'restricted'>>({});
+	function accessFor(name: string): 'public' | 'restricted' {
+		return pkgAccess[name] ?? 'public';
+	}
+	function cycleAccess(name: string): void {
+		pkgAccess = { ...pkgAccess, [name]: accessFor(name) === 'public' ? 'restricted' : 'public' };
 	}
 	function doPublish(pkg: PublishTarget): void {
 		if (!canPublish(pkg)) return;
@@ -280,7 +294,17 @@
 						</div>
 						<!-- Action buttons (hidden in batch mode) -->
 						{#if !batchMode}
-							<div class="flex shrink-0 gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+							<div class="flex shrink-0 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+								{#if isScoped(pkg.name)}
+									<button
+										type="button"
+										title={$_('workspaces.accessTitle')}
+										class="rounded-md border border-border px-1.5 py-1 text-[10px] font-medium transition-colors hover:bg-accent {accessFor(pkg.name) === 'restricted' ? 'text-warning' : 'text-muted-foreground'}"
+										onclick={() => cycleAccess(pkg.name)}
+									>
+										{accessFor(pkg.name)}
+									</button>
+								{/if}
 								<Button
 									variant="brand"
 									size="sm"

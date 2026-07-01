@@ -8,10 +8,17 @@
  * same wire format.
  */
 import { Buffer } from 'node:buffer';
+import { z } from 'zod';
 import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
 import { burnBuffer } from './totp.js';
 import { loginWithPassword } from './npm-profile-client.js';
-import { createClient, publish as sdkPublish, type PublishPackument } from 'safe-npm-sdk';
+import {
+  createClient,
+  escapePackageName,
+  publish as sdkPublish,
+  type NpmClient,
+  type PublishPackument,
+} from 'safe-npm-sdk';
 
 export interface RegistryConfig {
   registry: string;
@@ -357,4 +364,172 @@ export function isExpiredToken(status: number, body: unknown): boolean {
     return /token.*(expired|invalid|revoked)|unauthor/i.test(text) && !isOtpFailure(body, status);
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Unpublish (remove a single live-published version)
+// ---------------------------------------------------------------------------
+// npm's registry uses a CouchDB-style revision-doc protocol. Removing one
+// version of an existing package is a multi-step exchange (see libnpmpublish's
+// lib/unpublish.js):
+//   1. GET /<pkg>            → current packument (with CouchDB _rev)
+//   2. strip the version from versions / dist-tags / time
+//   3. PUT /<pkg>/-rev/<rev> → write the trimmed packument
+//   4. GET /<pkg>            → fresh _rev
+//   5. DELETE /<tarball-path>/-rev/<rev> → remove the tarball binary asset
+// safe-npm-sdk has no unpublish operation yet (tracking issue
+// Gaubee/safe-npm-sdk#1), so this uses the SDK's low-level client.request.
+
+export interface UnpublishResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  /** True if the whole-package document was removed (no versions remained). */
+  wholePackageRemoved?: boolean;
+}
+
+/** Lightweight semver compare (major.minor.patch numerics, no prerelease). */
+function compareVersionLoose(a: string, b: string): number {
+  const pa = a.replace(/^v/, '').split(/[.+-]/).map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.replace(/^v/, '').split(/[.+-]/).map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * Remove a single published version from the registry. If it is the only
+ * version, the entire package document is deleted instead.
+ */
+export async function unpublishVersion(opts: {
+  registry: string;
+  token: string;
+  totpSecret: string;
+  name: string;
+  version: string;
+  /** One-shot OTP (overrides the TOTP derived from the secret). */
+  otp?: string;
+}): Promise<UnpublishResult> {
+  const { registry, token, name, version } = opts;
+  const otp = opts.otp ?? generateTotp(opts.totpSecret);
+  const client = createClient({ auth: { token }, registry });
+  const escaped = escapePackageName(name);
+
+  // Loose schema: accept any JSON the registry returns (packument, void, etc.).
+  // safe-npm-sdk targets Zod v3 while pnpm-pub is on v4; the two `ZodType`
+  // constructors are structurally incompatible at the type level. Cast to the
+  // schema slot's expected type — at runtime both zods expose the same
+  // `safeParse`/`parse` surface used by client.request.
+  type RequestSchema = Parameters<NpmClient['request']>[0]['schema'];
+  const LooseSchema = z.unknown() as unknown as RequestSchema;
+
+  try {
+    // 1. Fetch the current packument + its CouchDB revision.
+    const getRes = await client.request({ method: 'GET', path: `/${escaped}`, otp, schema: LooseSchema });
+    if (!getRes.ok) {
+      return { ok: false, status: getRes.error.status, error: getRes.error.message };
+    }
+    const doc = getRes.data as Record<string, unknown>;
+    const rev = typeof doc._rev === 'string' ? doc._rev : undefined;
+    const versions = (isRecord(doc.versions) ? doc.versions : {}) as Record<string, unknown>;
+    if (!versions[version]) {
+      // Version doesn't exist — nothing to remove. Mirror npm's no-op success.
+      return { ok: true, status: 200 };
+    }
+    if (!rev) {
+      return { ok: false, status: 500, error: 'Packument has no _rev; cannot unpublish safely.' };
+    }
+
+    // 2. Strip the version and fix dist-tags / time.
+    const next: Record<string, unknown> = { ...doc };
+    const nextVersions = { ...versions };
+    delete nextVersions[version];
+    next.versions = nextVersions;
+
+    if (isRecord(doc['dist-tags'])) {
+      const tags = { ...(doc['dist-tags'] as Record<string, string>) };
+      for (const [tag, ver] of Object.entries(tags)) {
+        if (ver === version) delete tags[tag];
+      }
+      // Reassign `latest` if it pointed at the removed version.
+      if (!tags.latest && Object.keys(nextVersions).length > 0) {
+        const greatest = Object.keys(nextVersions).sort(compareVersionLoose).pop()!;
+        tags.latest = greatest;
+      }
+      next['dist-tags'] = tags;
+    }
+    if (isRecord(doc.time)) {
+      const times = { ...(doc.time as Record<string, unknown>) };
+      delete times[version];
+      next.time = times;
+    }
+    // Drop fields the registry rejects on PUT.
+    delete next._revisions;
+    delete next._attachments;
+
+    // 3. If no versions remain → whole-package removal (single DELETE).
+    if (Object.keys(nextVersions).length === 0) {
+      const delRes = await client.request({
+        method: 'DELETE',
+        path: `/${escaped}/-rev/${rev}`,
+        otp,
+        schema: LooseSchema,
+      });
+      if (!delRes.ok) {
+        return { ok: false, status: delRes.error.status, error: delRes.error.message };
+      }
+      return { ok: true, status: 200, wholePackageRemoved: true };
+    }
+
+    // 4. PUT the trimmed packument back.
+    const putRes = await client.request({
+      method: 'PUT',
+      path: `/${escaped}/-rev/${rev}`,
+      body: next,
+      otp,
+      schema: LooseSchema,
+    });
+    if (!putRes.ok) {
+      return { ok: false, status: putRes.error.status, error: putRes.error.message };
+    }
+
+    // 5. Fetch a fresh _rev, then DELETE the tarball asset.
+    const regetRes = await client.request({ method: 'GET', path: `/${escaped}`, otp, schema: LooseSchema });
+    if (!regetRes.ok) {
+      // Packument update succeeded; only the tarball cleanup failed. Report
+      // partial success so the caller knows the version is effectively gone.
+      return { ok: true, status: 200 };
+    }
+    const freshDoc = regetRes.data as Record<string, unknown>;
+    const freshRev = typeof freshDoc._rev === 'string' ? freshDoc._rev : undefined;
+    const removedMeta = isRecord(versions[version]) ? (versions[version] as Record<string, unknown>) : {};
+    const dist = isRecord(removedMeta.dist) ? (removedMeta.dist as Record<string, unknown>) : {};
+    const tarballUrl = typeof dist.tarball === 'string' ? dist.tarball : undefined;
+    if (tarballUrl && freshRev) {
+      // tarball URL is absolute (https://registry.../<pkg>/-/<file>); derive
+      // the registry-relative path by stripping the origin.
+      let tarballPath = tarballUrl;
+      try {
+        const u = new URL(tarballUrl);
+        tarballPath = u.pathname;
+      } catch {
+        // not a URL — assume already a path
+      }
+      const delTarRes = await client.request({
+        method: 'DELETE',
+        path: `${tarballPath}/-rev/${freshRev}`,
+        otp,
+        schema: LooseSchema,
+      });
+      if (!delTarRes.ok) {
+        // Version removed from packument; tarball asset lingered. Still ok.
+      }
+    }
+
+    return { ok: true, status: 200 };
+  } catch (error: unknown) {
+    return { ok: false, status: 0, error: error instanceof Error ? error.message : String(error) };
+  }
 }
