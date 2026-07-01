@@ -18,7 +18,7 @@
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconChevron from '@lucide/svelte/icons/chevrons-up-down';
 	import IconBackup from '@lucide/svelte/icons/database-backup';
-	import IconHistory from '@lucide/svelte/icons/history';
+	import IconPackage from '@lucide/svelte/icons/package';
 	import IconPanelClose from '@lucide/svelte/icons/panel-left-close';
 	import IconPanelOpen from '@lucide/svelte/icons/panel-left-open';
 	import NpmMark from '$lib/components/npm-mark.svelte';
@@ -29,7 +29,7 @@
 
 	const nav = [
 		{ href: '/active-events', labelKey: 'sidebar.activeEvents', icon: IconEvent },
-		{ href: '/event-history', labelKey: 'sidebar.eventHistory', icon: IconHistory },
+		{ href: '/packages', labelKey: 'sidebar.packages', icon: IconPackage },
 		{ href: '/workspaces', labelKey: 'sidebar.workspaces', icon: IconWorkspaces },
 		{ href: '/backup', labelKey: 'sidebar.backup', icon: IconBackup },
 	];

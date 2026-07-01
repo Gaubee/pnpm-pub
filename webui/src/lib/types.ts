@@ -36,6 +36,22 @@ export interface PublishTarget {
 	publishable?: boolean;
 }
 
+/**
+ * A package published/maintained by the active profile on the npm registry.
+ * Mirrors the daemon's `NpmPackage` (src/daemon/npm-packages.ts) — duplicated
+ * (no Node-only code in the browser bundle), kept in sync.
+ */
+export interface NpmPackage {
+	name: string;
+	version: string;
+	description?: string | null;
+	repository?: string | null;
+	date?: string | null;
+	scope?: string | null;
+	keywords?: string[];
+	score?: number;
+}
+
 export type PublishSource =
 	| { kind: 'directory'; path: string }
 	| { kind: 'tarball'; path: string };

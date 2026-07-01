@@ -3,8 +3,8 @@
 	import { page } from '$app/state';
 	import { actions, daemon, closeAddProfile } from '$lib/store.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
-	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -15,27 +15,28 @@
 		AlertDialogHeader,
 		AlertDialogTitle,
 	} from '$lib/components/ui/alert-dialog/index.js';
-	import IconPackage from '@lucide/svelte/icons/package';
 	import IconTrash from '@lucide/svelte/icons/trash-2';
 	import IconUser from '@lucide/svelte/icons/user-round';
 	import IconRegistry from '@lucide/svelte/icons/server';
 	import IconLoader from '@lucide/svelte/icons/loader-circle';
-	import type { PublishTarget } from '$lib/types.js';
+	import IconKey from '@lucide/svelte/icons/key-round';
+	import IconEye from '@lucide/svelte/icons/eye';
+	import IconEyeOff from '@lucide/svelte/icons/eye-off';
+	import IconCopy from '@lucide/svelte/icons/copy';
+	import IconCheck from '@lucide/svelte/icons/check';
+	import { apiFetch } from '$lib/api-fetch.js';
+	import { parseProfileTokenResponse } from '$lib/rest-response.js';
 	import { _ } from 'svelte-i18n';
-
-	const pageSize = 8;
 
 	let deleteOpen = $state(false);
 	let deleting = $state(false);
 	let error = $state<string | null>(null);
-	let pageIndex = $state(0);
+	// Type-to-confirm: must match the profile username exactly.
+	let confirmName = $state('');
 
 	const username = $derived(decodeURIComponent(page.params.username ?? ''));
 	const profile = $derived($daemon.profiles.find((item) => item.username === username) ?? null);
-	const packages = $derived(filterPackagesForProfile($daemon.packages, username));
-	const totalPages = $derived(Math.max(1, Math.ceil(packages.length / pageSize)));
-	const currentPage = $derived(Math.min(pageIndex, totalPages - 1));
-	const visiblePackages = $derived(packages.slice(currentPage * pageSize, currentPage * pageSize + pageSize));
+	const canDelete = $derived(confirmName.trim() === username);
 
 	$effect(() => {
 		if (!$daemon.profilesLoaded || profile) return;
@@ -44,7 +45,7 @@
 
 	$effect(() => {
 		void username;
-		pageIndex = 0;
+		confirmName = '';
 		error = null;
 		deleteOpen = false;
 	});
@@ -58,16 +59,8 @@
 			.toUpperCase() || '??';
 	}
 
-	function filterPackagesForProfile(items: PublishTarget[], name: string): PublishTarget[] {
-		const scope = name.toLowerCase();
-		return items.filter((item) => {
-			const match = item.name.match(/^@([^/]+)\//);
-			return !match || match[1]?.toLowerCase() === scope;
-		});
-	}
-
 	async function deleteProfile(): Promise<void> {
-		if (!profile || deleting) return;
+		if (!profile || deleting || !canDelete) return;
 		deleting = true;
 		error = null;
 		try {
@@ -85,6 +78,54 @@
 			deleting = false;
 		}
 	}
+
+	// ----- npm_token export (show / copy) -----
+	let tokenLoading = $state(false);
+	let token = $state<string | null>(null);
+	let tokenError = $state<string | null>(null);
+	let showToken = $state(false);
+	let copied = $state(false);
+
+	async function loadToken(): Promise<void> {
+		if (tokenLoading || token) return;
+		tokenLoading = true;
+		tokenError = null;
+		try {
+			const res = await apiFetch(`/api/profile-token?username=${encodeURIComponent(username)}`);
+			const json = parseProfileTokenResponse(await res.json());
+			if (json?.ok && json.token) {
+				token = json.token;
+				showToken = true;
+			} else {
+				tokenError = json?.error ?? $_('profile.tokenError');
+			}
+		} catch {
+			tokenError = $_('profile.tokenError');
+		} finally {
+			tokenLoading = false;
+		}
+	}
+
+	async function copyToken(): Promise<void> {
+		if (!token) return;
+		try {
+			await navigator.clipboard.writeText(token);
+			copied = true;
+			setTimeout(() => (copied = false), 1500);
+		} catch {
+			/* clipboard unavailable */
+		}
+	}
+
+	// Reset token state when navigating between profiles.
+	$effect(() => {
+		void username;
+		token = null;
+		tokenError = null;
+		tokenLoading = false;
+		showToken = false;
+		copied = false;
+	});
 </script>
 
 <svelte:head>
@@ -116,9 +157,20 @@
 						<AlertDialogTitle>{$_('profile.deleteTitle', { values: { username: profile.username } })}</AlertDialogTitle>
 						<AlertDialogDescription>{$_('profile.deleteDescription')}</AlertDialogDescription>
 					</AlertDialogHeader>
+					<div class="space-y-2">
+						<p class="text-sm text-muted-foreground">
+							{$_('profile.deleteConfirmLabel', { values: { username: profile.username } })}
+						</p>
+						<Input
+							bind:value={confirmName}
+							placeholder={profile.username}
+							autocomplete="off"
+							spellcheck={false}
+						/>
+					</div>
 					<AlertDialogFooter>
 						<AlertDialogCancel disabled={deleting}>{$_('common.cancel')}</AlertDialogCancel>
-						<AlertDialogAction variant="destructive" disabled={deleting} onclick={deleteProfile}>
+						<AlertDialogAction variant="destructive" disabled={deleting || !canDelete} onclick={deleteProfile}>
 							{#if deleting}<IconLoader class="animate-spin" />{/if}
 							{$_('profile.deleteProfile')}
 						</AlertDialogAction>
@@ -156,48 +208,40 @@
 			</div>
 		</section>
 
-		<section class="flex flex-col gap-3">
-			<div class="flex items-center justify-between">
-				<div>
-					<h2 class="flex items-center gap-2 text-sm font-semibold">
-						<IconPackage /> {$_('profile.packages')}
-					</h2>
-					<p class="text-xs text-muted-foreground">{$_('profile.packagesIntro')}</p>
+		<!-- npm_token export -->
+		<section class="rounded-lg border border-border bg-card p-4">
+			<div class="flex items-center justify-between gap-3">
+				<div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+					<IconKey /> {$_('profile.npmToken')}
 				</div>
-				<Badge variant="secondary">{packages.length}</Badge>
+				<div class="flex shrink-0 items-center gap-1.5">
+					{#if token}
+						<Button variant="ghost" size="icon" class="h-7 w-7" onclick={() => (showToken = !showToken)} aria-label={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')} title={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')}>
+							{#if showToken}<IconEyeOff class="h-3.5 w-3.5" />{:else}<IconEye class="h-3.5 w-3.5" />{/if}
+						</Button>
+						<Button variant="ghost" size="icon" class="h-7 w-7" onclick={copyToken} aria-label={$_('profile.copyToken')} title={$_('profile.copyToken')}>
+							{#if copied}<IconCheck class="h-3.5 w-3.5 text-success" />{:else}<IconCopy class="h-3.5 w-3.5" />{/if}
+						</Button>
+					{:else if tokenLoading}
+						<IconLoader class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+					{:else}
+						<Button variant="outline" size="sm" onclick={loadToken}>
+							<IconEye class="h-3.5 w-3.5" /> {$_('profile.revealToken')}
+						</Button>
+					{/if}
+				</div>
 			</div>
-
-			{#if packages.length === 0}
-				<div class="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-					{$_('profile.noPackages')}
-				</div>
-			{:else}
-				<div class="overflow-hidden rounded-lg border border-border bg-card">
-					{#each visiblePackages as pkg (pkg.path)}
-						<div class="flex items-center justify-between gap-3 border-b border-border px-4 py-3 last:border-b-0">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2">
-									<span class="truncate text-sm font-medium">{pkg.name}</span>
-									<Badge variant="outline" class="font-mono text-[10px]">{pkg.version}</Badge>
-								</div>
-								<p class="mt-1 truncate font-mono text-[10px] text-muted-foreground">{pkg.path}</p>
-							</div>
-							{#if pkg.repository}
-								<span class="hidden max-w-40 truncate font-mono text-[10px] text-muted-foreground sm:block">{pkg.repository}</span>
-							{/if}
-						</div>
-					{/each}
-				</div>
-				<div class="flex items-center justify-end gap-2">
-					<Button variant="outline" size="sm" disabled={currentPage === 0} onclick={() => (pageIndex = Math.max(0, currentPage - 1))}>
-						{$_('common.previous')}
-					</Button>
-					<span class="text-xs text-muted-foreground">{currentPage + 1} / {totalPages}</span>
-					<Button variant="outline" size="sm" disabled={currentPage + 1 >= totalPages} onclick={() => (pageIndex = Math.min(totalPages - 1, currentPage + 1))}>
-						{$_('common.next')}
-					</Button>
-				</div>
-			{/if}
+			<div class="mt-2">
+				{#if tokenError}
+					<p class="text-xs text-destructive">{tokenError}</p>
+				{:else if token}
+					<p class="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
+						{showToken ? token : '•'.repeat(Math.min(token.length, 40))}
+					</p>
+				{:else}
+					<p class="text-xs text-muted-foreground">{$_('profile.tokenHidden')}</p>
+				{/if}
+			</div>
 		</section>
 	</div>
 {:else}

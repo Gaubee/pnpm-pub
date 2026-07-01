@@ -18,6 +18,7 @@ import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken, unpublishVersion } from './npm-api.js';
+import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
@@ -66,6 +67,14 @@ export class WebServer {
    */
   private trustCache = new Map<string, { promise: Promise<TrustedPublisherConfig[]>; expiresAt: number }>();
   private static readonly TRUST_CACHE_TTL_MS = 30_000;
+
+  /**
+   * Per-profile maintainer package cache (Packages hub). The npm search walk is
+   * paginated (250/page), so we cache the full list for ~60s and dedup
+   * concurrent in-flight walks for the same profile:registry key.
+   */
+  private packagesCache = new Map<string, { promise: Promise<NpmPackage[]>; expiresAt: number }>();
+  private static readonly PACKAGES_CACHE_TTL_MS = 60_000;
 
   constructor(private deps: WebServerDeps) {
     // Relay store events to every authed WebUI client.
@@ -125,6 +134,20 @@ export class WebServer {
           );
           return json(res, 200, { ok: true, profile: result });
         }
+        if (url === '/api/profile-token' && method === 'GET') {
+          // Resolve the profile's npm_token from the in-memory credential pool
+          // first, falling back to the merged keychain item (one read). The
+          // WebUI uses this for the Profile "show / copy npm_token" affordance.
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const username = query.get('username');
+          if (!username) throw new Error('Invalid or missing username.');
+          let token = this.deps.store.getCredentials(username)?.token ?? null;
+          if (!token) {
+            const secrets = await getProfileSecrets(username);
+            token = secrets?.npm_token ?? null;
+          }
+          return json(res, 200, token ? { ok: true, token } : { ok: false, error: 'No token stored for this profile.' });
+        }
         if (url === '/api/add-profile' && method === 'POST') {
           const result = await this.addProfile(parseAddProfileBody(body));
           return json(res, 200, result);
@@ -147,6 +170,19 @@ export class WebServer {
           }
           const result = await this.importBundle(parsed.bundle, parsed.password, parsed.usernames);
           return json(res, 200, result);
+        }
+        if (url === '/api/packages' && method === 'GET') {
+          // Packages hub — list the active profile's published packages from the
+          // npm registry, with server-side search / sort / pagination.
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const parsed = parseOrThrow(PackagesQuerySchema, {
+            q: query.get('q') ?? query.get('query') ?? '',
+            sort: query.get('sort') ?? 'date',
+            page: query.get('page') ?? '0',
+            pageSize: query.get('pageSize') ?? query.get('per_page') ?? '25',
+          }, 'packages query');
+          const result = await this.listPackages(parsed.q, parsed.sort, parsed.page, parsed.pageSize);
+          return json(res, result.ok ? 200 : result.status, result);
         }
         if (url === '/api/profiles' && method === 'DELETE') {
           const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
@@ -660,6 +696,69 @@ export class WebServer {
     this.trustCache.delete(name);
   }
 
+  /**
+   * Resolve the active profile's full published-package list (cached ~60s +
+   * in-flight dedup), then apply a case-insensitive substring filter, a sort,
+   * and pagination. The registry walk is the network-bound part; once cached,
+   * filter/sort/slice are cheap so the WebUI can re-query freely.
+   */
+  private async listPackages(
+    query: string,
+    sort: 'date' | 'name',
+    page: number,
+    pageSize: number,
+  ): Promise<
+    | { ok: true; items: NpmPackage[]; total: number; page: number; pageSize: number }
+    | { ok: false; status: number; error: string }
+  > {
+    const username = this.deps.store.getDefault();
+    if (!username) return { ok: false, status: 401, error: 'No active profile.' };
+    const profile = this.deps.store.getProfile(username);
+    const registry = profile?.registry ?? 'https://registry.npmjs.org/';
+
+    const cacheKey = `${username.toLowerCase()}@${registry}`;
+    const now = Date.now();
+    let entry = this.packagesCache.get(cacheKey);
+    if (!entry || entry.expiresAt <= now) {
+      const promise = listMaintainerPackages(username, registry).catch((err: unknown) => {
+        // A failed walk shouldn't poison the cache slot for 60s.
+        this.packagesCache.delete(cacheKey);
+        throw err;
+      });
+      entry = { promise, expiresAt: now + WebServer.PACKAGES_CACHE_TTL_MS };
+      this.packagesCache.set(cacheKey, entry);
+    }
+    let all: NpmPackage[];
+    try {
+      all = await entry.promise;
+    } catch (err: unknown) {
+      return { ok: false, status: 502, error: errorToMessage(err) };
+    }
+
+    // Filter (case-insensitive substring across name / description / keywords).
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? all.filter((p) => {
+          if (p.name.toLowerCase().includes(q)) return true;
+          if (p.description && p.description.toLowerCase().includes(q)) return true;
+          if (p.keywords.some((k) => k.toLowerCase().includes(q))) return true;
+          return false;
+        })
+      : all;
+
+    // Sort. `date` is newest-first (ISO-8601 sorts lexically); `name` ascends.
+    const sorted =
+      sort === 'name'
+        ? [...filtered].sort((a, b) => a.name.localeCompare(b.name))
+        : [...filtered].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+
+    const safePageSize = Math.max(1, Math.min(pageSize, 100));
+    const safePage = Math.max(0, Math.min(page, Math.floor(sorted.length / Math.max(1, safePageSize))));
+    const start = safePage * safePageSize;
+    const items = sorted.slice(start, start + safePageSize);
+    return { ok: true, items, total: sorted.length, page: safePage, pageSize: safePageSize };
+  }
+
   private async restoreRenewCredentialState(
     username: string,
     token: string | null,
@@ -819,6 +918,13 @@ const ImportBodySchema = z.object({
 const PinWorkspaceBodySchema = z.object({
   path: z.string().min(1),
   pinned: z.boolean(),
+});
+
+const PackagesQuerySchema = z.object({
+  q: z.string().default(''),
+  sort: z.enum(['date', 'name']).default('date'),
+  page: z.coerce.number().int().nonnegative().default(0),
+  pageSize: z.coerce.number().int().positive().default(25),
 });
 
 const OidcTrustPostBodySchema = z.object({

@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { TrustedPublisherConfigSchema } from '$shared/schemas.js';
-import type { TrustedPublisherConfig } from './types.js';
+import type { TrustedPublisherConfig, NpmPackage } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Response schemas (passthrough for forward-compat with new daemon fields)
@@ -55,6 +55,32 @@ const TrustListResponseSchema = z.object({
   error: z.string().optional(),
 });
 
+const NpmPackageSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+  description: z.string().nullable().optional(),
+  repository: z.string().nullable().optional(),
+  date: z.string().nullable().optional(),
+  scope: z.string().nullable().optional(),
+  keywords: z.array(z.string()).optional(),
+  score: z.number().optional(),
+});
+
+const PackagesResponseSchema = z.object({
+  ok: z.boolean(),
+  items: z.array(NpmPackageSchema).optional(),
+  total: z.number().optional(),
+  page: z.number().optional(),
+  pageSize: z.number().optional(),
+  error: z.string().optional(),
+});
+
+const ProfileTokenResponseSchema = z.object({
+  ok: z.boolean(),
+  token: z.string().optional(),
+  error: z.string().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Derived types (re-exported for callers)
 // ---------------------------------------------------------------------------
@@ -65,6 +91,8 @@ export type ImportResponse = z.infer<typeof ImportResponseSchema>;
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 export type NpmProfileLookupResponse = z.infer<typeof NpmProfileLookupResponseSchema>;
 export type TrustListResponse = { ok: boolean; configs?: TrustedPublisherConfig[]; error?: string };
+export type NpmPackageResponse = { ok: boolean; items?: NpmPackage[]; total?: number; page?: number; pageSize?: number; error?: string };
+export type ProfileTokenResponse = z.infer<typeof ProfileTokenResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // Parsers
@@ -91,7 +119,15 @@ export function parseNpmProfileLookupResponse(value: unknown): NpmProfileLookupR
 }
 
 export function parseTrustListResponse(value: unknown): TrustListResponse | null {
-  return safeOrNull(TrustListResponseSchema, value);
+	return safeOrNull(TrustListResponseSchema, value);
+}
+
+export function parsePackagesResponse(value: unknown): NpmPackageResponse | null {
+	return safeOrNull(PackagesResponseSchema, value);
+}
+
+export function parseProfileTokenResponse(value: unknown): ProfileTokenResponse | null {
+	return safeOrNull(ProfileTokenResponseSchema, value);
 }
 
 /** Run safeParse; return the data on success, null on failure. */
