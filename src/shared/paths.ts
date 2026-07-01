@@ -4,7 +4,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { APP_DIR_NAME, PROFILES_FILE, WORKSPACES_FILE } from './index.js';
+import { APP_DIR_NAME, PROFILES_FILE, WORKSPACES_FILE, EVENTS_DB_FILE } from './index.js';
 
 let homeOverride: string | null = null;
 
@@ -40,6 +40,11 @@ export function profilesPath(): string {
 /** ~/.pnpm-pub/workspaces.json */
 export function workspacesPath(): string {
   return path.join(appDir(), WORKSPACES_FILE);
+}
+
+/** ~/.pnpm-pub/events.db — the persisted event log (SQLite). */
+export function eventsDbPath(): string {
+  return path.join(appDir(), EVENTS_DB_FILE);
 }
 
 /** Directory containing the Unix socket on macOS / Linux — see socketPath(). */

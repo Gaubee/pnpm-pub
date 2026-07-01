@@ -10,6 +10,7 @@ import { EventEmitter } from 'node:events';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { Database as DatabaseType } from 'better-sqlite3';
 import {
   type PnpmPubConfig,
   type Profile,
@@ -19,8 +20,17 @@ import {
   type EventKind,
   type EventPayload,
 } from '../shared/index.js';
-import { profilesPath, workspacesPath, ensureAppDirs } from '../shared/paths.js';
+import { profilesPath, workspacesPath, eventsDbPath, ensureAppDirs } from '../shared/paths.js';
 import { PnpmPubConfigSchema, WorkspacesConfigSchema } from '../shared/schemas.js';
+import {
+  openEventDb,
+  insertEvent,
+  updateEvent,
+  queryEvents as dbQueryEvents,
+  recentEvents,
+  type EventQuery,
+  type EventQueryResult,
+} from './event-db.js';
 
 const DEFAULT_CONFIG: PnpmPubConfig = { default: '', profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
@@ -42,6 +52,7 @@ export class DaemonStore extends EventEmitter {
   private workspaces: WorkspacesConfig = { ...DEFAULT_WORKSPACES };
   private events: PubEvent[] = [];
   private credentials = new Map<string, CredentialPool>();
+  private eventDb: DatabaseType | null = null;
 
   constructor() {
     super();
@@ -54,6 +65,18 @@ export class DaemonStore extends EventEmitter {
     ensureAppDirs();
     this.config = parsePnpmPubConfig(await this.readJson(profilesPath())) ?? structuredClone(DEFAULT_CONFIG);
     this.workspaces = parseWorkspacesConfig(await this.readJson(workspacesPath())) ?? structuredClone(DEFAULT_WORKSPACES);
+    // Open the persisted event log. openEventDb sweeps orphan 'pending' rows to
+    // 'failed' on startup, so the in-memory array is seeded from current DB state.
+    this.eventDb = openEventDb(eventsDbPath());
+    this.events = recentEvents(this.eventDb, 500);
+  }
+
+  /** Close the persisted event database (call on daemon shutdown). */
+  close(): void {
+    if (this.eventDb) {
+      this.eventDb.close();
+      this.eventDb = null;
+    }
   }
 
   private async readJson(file: string): Promise<unknown> {
@@ -223,12 +246,23 @@ export class DaemonStore extends EventEmitter {
 
   // ----- events (Chapter 6.2) -----
 
+  /**
+   * Pending events for the WS initial snapshot. History is fetched via
+   * queryEvents() / the REST endpoint (paginated from SQLite), so the WS
+   * snapshot only carries live pending items.
+   */
   getEvents(): PubEvent[] {
-    return [...this.events].sort((a, b) => b.createdAt - a.createdAt);
+    return this.events.filter((e) => e.status === 'pending').sort((a, b) => b.createdAt - a.createdAt);
   }
 
   getEvent(id: string): PubEvent | undefined {
     return this.events.find((e) => e.id === id);
+  }
+
+  /** Paginated, filtered history query (backed by SQLite). */
+  queryEvents(q: EventQuery): EventQueryResult {
+    if (!this.eventDb) return { rows: [], total: 0, page: q.page, limit: q.limit };
+    return dbQueryEvents(this.eventDb, q);
   }
 
   createEvent(opts: {
@@ -249,6 +283,7 @@ export class DaemonStore extends EventEmitter {
       groupId: opts.groupId,
     };
     this.events.unshift(evt);
+    if (this.eventDb) insertEvent(this.eventDb, evt);
     this.emit('event', { type: 'event' as const, event: evt });
     return evt;
   }
@@ -270,6 +305,7 @@ export class DaemonStore extends EventEmitter {
     if (metadata?.tarballSummary !== undefined) {
       evt.tarballSummary = metadata.tarballSummary;
     }
+    if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit('event', { type: 'event' as const, event: evt });
     return evt;
   }

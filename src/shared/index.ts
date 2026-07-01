@@ -40,4 +40,6 @@ export const APP_DIR_NAME = '.pnpm-pub';
 /** Resolved at runtime via env override; the canonical config filenames. */
 export const PROFILES_FILE = 'profiles.json';
 export const WORKSPACES_FILE = 'workspaces.json';
+/** SQLite database holding the persisted event log (survives restarts). */
+export const EVENTS_DB_FILE = 'events.db';
 

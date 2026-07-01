@@ -9,11 +9,15 @@
 	 * Unlike the old layout, this page NEVER locks navigation — pending tasks
 	 * are surfaced via the sidebar badge, and the user is free to navigate away.
 	 */
-	import { pendingEvents, groupedHistoryEvents, daemon } from '$lib/store.js';
+	import { onMount } from 'svelte';
+	import { pendingEvents, daemon } from '$lib/store.js';
+	import { apiFetch } from '$lib/api-fetch.js';
+	import type { PubEvent } from '$lib/types.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import OidcDialog from '$lib/components/oidc-dialog.svelte';
 	import { actions } from '$lib/store.js';
@@ -31,9 +35,27 @@
 	let oidcName = $state('');
 	let oidcDialogOpen = $state(false);
 
-	// Preview-history: the latest few groups (collapsed view, full logs).
+	// Preview-history: the latest few events, fetched from the daemon (REST).
 	const PREVIEW_COUNT = 5;
-	const previewGroups = $derived($groupedHistoryEvents.slice(0, PREVIEW_COUNT));
+	let previewEvents = $state<PubEvent[]>([]);
+	let previewLoading = $state(true);
+
+	async function fetchPreview(): Promise<void> {
+		previewLoading = true;
+		try {
+			const res = await apiFetch(`/api/events?scope=history&page=0&limit=${PREVIEW_COUNT}`);
+			const json = (await res.json()) as { rows: PubEvent[] };
+			previewEvents = json.rows;
+		} catch {
+			previewEvents = [];
+		} finally {
+			previewLoading = false;
+		}
+	}
+
+	onMount(() => {
+		void fetchPreview();
+	});
 
 	function createPlaceholder(): void {
 		const name = placeholderName.trim();
@@ -117,7 +139,22 @@
 				{$_('events.viewAllHistory')} <IconArrowRight class="h-3 w-3" />
 			</a>
 		</div>
-		{#if previewGroups.length === 0}
+		{#if previewLoading}
+			<div class="space-y-2.5">
+				{#each Array(3) as _, i (i)}
+					<div class="space-y-2 rounded-xl border border-border p-4">
+						<div class="flex items-center gap-2">
+							<Skeleton class="h-8 w-8 rounded-md" />
+							<div class="flex-1 space-y-1.5">
+								<Skeleton class="h-3.5 w-32" />
+								<Skeleton class="h-2.5 w-20" />
+							</div>
+							<Skeleton class="h-5 w-16 rounded-full" />
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else if previewEvents.length === 0}
 			<div class="rounded-xl border border-dashed border-border p-10 text-center">
 				<p class="text-sm text-muted-foreground">{$_('events.noEvents')}</p>
 				<p class="mt-1 text-xs text-muted-foreground/70">
@@ -125,8 +162,8 @@
 				</p>
 			</div>
 		{:else}
-			{#each previewGroups as group (group.id)}
-				<EventCard event={group.latest} />
+			{#each previewEvents as event (event.id)}
+				<EventCard {event} />
 			{/each}
 		{/if}
 	</section>

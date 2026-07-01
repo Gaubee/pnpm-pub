@@ -200,6 +200,34 @@ export class WebServer {
           const result = await this.listPackages(parsed.q, parsed.sort, parsed.page, parsed.pageSize);
           return json(res, result.ok ? 200 : result.status, result);
         }
+        if (url === '/api/events' && method === 'GET') {
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const parsed = parseOrThrow(EventsQuerySchema, {
+            scope: query.get('scope') ?? 'history',
+            name: query.get('name') ?? undefined,
+            q: query.get('q') ?? '',
+            group: query.get('group') ?? undefined,
+            page: query.get('page') ?? '0',
+            limit: query.get('limit') ?? '20',
+          }, 'events query');
+          // Parse `name:pkg keywords` syntax out of the free-text q.
+          let name = parsed.name;
+          const keywords: string[] = [];
+          for (const tok of parsed.q.split(/\s+/).filter(Boolean)) {
+            const m = tok.match(/^name:(.+)$/i);
+            if (m) name = m[1];
+            else keywords.push(tok);
+          }
+          const result = this.deps.store.queryEvents({
+            status: parsed.scope,
+            ...(name ? { name } : {}),
+            ...(keywords.length ? { keywords } : {}),
+            ...(parsed.group ? { groupId: parsed.group } : {}),
+            page: parsed.page,
+            limit: parsed.limit,
+          });
+          return json(res, 200, result);
+        }
         if (url === '/api/profiles' && method === 'DELETE') {
           const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
           const ok = await this.deps.store.removeProfile(username);
@@ -957,6 +985,15 @@ const PackagesQuerySchema = z.object({
   sort: z.enum(['date', 'name']).default('date'),
   page: z.coerce.number().int().nonnegative().default(0),
   pageSize: z.coerce.number().int().positive().default(25),
+});
+
+const EventsQuerySchema = z.object({
+  scope: z.enum(['pending', 'history']).default('history'),
+  name: z.string().optional(),
+  q: z.string().default(''),
+  group: z.string().optional(),
+  page: z.coerce.number().int().nonnegative().default(0),
+  limit: z.coerce.number().int().positive().max(100).default(20),
 });
 
 const OidcTrustPostBodySchema = z.object({

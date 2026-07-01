@@ -245,6 +245,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     await trayHost?.destroy();
     await web.stop();
     await ipc.stop();
+    store.close(); // flush + close the persisted event database
     if (exit) process.exit(0);
   };
 

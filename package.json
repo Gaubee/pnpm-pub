@@ -47,6 +47,7 @@
   "dependencies": {
     "@github/keytar": "^7.0.0",
     "@opentray/ext-webview": "link:../jixoai-labs/opentray/packages/ext-webview",
+    "better-sqlite3": "^12.11.1",
     "npm-profile": "^12.0.2",
     "opentray": "link:../jixoai-labs/opentray/packages/cli",
     "otplib": "^12.0.1",
@@ -57,6 +58,7 @@
   "devDependencies": {
     "@opentray/ext-webview-darwin-arm64": "link:../jixoai-labs/opentray/packages/ext-webview-darwin-arm64",
     "@resvg/resvg-js": "^2.6.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/http-proxy": "^1.17.17",
     "@types/node": "^22.10.0",
     "@types/yargs": "^17.0.33",
