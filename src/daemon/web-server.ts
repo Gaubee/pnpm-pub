@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
-import { applyToken, unpublishVersion } from './npm-api.js';
+import { applyToken, unpublishVersion, verifyCredentials } from './npm-api.js';
 import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
@@ -525,6 +525,14 @@ export class WebServer {
       }
       token = res.token;
     }
+    // Side-effect-free credential check before persisting: confirms the token
+    // is valid AND the TOTP secret produces an accepted OTP. A bad token or a
+    // wrong totpSecret is caught here rather than surfacing on the first publish.
+    const verified = await verifyCredentials({ registry, token: token!, totpSecret: body.totpSecret });
+    if (!verified.ok || !verified.check?.authValid || verified.check.otpValid === false) {
+      const reason = verified.check?.message ?? verified.error ?? 'credential verification failed';
+      return { ok: false, needsManualToken: verified.check?.authValid === false, error: reason };
+    }
     // Chapter 4.1 / 8.1 consistency: persist keychain first, then profiles.json.
     // If the profiles.json write fails, roll back the keychain entries so we
     // never leave an orphaned credential with no profile to manage it.
@@ -611,6 +619,14 @@ export class WebServer {
         return { ok: false, needsManualToken: res.needsManualToken, error: res.error };
       }
       token = res.token;
+    }
+    // Side-effect-free credential check before persisting the new token: this
+    // also validates manually-pasted tokens (which are otherwise unchecked until
+    // the first publish). Old keychain state is untouched on failure.
+    const verified = await verifyCredentials({ registry, token: token!, totpSecret });
+    if (!verified.ok || !verified.check?.authValid || verified.check.otpValid === false) {
+      const reason = verified.check?.message ?? verified.error ?? 'credential verification failed';
+      return { ok: false, needsManualToken: verified.check?.authValid === false, error: reason };
     }
     try {
       // Re-write the merged auth item with the new token (keep password/totp).

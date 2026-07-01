@@ -17,6 +17,7 @@ import type { BackupBundle, Profile, WorkspaceEntry, WsServerMessage } from '../
 
 const mocks = vi.hoisted(() => ({
   applyTokenMock: vi.fn(),
+  verifyCredentialsMock: vi.fn(),
   lookupNpmProfileIdentityMock: vi.fn(),
   setTokenMock: vi.fn(),
   setTotpSecretMock: vi.fn(),
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/daemon/npm-api.js', () => ({
   applyToken: mocks.applyTokenMock,
+  verifyCredentials: mocks.verifyCredentialsMock,
   publishPackage: vi.fn(),
   configureOidc: vi.fn(),
   isExpiredToken: vi.fn(),
@@ -140,6 +142,11 @@ describe('renew flow keeps the stored secret', () => {
     setHomeOverride(sandbox);
     mocks.getTokenMock.mockResolvedValue('old-token');
     mocks.getTotpSecretMock.mockResolvedValue('SECRET');
+    // Credential verification succeeds by default (auth + OTP both valid).
+    mocks.verifyCredentialsMock.mockResolvedValue({
+      ok: true, status: 200,
+      check: { authValid: true, requires2FA: true, otpValid: true, message: 'auth valid, OTP valid' },
+    });
     // Merged item mocks: by default, pool already has creds so these aren't read.
     mocks.getProfileSecretsMock.mockResolvedValue(null);
     mocks.setProfileSecretsMock.mockResolvedValue(undefined);

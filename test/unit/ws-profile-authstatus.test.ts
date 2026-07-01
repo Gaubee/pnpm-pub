@@ -32,6 +32,10 @@ const inMemoryKeytar = {
 
 vi.mock('../../src/daemon/npm-api.js', () => ({
   applyToken: vi.fn().mockResolvedValue({ ok: true, token: 'npm_test_token' }),
+  verifyCredentials: vi.fn().mockResolvedValue({
+    ok: true, status: 200,
+    check: { authValid: true, requires2FA: true, otpValid: true, message: 'auth valid, OTP valid' },
+  }),
   publishPackage: vi.fn(),
   configureOidc: vi.fn(),
   isExpiredToken: vi.fn(),

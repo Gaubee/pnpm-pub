@@ -16,6 +16,8 @@ import {
   publish as sdkPublish,
   buildPublishPackument,
   unpublishPackage as sdkUnpublish,
+  verifyCredentials as sdkVerifyCredentials,
+  type VerificationResult,
 } from 'safe-npm-sdk';
 
 export interface RegistryConfig {
@@ -239,7 +241,7 @@ export async function publishPackage(opts: {
   // assembles _id/dist-tags/versions/_attachments/access). Same shape npm
   // publish / pnpm publish send, so Verdaccio and the real registry both
   // accept it (Chapter 1.3.1).
-  const packument = buildPublishPackument(metadata, tarball, {
+  const packument = await buildPublishPackument(metadata, tarball, {
     registry: registryBase,
     ...(opts.distTag ? { tag: opts.distTag } : {}),
     ...(opts.access === 'public' || opts.access === 'restricted' ? { access: opts.access } : {}),
@@ -383,6 +385,62 @@ export async function unpublishVersion(opts: {
   const result = await sdkUnpublish(opts.name, opts.version, { otp }, client);
   if (result.ok) {
     return { ok: true, status: result.response.status, wholePackageRemoved: result.data.packageRemoved };
+  }
+  return { ok: false, status: result.error.status, error: result.error.message };
+}
+
+// ---------------------------------------------------------------------------
+// Credential verification (side-effect-free auth + OTP check)
+// ---------------------------------------------------------------------------
+// Delegated to the SDK's verifyCredentials: listTokens() proves the token is
+// valid (read-only), and a deleteToken() against a phantom id proves the OTP
+// is accepted (the registry checks OTP before the token lookup, so a correct
+// OTP yields 404 "not found" while a wrong one yields 401). No real token is
+// ever touched. Used by add-profile / re-auth to confirm credentials before
+// committing them.
+
+export interface CredentialCheck {
+  /** The auth token is valid and accepted by the registry. */
+  authValid: boolean;
+  /** 2FA is required for this account (a write was rejected without OTP). */
+  requires2FA: boolean;
+  /** The supplied OTP was accepted. `null` when no OTP was supplied. */
+  otpValid: boolean | null;
+  /** Human-readable summary for logging / UI. */
+  message: string;
+}
+
+export interface VerifyCredentialsResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  check?: CredentialCheck;
+}
+
+/**
+ * Verify that a token (+ optionally its TOTP) work, without side effects.
+ * Pass the raw token + TOTP secret; the OTP is derived from the secret.
+ */
+export async function verifyCredentials(opts: {
+  registry: string;
+  token: string;
+  totpSecret: string;
+}): Promise<VerifyCredentialsResult> {
+  const client = createClient({ auth: { token: opts.token }, registry: opts.registry });
+  const otp = generateTotp(opts.totpSecret);
+  const result = await sdkVerifyCredentials(client, { otp });
+  if (result.ok) {
+    const v: VerificationResult = result.data;
+    return {
+      ok: true,
+      status: result.response.status,
+      check: {
+        authValid: v.authValid,
+        requires2FA: v.requires2FA,
+        otpValid: v.otpValid,
+        message: v.message,
+      },
+    };
   }
   return { ok: false, status: result.error.status, error: result.error.message };
 }
