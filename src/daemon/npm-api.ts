@@ -10,7 +10,7 @@
 import { Buffer } from 'node:buffer';
 import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
 import { burnBuffer } from './totp.js';
-import { loginWithPassword } from './npm-profile-client.js';
+import { loginWithPassword, isManualTokenFallbackError, resultErrorMessage } from './npm-profile-client.js';
 import {
   createClient,
   publish as sdkPublish,
@@ -104,30 +104,6 @@ function errorToMessage(error: unknown): string {
   return bodyToText(error);
 }
 
-function readErrorCode(error: unknown): string | null {
-  if (!isRecord(error)) return null;
-  const code = error.code;
-  return typeof code === 'string' && code.trim().length > 0 ? code.trim() : null;
-}
-
-function readErrorStatus(error: unknown): number | null {
-  if (!isRecord(error)) return null;
-  for (const key of ['statusCode', 'status']) {
-    const status = error[key];
-    if (typeof status === 'number' && Number.isInteger(status)) return status;
-  }
-  const code = readErrorCode(error);
-  if (code?.match(/^E\d{3}$/)) return Number(code.slice(1));
-  return null;
-}
-
-function shouldFallbackToManualToken(error: unknown): boolean {
-  const status = readErrorStatus(error);
-  if (status === 401 || status === 403 || status === 429) return true;
-  const code = readErrorCode(error);
-  return code === 'EOTP' || code === 'EAUTHIP';
-}
-
 const OTP_FAILED_PATTERNS = [
   /otp validation failed/i,
   /one-time pass/i,
@@ -178,12 +154,12 @@ export async function applyToken(opts: {
       token: session.token,
     };
   } catch (err) {
-    if (shouldFallbackToManualToken(err)) {
-      return { ok: false, needsManualToken: true, error: errorToMessage(err) };
+    if (isManualTokenFallbackError(err)) {
+      return { ok: false, needsManualToken: true, error: resultErrorMessage(err) };
     }
-    return { ok: false, error: errorToMessage(err) };
+    return { ok: false, error: resultErrorMessage(err) };
   } finally {
-    burnBuffer(pwBuf); // burn-after-read for the local buffer; npm-profile receives a JS string.
+    burnBuffer(pwBuf); // burn-after-read for the local buffer; the SDK receives a JS string.
   }
 }
 

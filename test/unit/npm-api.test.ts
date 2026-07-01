@@ -3,10 +3,18 @@ import { applyToken, configureOidc, isExpiredToken, publishPackage } from '../..
 
 const npmProfileMocks = vi.hoisted(() => ({
   loginWithPassword: vi.fn(),
+  // applyToken now also calls these boundary helpers; mirror their behaviour
+  // for the plain Errors/strings the tests throw (non-auth → not a fallback).
+  isManualTokenFallbackError: vi.fn(() => false),
+  resultErrorMessage: vi.fn((err: unknown) =>
+    err instanceof Error ? err.message : String(err),
+  ),
 }));
 
 vi.mock('../../src/daemon/npm-profile-client.js', () => ({
   loginWithPassword: npmProfileMocks.loginWithPassword,
+  isManualTokenFallbackError: npmProfileMocks.isManualTokenFallbackError,
+  resultErrorMessage: npmProfileMocks.resultErrorMessage,
 }));
 
 const fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -69,8 +77,10 @@ describe('applyToken (Chapter 8.1)', () => {
 
   it('Scenario: Given npm rejects login, When applying a token, Then manual token fallback is requested', async () => {
     const error = new Error('Unauthorized');
-    Object.assign(error, { code: 'E401' });
     npmProfileMocks.loginWithPassword.mockRejectedValue(error);
+    // The boundary's own isManualTokenFallbackError decides the fallback path;
+    // fake it returning true for this auth-rejection scenario.
+    npmProfileMocks.isManualTokenFallbackError.mockReturnValueOnce(true);
 
     await expect(
       applyToken({
