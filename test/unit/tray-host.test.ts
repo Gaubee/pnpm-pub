@@ -1,12 +1,11 @@
 /**
  * TrayHost behavior tests (Chapter 6.4).
  *
- * Drives the KeepOnTop / blur-auto-hide / pending-flash state machine with
- * in-memory fakes mirroring the real opentray API (OpentrayTray / OpentrayWindow)
- * and asserts each spec rule:
- *   - tray click toggles the same window handle
- *   - blur hides only for non-pinned panels
- *   - a pending event pins (keepOnTop + visible) and releases when resolved
+ * The earlier pin/release/blur/pending-flash state machine has been removed
+ * (it trapped the window and rejected events on focus loss). These tests now
+ * cover the remaining surface: tray-click toggles the window, show/hide are
+ * pure visibility ops, keepOnTop is applied on show, and opentray rejections
+ * are logged without crashing.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { DaemonStore } from '../../src/daemon/store.js';
@@ -18,73 +17,49 @@ import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 
 /**
- * Fake WebviewWindowHandle: tracks visibility + keepOnTop + blur handler.
- * Implements only the surface TrayHost drives; the rest of the SDK handle is
- * irrelevant to this state-machine test.
+ * Fake WebviewWindowHandle: tracks visibility + keepOnTop. Implements only the
+ * surface TrayHost drives.
  */
-function makeWindow(): OpentrayWindow & {
-  visible: boolean;
-  keepOnTop: boolean;
-  blurHandler?: () => void;
-} {
-  const s = { visible: false, keepOnTop: false, blur: undefined as (() => void) | undefined };
+function makeWindow(): OpentrayWindow & { visible: boolean; keepOnTop: boolean } {
   return {
     visible: false,
     keepOnTop: false,
     async show() {
-      s.visible = true;
       this.visible = true;
     },
     async hide() {
-      s.visible = false;
       this.visible = false;
     },
     async setStyle(style: { keepOnTop?: boolean }) {
       if (style.keepOnTop !== undefined) {
-        s.keepOnTop = style.keepOnTop;
         this.keepOnTop = style.keepOnTop;
       }
     },
-    listen(_event: string, handler: () => void) {
-      s.blur = handler;
-      this.blurHandler = handler;
-      return () => {
-        s.blur = undefined;
-      };
+    listen() {
+      return () => {};
     },
     async destroy() {},
-    blurHandler: undefined,
-  } as OpentrayWindow & {
-    visible: boolean;
-    keepOnTop: boolean;
-    blurHandler?: () => void;
-  };
+  } as OpentrayWindow & { visible: boolean; keepOnTop: boolean };
 }
 
 /**
- * Fake tray handle: records the icon path (for the pending-badge flash) and
- * menu-click subscribers. TrayHost only uses onMenuClick/setIcon?/destroy, so
- * the rest of EventfulTrayHandle & WebviewTrayCapability is stubbed away.
+ * Fake tray handle: records menu-click subscribers.
  */
-function makeTray(): OpentrayTray & { icon: string; fireClick(itemId?: number): void } {
-  const s = { icon: 'base.png', click: undefined as ((e: { itemId: number }) => void) | undefined };
+function makeTray(): OpentrayTray & { fireClick(itemId?: number): void } {
+  let click: ((e: { itemId: number }) => void) | undefined;
   return {
-    icon: 'base.png',
     onMenuClick(handler) {
-      s.click = handler;
+      click = handler;
       return () => {
-        s.click = undefined;
+        click = undefined;
       };
     },
-    async setIcon(icon: { type: 'file'; path: string }) {
-      s.icon = icon.path;
-      this.icon = icon.path;
-    },
+    async setIcon() {},
     async destroy() {},
     fireClick(itemId = 1) {
-      s.click?.({ itemId });
+      click?.({ itemId });
     },
-  } as OpentrayTray & { icon: string; fireClick(itemId?: number): void };
+  } as OpentrayTray & { fireClick(itemId?: number): void };
 }
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-tray-${process.pid}-${Date.now()}`);
@@ -95,7 +70,7 @@ beforeEach(async () => {
   setHomeOverride(sandbox);
 });
 
-describe('TrayHost state machine (Chapter 6.4)', () => {
+describe('TrayHost visibility (Chapter 6.4)', () => {
   it('shows the window on tray menu click', async () => {
     const store = new DaemonStore();
     await store.load();
@@ -151,117 +126,30 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     await host.destroy();
   });
 
-  it('hides the window on blur when nothing is pending', async () => {
-    const store = new DaemonStore();
-    await store.load();
-    const window = makeWindow();
-    const host = new TrayHost(store, makeTray(), window, { title: 'pnpm-pub' });
-    host.show();
-    expect(window.visible).toBe(true);
-    window.blurHandler?.(); // simulate focus loss
-    expect(window.visible).toBe(false);
-    expect(host.getVisibility()).toBe('hidden');
-    await host.destroy();
-  });
-
-  it('does not hide keepOnTop panels on blur', async () => {
-    const store = new DaemonStore();
-    await store.load();
-    const window = makeWindow();
-    const host = new TrayHost(store, makeTray(), window, {
-      title: 'pnpm-pub',
-      keepOnTop: true,
-    });
-    host.show();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(window.visible).toBe(true);
-    expect(window.keepOnTop).toBe(true);
-    window.blurHandler?.();
-    expect(window.visible).toBe(true);
-    expect(host.getVisibility()).toBe('shown');
-    await host.destroy();
-  });
-
-  it('keeps the window on top and ignores blur while an event is pending', async () => {
+  it('hide() is a pure visibility op and does not touch pending events', async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: 'alice' });
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: 'pnpm-pub' });
 
+    // A pending event exists.
     const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    // pin() sequences show()→setStyle({keepOnTop}); let the microtask chain flush.
-    await new Promise((r) => setTimeout(r, 0));
-    // Pending event should force keepOnTop + visible.
-    expect(host.getVisibility()).toBe('pinned');
-    expect(window.keepOnTop).toBe(true);
+    host.show();
     expect(window.visible).toBe(true);
 
-    // Blur must NOT hide while pinned.
-    window.blurHandler?.();
-    expect(window.visible).toBe(true);
-
-    // Resolving releases the pin and hides again.
-    store.resolveEvent(evt.id, 'success', 'done');
-    expect(host.getVisibility()).toBe('hidden');
-    expect(window.keepOnTop).toBe(false);
+    // Hiding must NOT reject the pending event (the old behavior did).
+    host.hide();
     expect(window.visible).toBe(false);
-    await host.destroy();
-  });
-
-  it('restores the pre-pending shown state when a pinned event resolves', async () => {
-    const store = new DaemonStore();
-    await store.load();
-    await store.upsertProfile({ username: 'alice' });
-    const window = makeWindow();
-    const host = new TrayHost(store, makeTray(), window, { title: 'pnpm-pub', initialVisible: true });
-
-    const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(host.getVisibility()).toBe('pinned');
-    expect(window.visible).toBe(true);
-
-    store.resolveEvent(evt.id, 'success', 'done');
-    await new Promise((r) => setTimeout(r, 0));
-    expect(host.getVisibility()).toBe('shown');
-    expect(window.visible).toBe(true);
-    expect(window.keepOnTop).toBe(false);
-    await host.destroy();
-  });
-
-  it('swaps to the badged icon while pending and back to base on release', async () => {
-    const store = new DaemonStore();
-    await store.load();
-    await store.upsertProfile({ username: 'alice' });
-    const tray = makeTray();
-    let icon = 'base.png';
-    const host = new TrayHost(store, tray, makeWindow(), {
-      title: 'pnpm-pub',
-      baseIcon: 'base.png',
-      pendingIcon: 'pending.png',
-      setIcon: (p) => {
-        icon = p;
-      },
-    });
-
-    const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    await new Promise((r) => setTimeout(r, 10));
-    // Pending swaps to the badged icon.
-    expect(icon).toBe('pending.png');
-    // Stable — no flicker back to base while still pending.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(icon).toBe('pending.png');
-
-    store.resolveEvent(evt.id, 'success', 'done');
-    await new Promise((r) => setTimeout(r, 10));
-    expect(icon).toBe('base.png'); // restored to base icon
+    expect(host.getVisibility()).toBe('hidden');
+    const stillPending = store.getEvents().find((e) => e.id === evt.id);
+    expect(stillPending?.status).toBe('pending');
     await host.destroy();
   });
 
   it('logs non-Error opentray command rejections without erasing the source text', async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
     const window = makeWindow();
     const lines: string[] = [];
     window.show = async () => {
@@ -273,11 +161,9 @@ describe('TrayHost state machine (Chapter 6.4)', () => {
     });
 
     host.show();
-    store.createEvent({ kind: 'publish', profile: 'alice' });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(lines).toContain('[tray] show failed: runtime binding offline');
-    expect(lines).toContain('[tray] show failed during pin: runtime binding offline');
     await host.destroy();
   });
 });

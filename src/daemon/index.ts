@@ -223,17 +223,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     trayHost = new TrayHost(store, mounted.tray, mounted.window, {
       title: 'pnpm-pub',
       log: (line) => log(line),
-      // Chapter 6.2.2: closing the tray window with pending events rejects them
-      // so any suspended CLI exits instead of hanging.
-      onWindowHidden: () => scheduler.drainAll(),
       openItemId: 1,
-      // Pending signal is delivered by swapping to a badged icon (NOT by
-      // mutating the title). opentray has no native badge API.
-      baseIcon: iconPath(false) ?? undefined,
-      pendingIcon: iconPath(true) ?? undefined,
-      setIcon: (p) => {
-        mounted.tray?.setIcon?.({ type: 'file', path: p });
-      },
       keepOnTop: true,
       initialVisible: mounted.window !== null,
     });

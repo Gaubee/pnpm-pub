@@ -197,7 +197,7 @@
 	function doPublish(pkg: PublishTarget): void {
 		if (!canPublish(pkg)) return;
 		actions.createEvent('publish', publishPayload(pkg));
-		goto('/');
+		goto('/active-events');
 	}
 </script>
 

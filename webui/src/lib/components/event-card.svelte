@@ -30,7 +30,12 @@
 	import IconLoader from '@lucide/svelte/icons/loader-circle';
 	import { _ } from 'svelte-i18n';
 
-	let { event }: { event: PubEvent } = $props();
+	let {
+		event,
+		/** Log display mode: 'full' (wrapped, scrollable both axes) or 'compact'
+		 *  (single-line truncated; click toggles a horizontally-scrollable block). */
+		variant = 'full',
+	}: { event: PubEvent; variant?: 'full' | 'compact' } = $props();
 
 	const STATUS_VARIANTS = {
 		pending: 'brand',
@@ -97,6 +102,8 @@
 
 	// Tarball file-tree preview — collapsed by default.
 	let showFiles = $state(false);
+	// Compact-log expansion: toggles the single-line → scrollable block.
+	let logExpanded = $state(false);
 
 	// Publish actions (retry / unpublish) — only for publish events.
 	const isPublish = $derived(event.payload?.kind === 'publish');
@@ -215,9 +222,28 @@
 		{/if}
 
 		{#if !isPending && event.result}
-			<div class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}">
-				{event.result}
-			</div>
+			{#if variant === 'compact'}
+				<!-- Compact: single-line truncated; click toggles a horizontally-scrollable block (no wrap). -->
+				<button
+					type="button"
+					class="w-full cursor-pointer rounded-md bg-muted/40 px-3 py-2 text-left font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}"
+					onclick={() => (logExpanded = !logExpanded)}
+					title={logExpanded ? $_('eventCard.collapse') : $_('events.expand')}
+				>
+					{#if logExpanded}
+						<div class="max-h-40 overflow-x-auto overflow-y-auto whitespace-pre">
+							{event.result}
+						</div>
+					{:else}
+						<div class="truncate">{event.result}</div>
+					{/if}
+				</button>
+			{:else}
+				<!-- Full: wrapped, scrollable both axes. -->
+				<div class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}">
+					{event.result}
+				</div>
+			{/if}
 		{/if}
 
 		{#if tarballSummary}

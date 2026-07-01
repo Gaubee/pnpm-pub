@@ -18,6 +18,7 @@
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconChevron from '@lucide/svelte/icons/chevrons-up-down';
 	import IconBackup from '@lucide/svelte/icons/database-backup';
+	import IconHistory from '@lucide/svelte/icons/history';
 	import IconPanelClose from '@lucide/svelte/icons/panel-left-close';
 	import IconPanelOpen from '@lucide/svelte/icons/panel-left-open';
 	import NpmMark from '$lib/components/npm-mark.svelte';
@@ -27,7 +28,8 @@
 	let collapsed = $state(true);
 
 	const nav = [
-		{ href: '/', labelKey: 'sidebar.events', icon: IconEvent },
+		{ href: '/active-events', labelKey: 'sidebar.activeEvents', icon: IconEvent },
+		{ href: '/event-history', labelKey: 'sidebar.eventHistory', icon: IconHistory },
 		{ href: '/workspaces', labelKey: 'sidebar.workspaces', icon: IconWorkspaces },
 		{ href: '/backup', labelKey: 'sidebar.backup', icon: IconBackup },
 	];
@@ -77,33 +79,35 @@
 		<Separator />
 
 	<!-- Primary navigation (Chapter 6.1.2). Profile creation lives in the bottom profile menu. -->
-	<nav class="no-drag flex flex-1 flex-col gap-1 p-3">
-		{#each nav as item (item.href)}
-			{@const active = page.url.pathname === item.href}
-			{@const label = $_(item.labelKey)}
-			<a
-				href={item.href}
-				class={cn(
-					'group flex items-center gap-2.5 rounded-md py-2 text-sm font-medium transition-colors',
-					collapsed ? 'justify-center px-0' : 'px-3',
-					active
-						? 'bg-accent text-accent-foreground'
-						: 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
-				)}
-				aria-label={label}
-				title={collapsed ? label : undefined}
-			>
-				<item.icon class="h-4 w-4" />
-				{#if !collapsed}
-					<span class="flex-1">{label}</span>
-				{/if}
-				{#if item.href === '/' && $pendingEvents.length && !collapsed}
-					<Badge variant="brand" class="h-5 px-1.5 text-[10px]">{$pendingEvents.length}</Badge>
-				{:else if item.href === '/' && $pendingEvents.length}
-					<span class="absolute ml-5 mt-[-1.25rem] h-2 w-2 rounded-full bg-brand"></span>
-				{/if}
-			</a>
-		{/each}
+		<nav class="no-drag flex flex-1 flex-col gap-1 p-3">
+			{#each nav as item (item.href)}
+				{@const pathname = page.url.pathname}
+				{@const active = pathname === item.href || (item.href === '/active-events' && pathname === '/')}
+				{@const label = $_(item.labelKey)}
+				{@const showBadge = item.href === '/active-events' && $pendingEvents.length > 0}
+				<a
+					href={item.href}
+					class={cn(
+						'group flex items-center gap-2.5 rounded-md py-2 text-sm font-medium transition-colors',
+						collapsed ? 'justify-center px-0' : 'px-3',
+						active
+							? 'bg-accent text-accent-foreground'
+							: 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+					)}
+					aria-label={label}
+					title={collapsed ? label : undefined}
+				>
+					<item.icon class="h-4 w-4" />
+					{#if !collapsed}
+						<span class="flex-1">{label}</span>
+					{/if}
+					{#if showBadge && !collapsed}
+						<Badge variant="brand" class="h-5 px-1.5 text-[10px]">{$pendingEvents.length}</Badge>
+					{:else if showBadge}
+						<span class="absolute ml-5 mt-[-1.25rem] h-2 w-2 rounded-full bg-brand"></span>
+					{/if}
+				</a>
+			{/each}
 
 		{#if pinned.length > 0 && !collapsed}
 			<div class="mt-4 px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">

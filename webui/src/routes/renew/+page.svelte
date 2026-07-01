@@ -54,7 +54,7 @@
 			if (json.ok) {
 				manualToken = '';
 				totpSecret = '';
-				goto('/');
+				goto('/active-events');
 				return;
 			}
 			if (json.needsManualToken) {
@@ -75,7 +75,7 @@
 <svelte:head><title>{projection.documentTitle}</title></svelte:head>
 
 <div class="mx-auto flex max-w-md flex-col gap-5 p-6">
-	<a href="/" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+	<a href="/active-events" class="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
 	<IconArrowLeft class="h-3.5 w-3.5" /> {$_('common.back')}
 	</a>
 	<header>

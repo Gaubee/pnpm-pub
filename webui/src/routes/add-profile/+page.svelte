@@ -23,7 +23,7 @@
 	function onSuccess(): void {
 		// The new profile arrives over the WS; go home (replace so back doesn't
 		// bounce to this onboarding page).
-		goto('/', { replaceState: true });
+		goto('/active-events', { replaceState: true });
 	}
 
 	function measuredWindowSize(target: HTMLElement): { width: number; height: number } {

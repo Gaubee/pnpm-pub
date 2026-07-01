@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { connect, daemon, pendingEvents, activeProfile, openAddProfile, ui } from '$lib/store.js';
+	import { connect, daemon, activeProfile, openAddProfile, ui } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
@@ -30,17 +30,6 @@
 	// the Dynamic Island. `bridgeDaemonToast` dedupes by the toast id.
 	$effect(() => {
 		bridgeDaemonToast($daemon.toast);
-	});
-
-	// Chapter 4.4.3: when a pending publish arrives, auto-route to the
-	// dedicated /publish-confirm surface (unless we're already there).
-	$effect(() => {
-		const pending = $pendingEvents;
-		const here = page.url.pathname;
-		if ($daemon.profilesLoaded && $daemon.profiles.length === 0) return;
-		if (pending.length > 0 && here !== '/publish-confirm') {
-			goto('/publish-confirm');
-		}
 	});
 
 	/**

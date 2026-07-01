@@ -9,15 +9,21 @@
  * We keep the real typed handles (`EventfulTrayHandle & WebviewTrayCapability` +
  * `WebviewWindowHandle`) instead of inventing a parallel abstraction. The host
  * layering on top is purely the product behavior the skill leaves to the app:
- *   - one explicit dismissal law per panel: keepOnTop click-toggle, or blur auto-hide
- *   - pending-event KeepOnTop override + tray-title flash
- *   - reject pending publishes when the window is hidden with events outstanding
+ *   - tray primary click toggles show/hide
+ *   - keepOnTop style applied on show when configured
+ *
+ * NOTE: an earlier version drove a pin/release state machine from pending
+ * events (keepOnTop + window.hide() on resolve, auto-reject on hide, blur
+ * auto-hide). That trapped the window and rejected events on focus loss, so it
+ * has been removed. The tray now stays open until the user explicitly hides it;
+ * pending events are surfaced only via the WebUI badge, never via window
+ * lifecycle.
  *
  * opentray 0.8 removed its broker daemon concept: the tray lifetime is now owned
  * in-process by the caller (this daemon). createWebviewWindow bootstraps ONCE
  * per session; repeated tray activations restore via show()/hide() and must NOT
  * replay startup width/height/style. So this host never re-creates the panel —
- * it toggles visibility and mutates style only when KeepOnTop changes.
+ * it toggles visibility only.
  */
 import type { EventfulTrayHandle } from 'opentray';
 import type { WebviewTrayCapability, WebviewWindowHandle } from '@opentray/ext-webview';
@@ -33,36 +39,23 @@ export type OpentrayTray = EventfulTrayHandle & WebviewTrayCapability;
 export type OpentrayWindow = WebviewWindowHandle;
 
 export interface TrayHostOptions {
-  /** Tray title (kept static; pending is NOT signaled via the title). */
+  /** Tray title (kept static). */
   title?: string;
   /** Log sink for dev/test observability. */
   log?: (line: string) => void;
-  /** Fired when the window hides while pending events remain (Chapter 6.2.2). */
-  onWindowHidden?: () => void;
   /** Menu item id that opens the window (primaryEvent). */
   openItemId?: number;
-  /** Base tray icon path (idle state). */
-  baseIcon?: string;
-  /** Tray icon path with a pending badge (corner dot). */
-  pendingIcon?: string;
-  /** Swaps the tray icon. Used to apply/clear the pending badge. */
-  setIcon?: (path: string) => void | Promise<void>;
-  /**
-   * Pinned panel policy: tray primary click toggles show/hide and blur does not
-   * auto-hide. When false, native blur is the reversible dismissal source.
-   */
+  /** Whether show() applies a keepOnTop style (window stays above other apps). */
   keepOnTop?: boolean;
   /** Initial native window visibility when TrayHost takes ownership. */
   initialVisible?: boolean;
 }
 
-type Visibility = 'hidden' | 'shown' | 'pinned';
+type Visibility = 'hidden' | 'shown';
 
 export class TrayHost {
   private visibility: Visibility = 'hidden';
   private unsubs: Array<() => void> = [];
-  private badgeApplied = false;
-  private prePinVisibility: Exclude<Visibility, 'pinned'> | null = null;
 
   constructor(
     private store: DaemonStore,
@@ -102,28 +95,10 @@ export class TrayHost {
       });
       this.unsubs.push(off);
     }
-    // Non-pinned panel law: hide() is reversible dismissal sourced from native
-    // blur. Pinned panels use tray-click toggle instead.
-    if (this.window) {
-      const off = this.window.listen('blur', () => {
-        if (!this.hasPending() && !this.opts.keepOnTop) this.hide();
-      });
-      this.unsubs.push(off);
-    }
-    // Pending events drive the pin/release state machine.
-    const onEvent = (): void => this.syncFromPending();
-    this.store.on('event', onEvent);
-    this.unsubs.push(() => this.store.removeListener('event', onEvent));
-    this.syncFromPending();
-  }
-
-  private hasPending(): boolean {
-    return this.store.getEvents().some((e) => e.status === 'pending');
   }
 
   /** Restore window visibility (skill: show() restores, never re-bootstraps). */
   show(): void {
-    if (this.visibility === 'pinned') return; // already forced visible
     const showP = this.window?.show();
     this.safeCall('show', showP);
     if (this.opts.keepOnTop) {
@@ -148,83 +123,9 @@ export class TrayHost {
 
   /** Reversible dismissal (skill: hide(), NOT destroy()). */
   hide(): void {
-    // Chapter 6.2.2: hiding while pending events remain rejects them so a
-    // suspended CLI exits instead of hanging.
-    if (this.hasPending()) {
-      this.log('window hidden with pending events — rejecting them');
-      this.opts.onWindowHidden?.();
-    }
-    if (this.visibility === 'pinned') return; // KeepOnTop overrides blur-hide
     this.safeCall('hide', this.window?.hide());
     this.visibility = 'hidden';
     this.log('hide');
-  }
-
-  /**
-   * Pending-event override (Chapter 6.4 强制唤起): pin the window on top and
-   * flash the tray title until the event resolves. Uses setStyle({keepOnTop})
-   * on the real handle — a real style mutation, per the skill.
-   *
-   * Operations are sequenced (show THEN setStyle) because the webview extension
-   * rejects setStyle if the window isn't fully shown yet; calling them in
-   * parallel races the runtime transport.
-   */
-  private pin(): void {
-    if (this.visibility === 'pinned') return;
-    this.prePinVisibility = this.visibility === 'shown' ? 'shown' : 'hidden';
-    this.visibility = 'pinned';
-    this.startFlash();
-    this.log('pin (keepOnTop + flash)');
-    // Sequence: show() must settle before setStyle({keepOnTop}).
-    const showP = this.window?.show();
-    if (showP && typeof showP.then === 'function') {
-      showP.then(
-        () => this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true })),
-        (error: unknown) => this.log(`show failed during pin: ${errorToLogMessage(error)}`),
-      );
-    } else {
-      this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true }));
-    }
-  }
-
-  private release(): void {
-    if (this.visibility !== 'pinned') return;
-    this.safeCall('setStyle(keepOnTop=false)', this.window?.setStyle({ keepOnTop: false }));
-    this.stopFlash();
-    const restore = this.prePinVisibility ?? 'hidden';
-    this.prePinVisibility = null;
-    if (restore === 'hidden') {
-      this.safeCall('hide', this.window?.hide());
-    }
-    this.visibility = restore;
-    this.log('release');
-  }
-
-  /**
-   * Signal "pending" by swapping to the badged tray icon (NOT by mutating the
-   * title). opentray exposes no native badge API, so we keep two icon files and
-   * setIcon() between them. KeepOnTop + the badged icon read as
-   * "awaiting confirmation" without any title flicker.
-   */
-  private startFlash(): void {
-    if (this.badgeApplied) return;
-    this.badgeApplied = true;
-    if (this.opts.pendingIcon && this.opts.setIcon) {
-      this.safeCall('setIcon(pending)', Promise.resolve(this.opts.setIcon(this.opts.pendingIcon)));
-    }
-  }
-
-  private stopFlash(): void {
-    this.badgeApplied = false;
-    if (this.opts.baseIcon && this.opts.setIcon) {
-      this.safeCall('setIcon(idle)', Promise.resolve(this.opts.setIcon(this.opts.baseIcon)));
-    }
-  }
-
-  /** Recompute pin/release from the current pending-event set. */
-  syncFromPending(): void {
-    if (this.hasPending()) this.pin();
-    else this.release();
   }
 
   async destroy(): Promise<void> {
@@ -236,7 +137,6 @@ export class TrayHost {
       }
     }
     this.unsubs = [];
-    this.stopFlash();
     // Skill: destroy() only when the app really wants to reset the page runtime.
     try {
       await this.window?.destroy();
