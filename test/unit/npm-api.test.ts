@@ -231,7 +231,9 @@ describe('publishPackage dist-tag document', () => {
     ).resolves.toMatchObject({
       ok: false,
       status: 403,
-      error: 'OTP validation failed',
+      // The SDK appends a request-description suffix (method+url+body +
+      // auth/otp status) to the message, so match the leading text only.
+      error: expect.stringContaining('OTP validation failed'),
     });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
