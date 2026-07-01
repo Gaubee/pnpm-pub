@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { actions, daemon, closeAddProfile } from '$lib/store.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
+	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import {
@@ -186,19 +187,20 @@
 		{/if}
 
 		<section class="grid gap-3 sm:grid-cols-2">
-			<div class="rounded-lg border border-border bg-card p-4">
-				<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
-					<IconUser /> {$_('profile.identity')}
+				<div class="rounded-lg border border-border bg-card p-4">
+					<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+						<IconUser /> {$_('profile.identity')}
+					</div>
+					<p class="mt-2 truncate text-sm font-medium">{profile.username}</p>
+					{#if profile.username === $daemon.defaultProfile}
+						<div class="mt-1.5 flex items-center gap-1.5">
+							<Badge variant="brand">{$_('profile.defaultLabel')}</Badge>
+							<span class="text-xs text-muted-foreground">{$_('profile.defaultHint')}</span>
+						</div>
+					{:else}
+						<p class="mt-1 text-xs text-muted-foreground">{$_('profile.defaultNo')}</p>
+					{/if}
 				</div>
-				<p class="mt-2 truncate text-sm font-medium">{profile.username}</p>
-				<p class="mt-1 text-xs text-muted-foreground">
-					{$_('profile.default', {
-						values: {
-							value: profile.username === $daemon.defaultProfile ? $_('profile.defaultYes') : $_('profile.defaultNo'),
-						},
-					})}
-				</p>
-			</div>
 			<div class="rounded-lg border border-border bg-card p-4">
 				<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
 					<IconRegistry /> {$_('profile.registry')}
