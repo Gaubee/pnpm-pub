@@ -13,6 +13,23 @@ export interface Profile {
 	authStatus?: 'authenticated' | 'unauthenticated';
 }
 
+/**
+ * Live authenticated npm profile detail (mirrors the daemon's
+ * `NpmProfileDetail` in src/daemon/npm-profile-client.ts). A projection of the
+ * registry, never persisted — fetched on demand for the Profile detail page.
+ */
+export interface ProfileDetail {
+	name: string | null;
+	fullname: string | null;
+	email: string | null;
+	emailVerified: boolean | null;
+	github: string | null;
+	twitter: string | null;
+	homepage: string | null;
+	tfaEnabled: boolean | null;
+	createdAt: string | null;
+}
+
 export interface WorkspaceEntry {
 	path: string;
 	pinned: boolean;

@@ -13,6 +13,7 @@
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import AddProfileDialog from '$lib/components/add-profile-dialog.svelte';
 	import Island from '$lib/components/island.svelte';
+	import { TooltipProvider } from '$lib/components/ui/tooltip/index.js';
 	import { bridgeDaemonToast } from '$lib/notify.js';
 	import WindowDragRegion from '$lib/components/window-drag-region.svelte';
 	import { initI18n } from '$lib/i18n.js';
@@ -85,6 +86,7 @@
 <!-- mode-watcher applies the .dark class based on system preference (Chapter 6.1.3). -->
 <ModeWatcher></ModeWatcher>
 
+<TooltipProvider>
 {#if isOnboarding}
 	<!--
 		Onboarding shell: no sidebar / no floating-card chrome. The translucent
@@ -134,3 +136,4 @@
 
 <!-- Global notification surface (Dynamic Island), centred in the titlebar. -->
 <Island />
+</TooltipProvider>

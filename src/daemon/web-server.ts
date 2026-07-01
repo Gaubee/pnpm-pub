@@ -19,6 +19,7 @@ import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } f
 import { realFs } from './real-fs.js';
 import { applyToken, unpublishVersion, verifyCredentials } from './npm-api.js';
 import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
+import { readProfileDetail } from './npm-profile-client.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
@@ -147,6 +148,21 @@ export class WebServer {
             token = secrets?.npm_token ?? null;
           }
           return json(res, 200, token ? { ok: true, token } : { ok: false, error: 'No token stored for this profile.' });
+        }
+        if (url === '/api/profile-detail' && method === 'GET') {
+          // Live authenticated profile detail (name/email/social/2FA/created).
+          // Resolved from the active profile's token; never persisted — these
+          // fields are projections of the registry, not config.
+          const username = this.deps.store.getDefault();
+          if (!username) return json(res, 401, { ok: false, error: 'No active profile.' });
+          const creds = await this.resolveTrustAuth();
+          if (!creds) return json(res, 401, { ok: false, error: 'No active profile credentials.' });
+          try {
+            const detail = await readProfileDetail(creds.token, creds.registry);
+            return json(res, 200, { ok: true, detail });
+          } catch (err: unknown) {
+            return json(res, 502, { ok: false, error: errorToMessage(err) });
+          }
         }
         if (url === '/api/add-profile' && method === 'POST') {
           const result = await this.addProfile(parseAddProfileBody(body));

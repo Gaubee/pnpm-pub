@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { TrustedPublisherConfigSchema } from '$shared/schemas.js';
-import type { TrustedPublisherConfig, NpmPackage } from './types.js';
+import type { TrustedPublisherConfig, NpmPackage, ProfileDetail } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Response schemas (passthrough for forward-compat with new daemon fields)
@@ -81,6 +81,24 @@ const ProfileTokenResponseSchema = z.object({
   error: z.string().optional(),
 });
 
+const ProfileDetailResponseSchema = z.object({
+  ok: z.boolean(),
+  detail: z
+    .object({
+      name: z.string().nullable(),
+      fullname: z.string().nullable(),
+      email: z.string().nullable(),
+      emailVerified: z.boolean().nullable(),
+      github: z.string().nullable(),
+      twitter: z.string().nullable(),
+      homepage: z.string().nullable(),
+      tfaEnabled: z.boolean().nullable(),
+      createdAt: z.string().nullable(),
+    })
+    .optional(),
+  error: z.string().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Derived types (re-exported for callers)
 // ---------------------------------------------------------------------------
@@ -93,6 +111,7 @@ export type NpmProfileLookupResponse = z.infer<typeof NpmProfileLookupResponseSc
 export type TrustListResponse = { ok: boolean; configs?: TrustedPublisherConfig[]; error?: string };
 export type NpmPackageResponse = { ok: boolean; items?: NpmPackage[]; total?: number; page?: number; pageSize?: number; error?: string };
 export type ProfileTokenResponse = z.infer<typeof ProfileTokenResponseSchema>;
+export type ProfileDetailResponse = { ok: boolean; detail?: ProfileDetail; error?: string };
 
 // ---------------------------------------------------------------------------
 // Parsers
@@ -128,6 +147,10 @@ export function parsePackagesResponse(value: unknown): NpmPackageResponse | null
 
 export function parseProfileTokenResponse(value: unknown): ProfileTokenResponse | null {
 	return safeOrNull(ProfileTokenResponseSchema, value);
+}
+
+export function parseProfileDetailResponse(value: unknown): ProfileDetailResponse | null {
+	return safeOrNull(ProfileDetailResponseSchema, value);
 }
 
 /** Run safeParse; return the data on success, null on failure. */

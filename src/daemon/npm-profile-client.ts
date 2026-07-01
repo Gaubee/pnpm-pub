@@ -13,6 +13,23 @@ export interface NpmProfileAuthenticatedUser {
   avatarUrl: string | null;
 }
 
+/**
+ * Full authenticated profile projection — the fields npm-profile's `get()`
+ * exposes that are useful to render on the Profile detail page. Sensitive or
+ * volatile fields (password, token) are intentionally NOT included.
+ */
+export interface NpmProfileDetail {
+  name: string | null;
+  fullname: string | null;
+  email: string | null;
+  emailVerified: boolean | null;
+  github: string | null;
+  twitter: string | null;
+  homepage: string | null;
+  tfaEnabled: boolean | null;
+  createdAt: string | null;
+}
+
 export interface NpmProfileSession {
   token: string;
   username: string | null;
@@ -52,6 +69,43 @@ export async function readAuthenticatedProfile(
     email: readString(profile.email),
     avatarUrl: null,
   };
+}
+
+/** Read the full authenticated profile (name/email/social/tfa/created). */
+export async function readProfileDetail(
+  token: string,
+  registry: string,
+): Promise<NpmProfileDetail> {
+  const profile: ProfileData = await get({ registry, token });
+  return {
+    name: readString(profile.name),
+    fullname: readString(profile.fullname),
+    email: readString(profile.email),
+    emailVerified: typeof profile.email_verified === 'boolean' ? profile.email_verified : null,
+    github: readString(profile.github),
+    twitter: readString(profile.twitter),
+    homepage: readString(profile.homepage),
+    tfaEnabled: profile.tfa ? parseTfaEnabled(profile.tfa) : null,
+    createdAt: profile.created ? normalizeDate(profile.created) : null,
+  };
+}
+
+/** npm-profile's `tfa` is `pending` | { mode, pending } — enabled when mode is set. */
+function parseTfaEnabled(tfa: unknown): boolean | null {
+  if (typeof tfa === 'string') return tfa === 'auth-and-writes' || tfa === 'auth-only';
+  if (tfa && typeof tfa === 'object') {
+    const mode = readString((tfa as Record<string, unknown>).mode);
+    if (mode) return mode === 'auth-and-writes' || mode === 'auth-only';
+  }
+  return null;
+}
+
+function normalizeDate(value: Date | string): string | null {
+  if (value instanceof Date) return value.toISOString();
+  const text = readString(value);
+  if (!text) return null;
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? text : new Date(ms).toISOString();
 }
 
 function readString(value: unknown): string | null {
