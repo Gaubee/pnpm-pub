@@ -232,6 +232,10 @@ const TrustedPublisherBaseSchema = z.object({
   permissions: z.array(TrustedPublisherPermissionSchema).default(['createPackage', 'createStagedPackage']),
 });
 
+// Field names mirror the npm registry wire format (what safe-npm-sdk sends
+// and what GET returns), NOT the human-friendly names on npm's HTML form. The
+// form layer (oidc-dialog.svelte) splits these into separate inputs and
+// reassembles them in buildConfig().
 export const GithubActionsPublisherSchema = TrustedPublisherBaseSchema.extend({
   type: z.literal('github'),
   claims: z.object({
@@ -245,9 +249,11 @@ export type GithubActionsPublisher = z.infer<typeof GithubActionsPublisherSchema
 export const CircleCiPublisherSchema = TrustedPublisherBaseSchema.extend({
   type: z.literal('circleci'),
   claims: z.object({
-    repository: z.string(),
-    context: z.string().optional(),
-    environment: z.string().optional(),
+    'oidc.circleci.com/org-id': z.string(),
+    'oidc.circleci.com/project-id': z.string(),
+    'oidc.circleci.com/pipeline-definition-id': z.string(),
+    'oidc.circleci.com/context-ids': z.array(z.string()).optional(),
+    'oidc.circleci.com/vcs-origin': z.string(),
   }),
 });
 export type CircleCiPublisher = z.infer<typeof CircleCiPublisherSchema>;
@@ -255,8 +261,8 @@ export type CircleCiPublisher = z.infer<typeof CircleCiPublisherSchema>;
 export const GitlabCiPublisherSchema = TrustedPublisherBaseSchema.extend({
   type: z.literal('gitlab'),
   claims: z.object({
-    project: z.string(),
-    ref: z.string().optional(),
+    project_path: z.string(),
+    ci_config_ref_uri: z.string().optional(),
     environment: z.string().optional(),
   }),
 });

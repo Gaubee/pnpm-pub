@@ -71,11 +71,17 @@ export interface GithubActionsPublisher extends TrustedPublisherBase {
 }
 export interface CircleCiPublisher extends TrustedPublisherBase {
 	type: 'circleci';
-	claims: { repository: string; context?: string; environment?: string };
+	claims: {
+		'oidc.circleci.com/org-id': string;
+		'oidc.circleci.com/project-id': string;
+		'oidc.circleci.com/pipeline-definition-id': string;
+		'oidc.circleci.com/context-ids'?: string[];
+		'oidc.circleci.com/vcs-origin': string;
+	};
 }
 export interface GitlabCiPublisher extends TrustedPublisherBase {
 	type: 'gitlab';
-	claims: { project: string; ref?: string; environment?: string };
+	claims: { project_path: string; ci_config_ref_uri?: string; environment?: string };
 }
 export type TrustedPublisherConfig =
 	| GithubActionsPublisher

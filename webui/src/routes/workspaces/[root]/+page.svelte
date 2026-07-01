@@ -83,8 +83,8 @@
 		return oidcState[name]?.configs ?? [];
 	}
 	function oidcSummary(cfg: TrustedPublisherConfig): string {
-		const repo = cfg.type === 'gitlab' ? cfg.claims.project : cfg.claims.repository;
-		const env = cfg.claims.environment;
+		const repo = cfg.type === 'gitlab' ? cfg.claims.project_path : cfg.type === 'circleci' ? cfg.claims['oidc.circleci.com/vcs-origin'] : cfg.claims.repository;
+		const env = 'environment' in cfg.claims ? cfg.claims.environment : undefined;
 		return [cfg.type, repo, env].filter(Boolean).join(' · ');
 	}
 	function oidcStatusText(name: string): string {
@@ -316,10 +316,10 @@
 	onChanged={onOidcChanged}
 />
 
-<!-- Batch OIDC dialog (uses first selected package name for the form, loops on submit) -->
+<!-- Batch OIDC dialog — submits the same config to every selected package -->
 <OidcDialog
 	bind:open={batchOidcOpen}
-	packageName={[...selected][0] ?? ''}
+	packageNames={[...selected]}
 	config={null}
 	repositoryHint={batchRepoHint}
 	onChanged={() => {
