@@ -1163,7 +1163,7 @@ export class PublishScheduler {
    * create the Event through the store, then register it in the executable
    * pending map before any confirm action can reach NPM or the filesystem.
    */
-  createProactiveEvent(kind: EventKind, profile: string, payload: unknown, groupId?: string): ProactiveEventResult {
+  async createProactiveEvent(kind: EventKind, profile: string, payload: unknown, groupId?: string): Promise<ProactiveEventResult> {
     if (!this.store.getProfile(profile)) {
       return { ok: false, error: `Profile "${profile}" not found. Add it via the tray GUI first.` };
     }
@@ -1171,9 +1171,37 @@ export class PublishScheduler {
     if (!parsed) {
       return { ok: false, error: `Invalid or unsupported payload for ${kind}.` };
     }
+    // For publish events, re-read the target from the source directory so the
+    // version/description reflect the CURRENT package.json (not a stale copy
+    // carried over from a retry of an older event). The args are kept as-is
+    // (they carry the user's advanced-option edits).
+    if (parsed.kind === 'publish') {
+      await this.refreshPublishTarget(parsed);
+    }
     const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
     this.pending.set(event.id, { event, client: DETACHED_CLIENT });
     return { ok: true, event };
+  }
+
+  /**
+   * Re-read package.json from the publish source dir and refresh the payload's
+   * target (version/description/repository/…) in place.
+   */
+  private async refreshPublishTarget(payload: { kind: 'publish'; data: PublishContext }): Promise<void> {
+    try {
+      const target = await readPublishTarget(payload.data.source);
+      payload.data.target = {
+        ...target,
+        path: payload.data.source.path,
+        // Preserve repository if readPublishTarget didn't provide one but the
+        // original payload had one (e.g. from a git-remote fallback).
+        ...(payload.data.target.repository && !target.repository
+          ? { repository: payload.data.target.repository }
+          : {}),
+      };
+    } catch {
+      // keep the original target if the source is unreadable
+    }
   }
 
   /** Step 2 (Chapter 3.3.3 / 8.3.8): WebUI confirmed. Execute the write. */

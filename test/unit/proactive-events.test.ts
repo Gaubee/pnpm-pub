@@ -95,7 +95,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
       path: packageDir,
@@ -127,7 +127,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice' });
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('create-placeholder', 'alice', {
+    const created = await scheduler.createProactiveEvent('create-placeholder', 'alice', {
       name: 'reserved-name',
     });
 
@@ -146,7 +146,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice' });
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'acme/repo',
       path: '/workspace/pkg',
@@ -168,7 +168,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice' });
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('publish', 'alice', {
+    const created = await scheduler.createProactiveEvent('publish', 'alice', {
       source: { kind: 'directory', path: packageDir },
       args: [],
       target: { name: 'pkg', version: '1.0.0', path: packageDir },
@@ -194,7 +194,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
       path: packageDir,
@@ -221,7 +221,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
       path: packagePath,
@@ -247,7 +247,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
       path: packageDir,
@@ -278,7 +278,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
       path: packageDir,
@@ -299,7 +299,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice' });
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', { name: '@scope/pkg' });
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', { name: '@scope/pkg' });
 
     expect(created.ok).toBe(false);
     expect(store.getEvents()).toEqual([]);
@@ -311,7 +311,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice' });
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('setup-oidc', 'alice', {
+    const created = await scheduler.createProactiveEvent('setup-oidc', 'alice', {
       name: '@scope/pkg',
       repo: 'owner/repo',
     });
@@ -326,7 +326,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.load();
     const scheduler = new PublishScheduler(store);
 
-    const created = scheduler.createProactiveEvent('create-placeholder', 'ghost', {
+    const created = await scheduler.createProactiveEvent('create-placeholder', 'ghost', {
       name: 'reserved-name',
     });
 
@@ -341,7 +341,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('create-placeholder', 'alice', {
+    const created = await scheduler.createProactiveEvent('create-placeholder', 'alice', {
       name: 'reserved-name',
     });
 
@@ -373,7 +373,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('create-placeholder', 'alice', {
+    const created = await scheduler.createProactiveEvent('create-placeholder', 'alice', {
       name: 'reserved-name',
     });
 
@@ -392,7 +392,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('create-placeholder', 'alice', {
+    const created = await scheduler.createProactiveEvent('create-placeholder', 'alice', {
       name: 'reserved-name',
     });
 
@@ -415,7 +415,7 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'old-token', totpSecret: 'JBSWY3DPEHPK3PXP' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('refresh-token', 'alice', {
+    const created = await scheduler.createProactiveEvent('refresh-token', 'alice', {
       username: 'alice',
     });
 
@@ -436,7 +436,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
 
     const scheduler = new PublishScheduler(store);
-    const created = scheduler.createProactiveEvent('refresh-token', 'alice', {
+    const created = await scheduler.createProactiveEvent('refresh-token', 'alice', {
       username: 'alice',
     });
 

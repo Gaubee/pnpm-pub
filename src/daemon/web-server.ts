@@ -643,7 +643,7 @@ export class WebServer {
       send({ type: 'toast', level: 'error', message: 'Select a profile first.' });
       return;
     }
-    const result = this.deps.scheduler.createProactiveEvent(kind, profile, payload, groupId);
+    const result = await this.deps.scheduler.createProactiveEvent(kind, profile, payload, groupId);
     if (!result.ok) {
       send({ type: 'toast', level: 'error', message: result.error });
       return;

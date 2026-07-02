@@ -459,23 +459,32 @@
 
 		{#if !isPending && event.result && event.status !== 'rejected'}
 			{@const isError = isExpired || event.status === 'failed'}
+			{@const isSuccess = event.status === 'success'}
 			{@const firstLine = (event.result.split(/\r?\n/)[0] ?? '').trim()}
-			<div class="rounded-md border {isError ? 'border-destructive/40' : 'border-border'}">
+			{@const accentClass = isError ? 'text-destructive' : isSuccess ? 'text-success' : 'text-muted-foreground'}
+			{@const borderClass = isError ? 'border-destructive/40' : isSuccess ? 'border-success/30' : 'border-border'}
+			<div class="rounded-md border {borderClass}">
 				<button
 					type="button"
-					class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {isError ? 'text-destructive' : 'text-muted-foreground'}"
+					class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {accentClass}"
 					onclick={() => (logExpanded = !logExpanded)}
 					aria-expanded={logExpanded}
 				>
 					<IconChevronRight class="h-3 w-3 shrink-0 transition-transform {logExpanded ? 'rotate-90' : ''}" />
-					<IconAlertTriangle class="h-3 w-3 shrink-0 {isError ? 'text-destructive' : 'text-muted-foreground'}" />
-					<span class="shrink-0 font-medium">{$_('eventCard.errorLog')}:</span>
+					{#if isError}
+						<IconAlertTriangle class="h-3 w-3 shrink-0 text-destructive" />
+					{:else if isSuccess}
+						<IconCheck class="h-3 w-3 shrink-0 text-success" />
+					{:else}
+						<IconAlertTriangle class="h-3 w-3 shrink-0 text-muted-foreground" />
+					{/if}
+					<span class="shrink-0 font-medium">{isError ? $_('eventCard.errorLog') : $_('eventCard.log')}:</span>
 					{#if !logExpanded}
 						<span class="truncate font-mono">{firstLine}</span>
 					{/if}
 				</button>
 				{#if logExpanded}
-					<div class="max-h-48 overflow-auto border-t {isError ? 'border-destructive/40' : 'border-border'} px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {isError ? 'text-destructive' : 'text-muted-foreground'}">
+					<div class="max-h-48 overflow-auto border-t {borderClass} px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {accentClass}">
 						{event.result}
 					</div>
 				{/if}
