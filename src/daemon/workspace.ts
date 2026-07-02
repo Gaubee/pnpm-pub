@@ -207,7 +207,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseRepository(value: unknown): string | undefined {
+export function parseRepository(value: unknown): string | undefined {
   if (typeof value === 'string') {
     return normalizeRepository(value);
   }
@@ -224,7 +224,7 @@ function parseRepository(value: unknown): string | undefined {
  * ancestor) and parses the `[remote "origin"]` url. Returns the RAW url (not
  * slug-normalized) so repo-info.ts can detect the host for non-GitHub forges.
  */
-async function readGitRemoteUrl(pkgDir: string, fs: FsAPI): Promise<string | undefined> {
+export async function readGitRemoteUrl(pkgDir: string, fs: FsAPI): Promise<string | undefined> {
   let dir = pkgDir;
   for (let depth = 0; depth < 8; depth += 1) {
     const configPath = fs.join(dir, '.git', 'config');
@@ -283,7 +283,7 @@ function readDependencyNamesFromFields(pkg: Record<string, unknown>, fields: rea
   return names.size > 0 ? [...names] : undefined;
 }
 
-function normalizeRepository(value: string): string | undefined {
+export function normalizeRepository(value: string): string | undefined {
   const cleaned = value.trim().replace(/^git\+/, '');
   if (!cleaned) return undefined;
   // GitHub: github.com:owner/name or github.com/owner/name

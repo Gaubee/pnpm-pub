@@ -78,6 +78,34 @@
 			export: IconRefresh,
 		})[kind] ?? IconPublish;
 
+	// Action-type accent color — the card's primary tint, derived from the event
+	// KIND (not its status). publish → brand (blue), unpublish → destructive
+	// (red), everything else → neutral. Applied to the card border/ring and the
+	// top-left icon; intentionally independent of the status badge color.
+	const kindAccent = $derived.by(() => {
+		switch (event.kind) {
+			case 'publish': return 'brand';
+			case 'unpublish': return 'destructive';
+			default: return '';
+		}
+	});
+	const kindRing = $derived(
+		kindAccent === 'brand' ? 'ring-brand/40'
+			: kindAccent === 'destructive' ? 'ring-destructive/40'
+				: 'ring-border',
+	);
+	const kindIconClass = $derived(
+		kindAccent === 'brand' ? 'bg-brand/10 text-brand'
+			: kindAccent === 'destructive' ? 'bg-destructive/10 text-destructive'
+				: 'bg-accent text-muted-foreground',
+	);
+	// Full class strings (Tailwind can't compose dynamic fragments).
+	const kindBorderClass = $derived(
+		kindAccent === 'brand' ? 'border-brand/30'
+			: kindAccent === 'destructive' ? 'border-destructive/30'
+				: '',
+	);
+
 	const IconCmp = $derived(iconFor(event.kind));
 
 	const statusVariant = $derived(STATUS_VARIANTS[event.status]);
@@ -277,10 +305,10 @@
 	}
 </script>
 
-<Card class="transition-shadow {isPending ? 'ring-2 ring-brand/40 shadow-md' : ''}">
+<Card class="transition-shadow {isPending ? `ring-2 ${kindRing} shadow-md` : kindBorderClass}">
 	<CardHeader class="flex-row items-center justify-between gap-3 pb-3">
 		<div class="flex min-w-0 items-center gap-2.5">
-			<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent text-muted-foreground">
+			<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md {kindIconClass}">
 				<IconCmp class="h-4 w-4" />
 			</div>
 			<div class="min-w-0">

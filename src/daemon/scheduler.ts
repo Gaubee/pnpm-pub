@@ -35,7 +35,7 @@ import { publishPackage, configureOidc, unpublishVersion } from './npm-api.js';
 import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
 import { promises as fsp } from 'node:fs';
 import { realFs } from './real-fs.js';
-import { findProjectRoot, isRiskyRoot, scanWorkspace } from './workspace.js';
+import { findProjectRoot, isRiskyRoot, scanWorkspace, parseRepository, readGitRemoteUrl } from './workspace.js';
 import { parsePackagePublishConfig } from './package-publish-config.js';
 import { checkPublishGitState } from './publish-git-checks.js';
 
@@ -83,10 +83,17 @@ async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTar
       metadata = (await readPackageTarball(source.path)).metadata;
     }
     const pkg = parsePackageMetadata(metadata);
+    // repository: prefer the package.json field; fall back to the git remote
+    // origin URL (walks up from the source dir to find .git/config).
+    let repository = pkg.repository;
+    if (!repository && source.kind === 'directory') {
+      repository = await readGitRemoteUrl(source.path, realFs);
+    }
     return {
       name: pkg.name ?? '(unknown)',
       version: pkg.version ?? '0.0.0',
       description: pkg.description,
+      ...(repository ? { repository } : {}),
       ...(pkg.publishConfig ? { publishConfig: pkg.publishConfig } : {}),
     };
   } catch {
@@ -98,13 +105,16 @@ function parsePackageMetadata(value: unknown): {
   name?: string;
   version?: string;
   description?: string;
+  repository?: string;
   publishConfig?: PublishConfig;
 } {
   if (!isRecord(value)) return {};
-  const metadata: { name?: string; version?: string; description?: string; publishConfig?: PublishConfig } = {};
+  const metadata: { name?: string; version?: string; description?: string; repository?: string; publishConfig?: PublishConfig } = {};
   if (typeof value.name === 'string') metadata.name = value.name;
   if (typeof value.version === 'string') metadata.version = value.version;
   if (typeof value.description === 'string') metadata.description = value.description;
+  const repository = parseRepository(value.repository);
+  if (repository) metadata.repository = repository;
   const publishConfig = parsePackagePublishConfig(value.publishConfig);
   if (publishConfig) metadata.publishConfig = publishConfig;
   return metadata;
