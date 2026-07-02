@@ -12,7 +12,7 @@ native window.
 
 The WebUI is NOT opened in a plain browser in production on supported desktop
 hosts — it is mounted inside a real native window via
-[`opentray`](https://www.npmjs.com/package/opentray) `0.10.2` and its
+[`opentray`](https://www.npmjs.com/package/opentray) and its
 `@opentray/ext-webview` extension (Chapter 6.4). On unsupported hosts, `pnpm
 dev` falls back to the printed WebUI URL so the app remains usable. The
 canonical recipe from the opentray README is wired up in `src/daemon/index.ts`
