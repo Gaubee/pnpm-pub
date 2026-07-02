@@ -77,6 +77,14 @@ export function openEventDb(dbPath: string): DatabaseType {
     CREATE INDEX IF NOT EXISTS idx_events_group_id ON events(group_id);
     CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
     CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
+    -- Generic TTL cache table for derived/resolved values (e.g. repo-info
+    -- parsing). Rows expire via expires_at; swept at startup and on writes.
+    CREATE TABLE IF NOT EXISTS key_value (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_key_value_expires_at ON key_value(expires_at);
   `);
   // On restart, any event still 'pending' has no live scheduler client handle —
   // mark it failed so the UI doesn't show a forever-pending ghost.
@@ -84,7 +92,43 @@ export function openEventDb(dbPath: string): DatabaseType {
     `UPDATE events SET status = 'failed', result = 'Daemon restarted before completion.', resolved_at = ? WHERE status = 'pending'`,
   ).run(Date.now());
   void swept; // informational only
+  // Sweep expired cache rows on startup.
+  kvSweepExpired(db);
   return db;
+}
+
+// --- generic TTL key-value cache -------------------------------------------
+
+/** Look up a cached value by key. Returns undefined when missing or expired
+ *  (expired rows are lazily deleted on read). */
+export function kvGet(db: DatabaseType, key: string): unknown | undefined {
+  const row = db.prepare(`SELECT value, expires_at FROM key_value WHERE key = ?`).get(key) as
+    | { value: string; expires_at: number }
+    | undefined;
+  if (!row) return undefined;
+  if (row.expires_at <= Date.now()) {
+    db.prepare(`DELETE FROM key_value WHERE key = ?`).run(key);
+    return undefined;
+  }
+  try {
+    return JSON.parse(row.value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Store a value with a TTL (ms from now). Upserts by key. */
+export function kvSet(db: DatabaseType, key: string, value: unknown, ttlMs: number): void {
+  const expiresAt = Date.now() + ttlMs;
+  db.prepare(
+    `INSERT OR REPLACE INTO key_value (key, value, expires_at) VALUES (?, ?, ?)`,
+  ).run(key, JSON.stringify(value), expiresAt);
+}
+
+/** Delete all rows past their expiry. Called at startup and opportunistically. */
+export function kvSweepExpired(db: DatabaseType): number {
+  const res = db.prepare(`DELETE FROM key_value WHERE expires_at <= ?`).run(Date.now());
+  return res.changes;
 }
 
 /** Insert or fully replace an event row (upsert by id). */

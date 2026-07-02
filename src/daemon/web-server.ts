@@ -17,7 +17,8 @@ import { z } from 'zod';
 import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
 import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
 import { realFs } from './real-fs.js';
-import { applyToken, unpublishVersion, verifyCredentials } from './npm-api.js';
+import { applyToken, verifyCredentials } from './npm-api.js';
+import { getCachedRepoInfo } from './repo-info.js';
 import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
 import { fetchPackageDetail, type PackageDetailResult } from './npm-package-detail.js';
 import { readProfileDetail } from './npm-profile-client.js';
@@ -286,6 +287,33 @@ export class WebServer {
           });
           return json(res, 200, result);
         }
+        if (url === '/api/repo-info' && method === 'GET') {
+          // Resolve a repository string (slug or URL) into a display descriptor
+          // (host/shortName/browseUrl/faviconUrl/brand), backed by the TTL KV
+          // cache. Known forges return an inline-SVG brand; unknown hosts fall
+          // back to a third-party favicon service.
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const repo = query.get('repo');
+          if (!repo) throw new Error('Invalid or missing repo.');
+          const info = getCachedRepoInfo(this.deps.store.getEventDb(), repo);
+          return json(res, 200, { ok: true, info });
+        }
+        if (url === '/api/open-path' && method === 'POST') {
+          // Open a local path in the OS file manager (Finder/Explorer/…).
+          // Shells out to the platform opener; only directory opens are honored.
+          const parsed = parseOrThrow(z.object({ path: z.string().min(1) }), body, 'open-path body');
+          const target = path.resolve(parsed.path);
+          const cmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+          const args = process.platform === 'win32' ? ['', target] : [target];
+          try {
+            const { execFile } = await import('node:child_process');
+            const { promisify } = await import('node:util');
+            await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
+            return json(res, 200, { ok: true });
+          } catch (err) {
+            return json(res, 500, { ok: false, error: errorToMessage(err) });
+          }
+        }
         if (url === '/api/profiles' && method === 'DELETE') {
           const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
           const ok = await this.deps.store.removeProfile(username);
@@ -344,22 +372,6 @@ export class WebServer {
           this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
-        }
-        // ----- Unpublish (remove a single published version) -----
-        if (url === '/api/unpublish' && method === 'POST') {
-          const parsed = parseOrThrow(UnpublishBodySchema, body, 'unpublish body');
-          this.deps.log?.(`[unpublish] package=${parsed.package} version=${parsed.version}`);
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
-          const result = await unpublishVersion({
-            registry: auth.registry,
-            token: auth.token,
-            totpSecret: auth.totpSecret,
-            name: parsed.package,
-            version: parsed.version,
-          });
-          this.deps.log?.(`[unpublish] ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
-          return json(res, result.ok ? 200 : (result.status || 500), { ok: result.ok, error: result.error });
         }
         return json(res, 404, { ok: false, error: 'not found' });
       } catch (err) {
@@ -521,6 +533,43 @@ export class WebServer {
         this.createProactiveEvent(msg.kind, msg.payload, send, msg.groupId);
         break;
       }
+      case 'update-event': {
+        // Edit a pending publish event's args before confirmation. The store
+        // mutates the SAME PubEvent instance the scheduler holds, so the edit
+        // is picked up live at confirm time. We re-detect the git branch from
+        // the publish source on each update so the publish-branch hint stays
+        // fresh (the user may have switched branches while reviewing).
+        const existing = this.deps.store.getEvent(msg.id);
+        if (!existing || existing.status !== 'pending' || existing.payload?.kind !== 'publish') {
+          send({ type: 'toast', level: 'error', message: 'Only pending publish events can be edited.' });
+          break;
+        }
+        const srcDir = existing.payload.data.source.kind === 'directory'
+          ? existing.payload.data.source.path
+          : path.dirname(existing.payload.data.source.path);
+        existing.payload.data.branch = await this.detectGitBranch(srcDir);
+        this.deps.store.updateEventArgs(msg.id, msg.args);
+        break;
+      }
+    }
+  }
+
+  /**
+   * Detect the current git branch for a directory. Returns '' when the path is
+   * not inside a git work tree, or git is unavailable — the caller treats an
+   * empty result as "unknown branch". Used only to surface a hint in the UI's
+   * publish-branch option; the scheduler's own preflight
+   * (`checkPublishGitState`) is the authoritative gate, not this value.
+   */
+  private async detectGitBranch(dir: string): Promise<string> {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync('git', ['-C', dir, 'branch', '--show-current'], { maxBuffer: 1024 });
+      return stdout.trim();
+    } catch {
+      return '';
     }
   }
 
@@ -571,7 +620,7 @@ export class WebServer {
     });
   }
 
-  private createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void, groupId?: string): void {
+  private async createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void, groupId?: string): Promise<void> {
     const profile = this.deps.store.getDefault();
     if (!profile) {
       send({ type: 'toast', level: 'error', message: 'Select a profile first.' });
@@ -581,6 +630,16 @@ export class WebServer {
     if (!result.ok) {
       send({ type: 'toast', level: 'error', message: result.error });
       return;
+    }
+    // For publish events, fill the current-branch hint from the source path so
+    // the EventCard's publish-branch option can show it on first render (before
+    // the user edits anything). Re-broadcast via updateEventArgs so the branch
+    // is persisted alongside the args.
+    if (result.event.payload?.kind === 'publish') {
+      const src = result.event.payload.data.source;
+      const srcDir = src.kind === 'directory' ? src.path : path.dirname(src.path);
+      result.event.payload.data.branch = await this.detectGitBranch(srcDir);
+      this.deps.store.updateEventArgs(result.event.id, result.event.payload.data.args);
     }
     send({ type: 'event', event: result.event });
     send({ type: 'toast', level: 'info', message: 'Pending event created — review it under Events.' });
@@ -1154,11 +1213,6 @@ const OidcTrustPostBodySchema = z.object({
 const OidcTrustDeleteBodySchema = z.object({
   package: z.string().min(1),
   uuid: z.string().min(1),
-});
-
-const UnpublishBodySchema = z.object({
-  package: z.string().min(1),
-  version: z.string().min(1),
 });
 
 function parseAddProfileBody(body: unknown): z.infer<typeof AddProfileBodySchema> {

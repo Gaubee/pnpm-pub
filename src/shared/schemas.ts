@@ -124,6 +124,7 @@ export const EventKindSchema = z.enum([
   'setup-oidc',
   'create-placeholder',
   'refresh-token',
+  'unpublish',
 ]);
 export type EventKind = z.infer<typeof EventKindSchema>;
 
@@ -166,6 +167,10 @@ export const PublishContextSchema = z.object({
   source: PublishSourceSchema,
   args: z.array(z.string()),
   target: PublishTargetSchema,
+  /** Current git branch of the publish source (daemon-filled hint for the
+   *  publish-branch option). Empty/absent when not a git repo or git missing —
+   *  the scheduler's own preflight is the authoritative gate, not this value. */
+  branch: z.string().optional(),
 });
 export type PublishContext = z.infer<typeof PublishContextSchema>;
 
@@ -188,11 +193,20 @@ export const RefreshTokenContextSchema = z.object({
 });
 export type RefreshTokenContext = z.infer<typeof RefreshTokenContextSchema>;
 
+export const UnpublishContextSchema = z.object({
+  /** Fully-qualified package name (`@scope/name` or `name`). */
+  name: z.string(),
+  /** The version to remove. */
+  version: z.string(),
+});
+export type UnpublishContext = z.infer<typeof UnpublishContextSchema>;
+
 export const EventPayloadSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('publish'), data: PublishContextSchema }),
   z.object({ kind: z.literal('setup-oidc'), data: OidcContextSchema }),
   z.object({ kind: z.literal('create-placeholder'), data: CreatePlaceholderContextSchema }),
   z.object({ kind: z.literal('refresh-token'), data: RefreshTokenContextSchema }),
+  z.object({ kind: z.literal('unpublish'), data: UnpublishContextSchema }),
 ]);
 export type EventPayload = z.infer<typeof EventPayloadSchema>;
 
@@ -367,6 +381,10 @@ export const WsClientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('reject-event'), id: z.string() }),
   z.object({ type: z.literal('scan-workspace'), root: z.string() }),
   z.object({ type: z.literal('create-event'), kind: EventKindSchema, payload: z.unknown(), groupId: z.string().optional() }),
+  /** Edit a pending publish event's CLI args before confirmation. Only honored
+   *  for publish events still in `pending`; the scheduler re-reads args live at
+   *  confirm time, so an in-place mutation takes effect immediately. */
+  z.object({ type: z.literal('update-event'), id: z.string(), args: z.array(z.string()) }),
 ]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 

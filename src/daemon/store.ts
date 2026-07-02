@@ -265,6 +265,15 @@ export class DaemonStore extends EventEmitter {
     return dbQueryEvents(this.eventDb, q);
   }
 
+  /**
+   * Access the underlying event DB handle. Used by the web-server for the
+   * TTL-cached repo-info resolver (and other derived/cached lookups). Returns
+   * null when the DB isn't open (e.g. before `load()`).
+   */
+  getEventDb(): DatabaseType | null {
+    return this.eventDb;
+  }
+
   createEvent(opts: {
     kind: EventKind;
     profile: string;
@@ -305,6 +314,24 @@ export class DaemonStore extends EventEmitter {
     if (metadata?.tarballSummary !== undefined) {
       evt.tarballSummary = metadata.tarballSummary;
     }
+    if (this.eventDb) updateEvent(this.eventDb, evt);
+    this.emit('event', { type: 'event' as const, event: evt });
+    return evt;
+  }
+
+  /**
+   * Update a pending publish event's CLI args in place. Only honored for events
+   * still in `pending` whose payload is a publish context — the scheduler holds
+   * the SAME PubEvent instance in `this.pending`, and re-reads `args` live at
+   * confirm time, so mutating the shared object makes the edit take effect on
+   * the next confirm without any extra wiring. Returns the event on success, or
+   * undefined when the event is missing / not pending / not a publish event.
+   */
+  updateEventArgs(id: string, args: string[]): PubEvent | undefined {
+    const evt = this.events.find((e) => e.id === id);
+    if (!evt || evt.status !== 'pending') return undefined;
+    if (evt.payload?.kind !== 'publish') return undefined;
+    evt.payload.data.args = args;
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit('event', { type: 'event' as const, event: evt });
     return evt;

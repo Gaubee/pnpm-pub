@@ -28,9 +28,10 @@ import type {
   PublishTarget,
   PubEvent,
   RefreshTokenContext,
+  UnpublishContext,
 } from '../shared/index.js';
 import type { PackageTarballFile, PackageTarballSummary } from './packer.js';
-import { publishPackage, configureOidc } from './npm-api.js';
+import { publishPackage, configureOidc, unpublishVersion } from './npm-api.js';
 import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
 import { promises as fsp } from 'node:fs';
 import { realFs } from './real-fs.js';
@@ -39,6 +40,20 @@ import { parsePackagePublishConfig } from './package-publish-config.js';
 import { checkPublishGitState } from './publish-git-checks.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Detect the current git branch for a directory (display-only hint for the
+ * publish-branch option). Returns '' when not a git repo or git is missing;
+ * the preflight `checkPublishGitState` is the authoritative gate.
+ */
+async function detectGitBranchSafe(dir: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', dir, 'branch', '--show-current'], { maxBuffer: 1024 });
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
 
 /** Handle given to an IPC client so it can be resolved/rejected later. */
 export interface PendingClient {
@@ -120,6 +135,10 @@ function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload 
     }
     case 'refresh-token': {
       const data = parseRefreshTokenContext(payload);
+      return data ? { kind, data } : null;
+    }
+    case 'unpublish': {
+      const data = parseUnpublishContext(payload);
       return data ? { kind, data } : null;
     }
   }
@@ -1030,6 +1049,14 @@ function parseRefreshTokenContext(value: unknown): RefreshTokenContext | null {
   return username ? { username } : null;
 }
 
+function parseUnpublishContext(value: unknown): UnpublishContext | null {
+  if (!isRecord(value)) return null;
+  const name = readString(value, 'name');
+  const version = readString(value, 'version');
+  if (!name || !version) return null;
+  return { name, version };
+}
+
 function readString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -1099,6 +1126,10 @@ export class PublishScheduler {
     await this.collectWorkspaceFromCwd(req.cwd, client);
     const source = await resolvePublishSource(req.cwd, req.args);
     const target = await readPublishTarget(source);
+    // Detect the current git branch from the source dir to surface a hint for
+    // the publish-branch option in the EventCard. The preflight
+    // (checkPublishGitState) is authoritative; this is display-only.
+    const branch = await detectGitBranchSafe(source.path);
     const event = this.store.createEvent({
       kind: 'publish',
       profile,
@@ -1109,6 +1140,7 @@ export class PublishScheduler {
           source,
           args: req.args,
           target: { ...target, path: source.path },
+          ...(branch ? { branch } : {}),
         },
       },
     });
@@ -1213,6 +1245,8 @@ export class PublishScheduler {
       await this.runOidc(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === 'create-placeholder') {
       await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
+    } else if (event.payload?.kind === 'unpublish') {
+      await this.runUnpublish(event, client, creds.token, creds.totpSecret, profileRegistry);
     }
     this.pending.delete(taskId);
     return true;
@@ -1482,6 +1516,44 @@ export class PublishScheduler {
       if (tempDir) {
         await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
       }
+    }
+  }
+
+  private async runUnpublish(
+    event: PubEvent,
+    client: PendingClient,
+    token: string,
+    totpSecret: string,
+    registry: string,
+  ): Promise<void> {
+    if (event.payload?.kind !== 'unpublish') return;
+    const ctx = event.payload.data;
+    client.log('stdout', `unpublishing ${ctx.name}@${ctx.version}...\n`);
+    try {
+      const result = await unpublishVersion({
+        registry,
+        token,
+        totpSecret,
+        name: ctx.name,
+        version: ctx.version,
+      });
+      if (result.ok) {
+        const msg = result.wholePackageRemoved
+          ? `Removed ${ctx.name} entirely (last version).`
+          : `Removed ${ctx.name}@${ctx.version}.`;
+        this.store.resolveEvent(event.id, 'success', msg);
+        client.log('stdout', msg + '\n');
+        client.exit(0);
+      } else {
+        this.store.resolveEvent(event.id, 'failed', result.error);
+        client.log('stderr', result.error + '\n');
+        client.exit(1, result.error);
+      }
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, 'failed', msg);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
     }
   }
 
