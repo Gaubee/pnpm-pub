@@ -384,18 +384,39 @@ export interface CredentialCheck {
   otpValid: boolean | null;
   /** Human-readable summary for logging / UI. */
   message: string;
+  /**
+   * Semantic registry error code (e.g. `E401`) when the SDK downgraded an auth
+   * failure to `authValid:false`. `undefined` when auth is valid. Lets callers
+   * distinguish a genuinely bad/expired token from a restriction.
+   */
+  code?: string;
 }
 
 export interface VerifyCredentialsResult {
   ok: boolean;
   status: number;
   error?: string;
+  /**
+   * Semantic registry error code (e.g. `E401`, `EOTP`, `EAUTHIP`, `E403`).
+   * Present on the failure branch (kept from the SDK's `NpmApiError.code`)
+   * and, when the SDK downgraded an auth failure to `authValid:false`, on the
+   * success branch's check too. Lets callers distinguish a genuinely bad/expired
+   * token from a transient restriction without re-parsing messages.
+   */
+  code?: string;
   check?: CredentialCheck;
 }
 
 /**
  * Verify that a token (+ optionally its TOTP) work, without side effects.
  * Pass the raw token + TOTP secret; the OTP is derived from the secret.
+ *
+ * Note the SDK's `verifyCredentials` never returns `err`: it maps every registry
+ * outcome into a `VerificationResult` (`authValid`/`otpValid`/…), including
+ * 401/403 (→ `authValid:false`) and EOTP/EAUTHIP (→ auth valid but restricted).
+ * So the `!result.ok` branch below only fires on an unexpected transport-level
+ * failure. The `code` on the success `check` is inferred from `authValid` +
+ * `message` since the SDK folds the registry status into those fields.
  */
 export async function verifyCredentials(opts: {
   registry: string;
@@ -415,8 +436,11 @@ export async function verifyCredentials(opts: {
         requires2FA: v.requires2FA,
         otpValid: v.otpValid,
         message: v.message,
+        // The SDK signals a bad/expired token as `authValid:false`; surface a
+        // conventional code so callers can branch without parsing the message.
+        code: v.authValid ? undefined : 'E401',
       },
     };
   }
-  return { ok: false, status: result.error.status, error: result.error.message };
+  return { ok: false, status: result.error.status, code: result.error.code, error: result.error.message };
 }

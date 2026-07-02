@@ -56,6 +56,16 @@ const MIME: Record<string, string> = {
 
 type JsonObject = Record<string, unknown>;
 
+/**
+ * Result of {@link WebServer.resolveTrustAuth}: the active profile's token is
+ * either ready to use (`ok`), absent (`missing`), or present but rejected by the
+ * registry liveness probe (`expired` — caller should surface a re-auth signal).
+ */
+type ResolvedAuth =
+  | { status: 'ok'; token: string; totpSecret: string; registry: string }
+  | { status: 'missing' }
+  | { status: 'expired' };
+
 export class WebServer {
   private server?: http.Server;
   private sockets = new Set<WebSocketConnection>();
@@ -76,6 +86,18 @@ export class WebServer {
    */
   private packagesCache = new Map<string, { promise: Promise<NpmPackage[]>; expiresAt: number }>();
   private static readonly PACKAGES_CACHE_TTL_MS = 60_000;
+
+  /**
+   * Token liveness probe cache. `resolveTrustAuth` verifies the active token
+   * against the registry (`listTokens`, a read-only GET) before handing it to a
+   * read path, so a stale/expired token flips `authStatus` to `unauthenticated`
+   * and surfaces a re-auth signal instead of a confusing 401. The probe is
+   * cached per-username for a short window to avoid hammering the registry on
+   * every read (profile-detail / packages / trust / unpublish share it).
+   * Invalidated whenever credentials change (renew / add / import / re-auth).
+   */
+  private authProbeCache = new Map<string, { authValid: boolean; expiresAt: number }>();
+  private static readonly AUTH_PROBE_TTL_MS = 60_000;
 
   constructor(private deps: WebServerDeps) {
     // Relay store events to every authed WebUI client.
@@ -149,16 +171,31 @@ export class WebServer {
           }
           return json(res, 200, token ? { ok: true, token } : { ok: false, error: 'No token stored for this profile.' });
         }
+        if (url === '/api/profile-password' && method === 'GET') {
+          // Resolve the stored npm password from the in-memory credential pool
+          // first, falling back to the merged keychain item (one read). The WebUI
+          // pre-fills the re-auth password field with it (the user may overwrite
+          // it if the stored password is stale). Never persisted client-side.
+          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+          const username = query.get('username');
+          if (!username) throw new Error('Invalid or missing username.');
+          let password = this.deps.store.getCredentials(username)?.npmPwd ?? null;
+          if (!password) {
+            const secrets = await getProfileSecrets(username);
+            password = secrets?.npm_pwd ?? null;
+          }
+          return json(res, 200, password ? { ok: true, password } : { ok: false, error: 'No password stored for this profile.' });
+        }
         if (url === '/api/profile-detail' && method === 'GET') {
           // Live authenticated profile detail (name/email/social/2FA/created).
           // Resolved from the active profile's token; never persisted — these
           // fields are projections of the registry, not config.
           const username = this.deps.store.getDefault();
           if (!username) return json(res, 401, { ok: false, error: 'No active profile.' });
-          const creds = await this.resolveTrustAuth();
-          if (!creds) return json(res, 401, { ok: false, error: 'No active profile credentials.' });
+          const auth = await this.resolveTrustAuth();
+          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           try {
-            const detail = await readProfileDetail(creds.token, creds.registry);
+            const detail = await readProfileDetail(auth.token, auth.registry);
             return json(res, 200, { ok: true, detail });
           } catch (err: unknown) {
             return json(res, 502, { ok: false, error: errorToMessage(err) });
@@ -265,13 +302,13 @@ export class WebServer {
           this.deps.log?.(`[oidc] GET trust: package=${pkg}`);
           const result = await this.listTrustCached(pkg);
           this.deps.log?.(`[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`);
-          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error });
+          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error, needsReauth: result.needsReauth });
         }
         if (url === '/api/oidc/trust' && method === 'POST') {
           const parsed = parseOrThrow(OidcTrustPostBodySchema, body, 'oidc trust body');
           this.deps.log?.(`[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`);
           const auth = await this.resolveTrustAuth();
-          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           const result = await addTrustedPublisher(auth, parsed.package, parsed.config as import('safe-npm-sdk').TrustedPublisherConfigCreate);
           this.deps.log?.(`[oidc] POST trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(parsed.package);
@@ -281,7 +318,7 @@ export class WebServer {
           const parsed = parseOrThrow(OidcTrustDeleteBodySchema, body, 'oidc trust delete body');
           this.deps.log?.(`[oidc] DELETE trust: package=${parsed.package} uuid=${parsed.uuid}`);
           const auth = await this.resolveTrustAuth();
-          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           const result = await removeTrustedPublisher(auth, parsed.package, parsed.uuid);
           this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
           this.invalidateTrust(parsed.package);
@@ -292,7 +329,7 @@ export class WebServer {
           const parsed = parseOrThrow(UnpublishBodySchema, body, 'unpublish body');
           this.deps.log?.(`[unpublish] package=${parsed.package} version=${parsed.version}`);
           const auth = await this.resolveTrustAuth();
-          if (!auth) return json(res, 401, { ok: false, error: 'No active profile credentials for this operation.' });
+          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           const result = await unpublishVersion({
             registry: auth.registry,
             token: auth.token,
@@ -605,6 +642,7 @@ export class WebServer {
     }
     // Populate the in-memory credential pool immediately (incl. password).
     this.deps.store.setCredentials(body.username, { token: token!, totpSecret: body.totpSecret, npmPwd: body.password });
+    this.invalidateAuthProbe(body.username);
     return { ok: true };
   }
 
@@ -694,35 +732,89 @@ export class WebServer {
       return { ok: false, error: `Failed to renew profile: ${errorToMessage(error)}` };
     }
     this.deps.store.setCredentials(body.username, { token: token!, totpSecret, npmPwd: password });
+    this.invalidateAuthProbe(body.username);
     return { ok: true };
   }
 
   /**
-   * Resolve the active profile's token + TOTP secret for an npm `/trust` call.
-   * The credentials pool is the fast path; keychain is the fallback (mirrors
-   * `renewProfile`). Returns null when there is no active profile or no token.
+   * Resolve the active profile's token + TOTP secret for an authenticated read
+   * (profile-detail / packages / trust / unpublish). Returns a three-state
+   * result so callers can distinguish "no credentials at all" from "credentials
+   * present but the token is no longer accepted by the registry":
+   *
+   * - `missing` — no default profile, or no stored token/TOTP at all.
+   * - `expired` — a token exists but the liveness probe (`verifyCredentials`,
+   *   a read-only `listTokens`) reported `authValid:false`. The profile's
+   *   `authStatus` is flipped to `unauthenticated` (and broadcast via the store)
+   *   so the WebUI routes the user to re-auth instead of retrying blindly.
+   * - `ok` — token + TOTP + registry, ready to use.
+   *
+   * The liveness probe result is cached per-username for a short window
+   * ({@link AUTH_PROBE_TTL_MS}); a transport-level probe failure is treated
+   * conservatively as `ok` (don't kill a token on a transient network blip —
+   * the real request will surface the genuine error if the token is actually
+   * bad). The cache is cleared on any credential change (renew/add/import).
    */
-  private async resolveTrustAuth(): Promise<{ token: string; totpSecret: string; registry: string } | null> {
+  private async resolveTrustAuth(): Promise<ResolvedAuth> {
     const username = this.deps.store.getDefault();
     if (!username) {
-      this.deps.log?.('[oidc] resolveTrustAuth: no default profile');
-      return null;
+      this.deps.log?.('[auth] resolveTrustAuth: no default profile');
+      return { status: 'missing' };
     }
     const profile = this.deps.store.getProfile(username);
     const registry = profile?.registry ?? 'https://registry.npmjs.org/';
     const creds = this.deps.store.getCredentials(username);
     // Prefer the in-memory pool; otherwise read the MERGED keychain item once
     // (one auth prompt) and warm the pool for subsequent calls.
+    let token: string;
+    let totpSecret: string;
     if (creds?.token && creds.totpSecret) {
-      return { token: creds.token, totpSecret: creds.totpSecret, registry };
+      token = creds.token;
+      totpSecret = creds.totpSecret;
+    } else {
+      const secrets = await getProfileSecrets(username);
+      if (!secrets) {
+        this.deps.log?.(`[auth] resolveTrustAuth: no merged secrets for ${username}`);
+        return { status: 'missing' };
+      }
+      token = secrets.npm_token;
+      totpSecret = secrets.totp_secret;
+      this.deps.store.setCredentials(username, { token, totpSecret, npmPwd: secrets.npm_pwd });
     }
-    const secrets = await getProfileSecrets(username);
-    if (!secrets) {
-      this.deps.log?.(`[oidc] resolveTrustAuth: no merged secrets for ${username}`);
-      return null;
+
+    // Liveness probe — short-TTL cached so the read paths share one verdict.
+    const cached = this.authProbeCache.get(username);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.authValid
+        ? { status: 'ok', token, totpSecret, registry }
+        : { status: 'expired' };
     }
-    this.deps.store.setCredentials(username, { token: secrets.npm_token, totpSecret: secrets.totp_secret, npmPwd: secrets.npm_pwd });
-    return { token: secrets.npm_token, totpSecret: secrets.totp_secret, registry };
+    let authValid = true;
+    try {
+      const verified = await verifyCredentials({ registry, token, totpSecret });
+      // The SDK folds 401/403 into `check.authValid === false`; transport errors
+      // surface as `!ok` and are treated conservatively as "still valid".
+      authValid = verified.ok ? (verified.check?.authValid ?? true) : true;
+    } catch (e) {
+      this.deps.log?.(`[auth] resolveTrustAuth: probe failed for ${username} (${errorToMessage(e)}); treating as valid`);
+      authValid = true;
+    }
+    this.authProbeCache.set(username, { authValid, expiresAt: Date.now() + WebServer.AUTH_PROBE_TTL_MS });
+    if (!authValid) {
+      this.deps.log?.(`[auth] resolveTrustAuth: token for ${username} is no longer valid; flipping authStatus`);
+      // Flip + broadcast so the WebUI offers re-auth. Only persist when the
+      // profile actually changed to avoid spurious keychain/profiles writes.
+      if (profile && profile.authStatus !== 'unauthenticated') {
+        await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+      }
+      return { status: 'expired' };
+    }
+    return { status: 'ok', token, totpSecret, registry };
+  }
+
+  /** Clear the liveness-probe cache for a profile (call on credential change). */
+  private invalidateAuthProbe(username: string): void {
+    this.authProbeCache.delete(username);
   }
 
   /**
@@ -730,7 +822,7 @@ export class WebServer {
    * (same package → share one promise). Mutating routes (add/remove) invalidate
    * the cached entry so the next list reflects the change.
    */
-  private async listTrustCached(name: string): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string }> {
+  private async listTrustCached(name: string): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string; needsReauth?: boolean }> {
     const cached = this.trustCache.get(name);
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
@@ -738,7 +830,11 @@ export class WebServer {
       return { ok: true, configs };
     }
     const auth = await this.resolveTrustAuth();
-    if (!auth) return { ok: false, status: 401, error: 'No active profile credentials for this operation.' };
+    if (auth.status !== 'ok') {
+      return auth.status === 'expired'
+        ? { ok: false, status: 401, error: 'Token expired or no longer valid.', needsReauth: true }
+        : { ok: false, status: 401, error: 'No active profile credentials for this operation.' };
+    }
     const promise = listTrustedPublishers(auth, name).then((r) => (r.ok ? r.configs : Promise.reject(r)));
     this.trustCache.set(name, { promise, expiresAt: now + WebServer.TRUST_CACHE_TTL_MS });
     try {
@@ -1041,6 +1137,31 @@ function contentTypeFor(filePath: string): string {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Type guard: `true` when {@link ResolvedAuth} carries usable credentials. Use
+ * after `const auth = await resolveTrustAuth()` so TypeScript narrows `auth` to
+ * the `ok` variant for the authenticated call that follows.
+ *
+ * @example
+ * ```
+ * const auth = await this.resolveTrustAuth();
+ * if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
+ * // auth is now { status:'ok', token, totpSecret, registry }
+ * ```
+ */
+function authIsOk(auth: ResolvedAuth): auth is Extract<ResolvedAuth, { status: 'ok' }> {
+  return auth.status === 'ok';
+}
+
+/**
+ * Build the 401 denial body for a non-`ok` {@link ResolvedAuth}. The `expired`
+ * case carries `needsReauth: true` so the WebUI routes the user to re-auth.
+ */
+function authDeniedBody(auth: ResolvedAuth): { ok: false; error: string; needsReauth?: boolean } {
+  if (auth.status === 'expired') return { ok: false, error: 'Token expired or no longer valid.', needsReauth: true };
+  return { ok: false, error: 'No active profile credentials for this operation.' };
 }
 
 function isWsClientMessage(value: unknown): value is WsClientMessage {

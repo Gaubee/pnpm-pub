@@ -81,6 +81,12 @@ const ProfileTokenResponseSchema = z.object({
   error: z.string().optional(),
 });
 
+const ProfilePasswordResponseSchema = z.object({
+  ok: z.boolean(),
+  password: z.string().optional(),
+  error: z.string().optional(),
+});
+
 const ProfileDetailResponseSchema = z.object({
   ok: z.boolean(),
   detail: z
@@ -96,6 +102,9 @@ const ProfileDetailResponseSchema = z.object({
       createdAt: z.string().nullable(),
     })
     .optional(),
+  // Present (true) when the daemon's liveness probe found the token invalid —
+  // the WebUI should offer re-auth instead of retrying blindly.
+  needsReauth: z.boolean().optional(),
   error: z.string().optional(),
 });
 
@@ -111,7 +120,8 @@ export type NpmProfileLookupResponse = z.infer<typeof NpmProfileLookupResponseSc
 export type TrustListResponse = { ok: boolean; configs?: TrustedPublisherConfig[]; error?: string };
 export type NpmPackageResponse = { ok: boolean; items?: NpmPackage[]; total?: number; page?: number; pageSize?: number; error?: string };
 export type ProfileTokenResponse = z.infer<typeof ProfileTokenResponseSchema>;
-export type ProfileDetailResponse = { ok: boolean; detail?: ProfileDetail; error?: string };
+export type ProfilePasswordResponse = z.infer<typeof ProfilePasswordResponseSchema>;
+export type ProfileDetailResponse = { ok: boolean; detail?: ProfileDetail; needsReauth?: boolean; error?: string };
 
 // ---------------------------------------------------------------------------
 // Parsers
@@ -146,11 +156,15 @@ export function parsePackagesResponse(value: unknown): NpmPackageResponse | null
 }
 
 export function parseProfileTokenResponse(value: unknown): ProfileTokenResponse | null {
-	return safeOrNull(ProfileTokenResponseSchema, value);
+  return safeOrNull(ProfileTokenResponseSchema, value);
+}
+
+export function parseProfilePasswordResponse(value: unknown): ProfilePasswordResponse | null {
+  return safeOrNull(ProfilePasswordResponseSchema, value);
 }
 
 export function parseProfileDetailResponse(value: unknown): ProfileDetailResponse | null {
-	return safeOrNull(ProfileDetailResponseSchema, value);
+  return safeOrNull(ProfileDetailResponseSchema, value);
 }
 
 /** Run safeParse; return the data on success, null on failure. */

@@ -1,11 +1,14 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { actions, daemon, closeAddProfile } from '$lib/store.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import * as ButtonGroup from '$lib/components/ui/button-group/index.js';
+	import { Toggle } from '$lib/components/ui/toggle/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { Separator } from '$lib/components/ui/separator/index.js';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -23,7 +26,6 @@
 	} from '$lib/components/ui/tooltip/index.js';
 	import IconTrash from '@lucide/svelte/icons/trash-2';
 	import IconUser from '@lucide/svelte/icons/user-round';
-	import IconRegistry from '@lucide/svelte/icons/server';
 	import IconLoader from '@lucide/svelte/icons/loader-circle';
 	import IconKey from '@lucide/svelte/icons/key-round';
 	import IconEye from '@lucide/svelte/icons/eye';
@@ -31,14 +33,20 @@
 	import IconCopy from '@lucide/svelte/icons/copy';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconMail from '@lucide/svelte/icons/mail';
-	import IconGithub from '@lucide/svelte/icons/code';
-	import IconTwitter from '@lucide/svelte/icons/at-sign';
 	import IconLink from '@lucide/svelte/icons/globe';
 	import { apiFetch } from '$lib/api-fetch.js';
-	import { parseProfileTokenResponse, parseProfileDetailResponse } from '$lib/rest-response.js';
+	import {
+		parseProfileTokenResponse,
+		parseProfilePasswordResponse,
+		parseProfileDetailResponse,
+		parseTokenApplyResponse,
+	} from '$lib/rest-response.js';
 	import type { ProfileDetail } from '$lib/types.js';
 	import { _ } from 'svelte-i18n';
 	import { untrack } from 'svelte';
+	import IconAlertTriangle from '@lucide/svelte/icons/triangle-alert';
+	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
+	import IconX from '@lucide/svelte/icons/x';
 
 	let deleteOpen = $state(false);
 	let deleting = $state(false);
@@ -137,7 +145,9 @@
 		tokenLoading = false;
 		showToken = false;
 		copied = false;
-		detail = null;
+		// Restore cached detail instantly (stale-while-revalidate); the fetch
+		// effect will refresh it in the background.
+		detail = detailCache.get(username) ?? null;
 		detailError = null;
 		activeDetailReq++;
 	});
@@ -145,6 +155,11 @@
 	// ----- profile detail (email / social / 2FA / created) -----
 	// Fetched live from the registry via the active profile's token; never
 	// persisted. Only meaningful for the active profile, so we gate on that.
+	// Stale-while-revalidate: a module-level cache keyed by username lets us show
+	// the previous detail instantly when revisiting a profile, while a fresh
+	// fetch updates it in the background. The cache survives route changes but
+	// is cleared on renew (the identity may change with a new token).
+	const detailCache = new Map<string, ProfileDetail>();
 	let detail = $state<ProfileDetail | null>(null);
 	let detailLoading = $state(false);
 	let detailError = $state<string | null>(null);
@@ -167,7 +182,17 @@
 
 	async function loadDetail(): Promise<void> {
 		const reqId = ++activeDetailReq;
-		detailLoading = true;
+		// Only show the loading spinner when there's no cached data to display
+		// yet. With a cache hit we keep the stale detail visible (no spinner)
+		// and refresh silently in the background.
+		const cached = detailCache.get(username);
+		if (cached) {
+			detail = cached;
+			detailLoading = false;
+		} else {
+			detail = null;
+			detailLoading = true;
+		}
 		detailError = null;
 		try {
 			const res = await apiFetch('/api/profile-detail');
@@ -177,6 +202,11 @@
 			if (reqId !== activeDetailReq) return;
 			if (json?.ok && json.detail) {
 				detail = json.detail;
+				detailCache.set(username, json.detail);
+			} else if (json?.needsReauth) {
+				// Daemon's liveness probe found the token invalid — the inline
+				// re-auth card (driven by authStatus) takes over; no error toast.
+				detail = null;
 			} else {
 				detailError = json?.error ?? $_('profile.detailLoadError');
 			}
@@ -185,6 +215,122 @@
 			detailError = $_('profile.detailLoadError');
 		} finally {
 			if (reqId === activeDetailReq) detailLoading = false;
+		}
+	}
+
+	// ----- inline re-auth (token expired / invalid) -----
+	// Shows an inline card (non-blocking). Two open modes share ONE form:
+	//   - forced  (token expired, authStatus !== 'authenticated'): the card is
+	//     always open and cannot be dismissed — the user MUST renew.
+	//   - voluntary (token still valid): opened by the "Renew token" button in
+	//     the header, dismissible via Cancel.
+	type ReauthPhase = 'idle' | 'submitting' | 'manual';
+	const needsReauth = $derived(
+		isActive && (profile?.authStatus ?? 'unauthenticated') !== 'authenticated',
+	);
+	// `renewForced` drives dismissability. It's a snapshot of needsReauth at the
+	// point the card is open so the Cancel button logic is stable.
+	let renewOpen = $state(false);
+	let renewForced = $state(false);
+	// A forced card stays open as long as the token is invalid; a voluntary one
+	// is closed when the user dismisses it or a renew succeeds.
+	$effect(() => {
+		if (needsReauth) {
+			renewForced = true;
+			renewOpen = true;
+		} else {
+			renewForced = false;
+		}
+	});
+	let reauthPhase = $state<ReauthPhase>('idle');
+	let reauthPassword = $state('');
+	let reauthPasswordLoaded = $state(false);
+	let reauthShowPassword = $state(false);
+	let reauthBusy = $state(false);
+	let reauthError = $state<string | null>(null);
+	let manualToken = $state('');
+
+	// When the re-auth card opens, lazily pre-fill the stored password so the
+	// user can renew in one click (but can still edit it).
+	$effect(() => {
+		const open = renewOpen;
+		if (!open || reauthPasswordLoaded) return;
+		void untrack(() => loadStoredPassword());
+	});
+
+	async function loadStoredPassword(): Promise<void> {
+		try {
+			const res = await apiFetch(`/api/profile-password?username=${encodeURIComponent(username)}`);
+			const json = parseProfilePasswordResponse(await res.json());
+			if (json?.ok && json.password) reauthPassword = json.password;
+		} catch {
+			/* leave empty — user types it */
+		} finally {
+			reauthPasswordLoaded = true;
+		}
+	}
+
+	const canReauth = $derived(
+		!reauthBusy &&
+			username.length > 0 &&
+			(reauthPhase === 'manual' ? manualToken.trim().length > 0 : reauthPassword.length > 0),
+	);
+
+	// Block navigation while a renewal is in flight so the token isn't left
+	// half-minted. The card itself stays non-blocking otherwise (the user can
+	// still see the avatar / delete the profile while composing the renewal).
+	beforeNavigate(({ to, cancel }) => {
+		if (!reauthBusy) return;
+		// Allow the delete-success redirect (profile gone) but block everything else.
+		if (to?.url.pathname === `/profiles/${encodeURIComponent(username)}`) return;
+		cancel();
+	});
+
+	async function submitReauth(): Promise<void> {
+		if (!canReauth) return;
+		reauthBusy = true;
+		reauthError = null;
+		try {
+			const res = await apiFetch('/api/renew', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					username,
+					password: reauthPhase === 'manual' ? undefined : reauthPassword,
+					manualToken: reauthPhase === 'manual' ? manualToken.trim() || undefined : undefined,
+				}),
+			});
+			const json = parseTokenApplyResponse(await res.json());
+			if (json?.ok) {
+				// Success: daemon flipped authStatus → 'authenticated' and broadcast a
+				// fresh profiles frame (new token persisted). The cached npm_token +
+				// profile detail are now stale, so clear them and reload. For a forced
+				// (expired) card needsReauth becomes false and closes the card; for a
+				// voluntary card the token was already valid, so close it explicitly.
+				reauthPhase = 'idle';
+				if (!renewForced) renewOpen = false;
+				// Drop the old token so the next Reveal re-fetches the new one.
+				token = null;
+				tokenError = null;
+				showToken = false;
+				// Invalidate the detail cache (the new token may resolve to a
+				// different identity) and force a fresh reload.
+				detailCache.delete(username);
+				void untrack(() => loadDetail());
+			} else if (json?.needsManualToken) {
+				// NPM refused the password-based apply (OTP mismatch / IP block /
+				// rate-limit). Switch to the manual-token paste path, but ALSO
+				// surface the registry's error so the user sees WHY (e.g. a wrong
+				// OTP or password) instead of a silent jump to manual mode.
+				reauthPhase = 'manual';
+				reauthError = json?.error ?? null;
+			} else {
+				reauthError = json?.error ?? $_('profile.reauthError');
+			}
+		} catch {
+			reauthError = $_('profile.reauthError');
+		} finally {
+			reauthBusy = false;
 		}
 	}
 </script>
@@ -272,7 +418,145 @@
 			</div>
 		{/if}
 
-		<section class="grid gap-3 sm:grid-cols-2">
+		<!-- npm_token export (+ inline renew form, merged into one card) -->
+		<section class="rounded-lg border border-border bg-card p-4">
+			<div class="flex items-center justify-between gap-3">
+				<div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
+					<IconKey /> {$_('profile.npmToken')}
+				</div>
+				<!-- Header actions as a single ButtonGroup. The Renew toggle and the
+					 Reveal/Copy buttons are independent — toggling renew never hides the
+					 token actions, so the group stays stable. -->
+				<div class="flex shrink-0 items-center">
+					<ButtonGroup.Root>
+						{#if isActive && !needsReauth}
+							<Toggle size="sm" variant="outline" bind:pressed={renewOpen}>
+								<IconRefresh /> {$_('profile.renewToken')}
+							</Toggle>
+						{/if}
+						{#if token}
+							<Button variant="outline" size="icon-sm" onclick={() => (showToken = !showToken)} aria-label={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')} title={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')}>
+								{#if showToken}<IconEyeOff class="h-3.5 w-3.5" />{:else}<IconEye class="h-3.5 w-3.5" />{/if}
+							</Button>
+							<Button variant="outline" size="icon-sm" onclick={copyToken} aria-label={$_('profile.copyToken')} title={$_('profile.copyToken')}>
+								{#if copied}<IconCheck class="h-3.5 w-3.5 text-success" />{:else}<IconCopy class="h-3.5 w-3.5" />{/if}
+							</Button>
+						{:else if tokenLoading}
+							<Button variant="outline" size="icon-sm" disabled aria-label={$_('common.loading')}>
+								<IconLoader class="h-3.5 w-3.5 animate-spin" />
+							</Button>
+						{:else}
+							<Button variant="outline" size="icon-sm" onclick={loadToken} aria-label={$_('profile.revealToken')} title={$_('profile.revealToken')}>
+								<IconEye class="h-3.5 w-3.5" />
+							</Button>
+						{/if}
+					</ButtonGroup.Root>
+				</div>
+			</div>
+			<div class="mt-2">
+				{#if tokenError}
+					<p class="text-xs text-destructive">{tokenError}</p>
+				{:else if token}
+					<p class="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
+						{showToken ? token : '•'.repeat(Math.min(token.length, 40))}
+					</p>
+				{:else}
+					<p class="text-xs text-muted-foreground">{$_('profile.tokenHidden')}</p>
+				{/if}
+			</div>
+
+			{#if renewOpen}
+				<!-- Inline renew form, separated from the token block by a divider
+					 (no nested card). Forced (token expired) cannot be dismissed;
+					 voluntary (Renew toggle) is closable via the X button. -->
+				<Separator class="my-4" />
+				<div class="flex items-start gap-2">
+					{#if renewForced}
+						<IconAlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+					{:else}
+						<IconRefresh class="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+					{/if}
+					<div class="min-w-0 flex-1 space-y-3">
+						<div class="flex items-start justify-between gap-2">
+							<div>
+								<h3 class="text-sm font-semibold text-foreground">
+									{renewForced ? $_('profile.reauthTitle') : $_('profile.renewTitle')}
+								</h3>
+								<p class="mt-0.5 text-xs text-muted-foreground">
+									{renewForced ? $_('profile.reauthIntro') : $_('profile.renewIntro')}
+								</p>
+							</div>
+							{#if !renewForced}
+								<Button variant="ghost" size="icon" class="-mr-1.5 -mt-1 h-6 w-6 shrink-0" onclick={() => (renewOpen = false)} disabled={reauthBusy} aria-label={$_('profile.reauthCancel')}>
+									<IconX class="h-3.5 w-3.5" />
+								</Button>
+							{/if}
+						</div>
+
+							{#if reauthPhase !== 'manual'}
+								<div class="space-y-1.5">
+									<label class="text-xs font-medium text-muted-foreground" for="reauth-password">
+										{$_('profile.reauthPassword')}
+									</label>
+									<div class="relative">
+										<Input
+											id="reauth-password"
+											type={reauthShowPassword ? 'text' : 'password'}
+											bind:value={reauthPassword}
+											placeholder={$_('profile.reauthPassword')}
+											autocomplete="current-password"
+											disabled={reauthBusy}
+											class="pr-9"
+										/>
+										<Button variant="ghost" size="icon-sm" class="absolute right-0.5 top-0.5 h-6 w-6 text-muted-foreground" onclick={() => (reauthShowPassword = !reauthShowPassword)} disabled={reauthBusy} aria-label={reauthShowPassword ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')} title={reauthShowPassword ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')} tabindex={-1}>
+											{#if reauthShowPassword}<IconEyeOff class="h-3.5 w-3.5" />{:else}<IconEye class="h-3.5 w-3.5" />{/if}
+										</Button>
+									</div>
+									<p class="text-[11px] text-muted-foreground">{$_('profile.reauthPasswordHint')}</p>
+								</div>
+						{:else}
+							<div class="space-y-1.5">
+								<label class="text-xs font-medium text-muted-foreground" for="manual-token">
+									{$_('profile.reauthManualToken')}
+								</label>
+								<Input
+									id="manual-token"
+									type="text"
+									bind:value={manualToken}
+									placeholder={$_('profile.reauthManualTokenPlaceholder')}
+									autocomplete="off"
+									disabled={reauthBusy}
+								/>
+								<p class="text-[11px] text-muted-foreground">{$_('profile.reauthManualTokenHint')}</p>
+							</div>
+						{/if}
+
+						{#if reauthError}
+							<p class="text-xs text-destructive">{reauthError}</p>
+						{/if}
+
+						<div class="flex items-center gap-2">
+							<Button size="sm" onclick={submitReauth} disabled={!canReauth}>
+								{#if reauthBusy}<IconLoader class="h-3.5 w-3.5 animate-spin" />{/if}
+								{$_('profile.reauthSubmit')}
+							</Button>
+							{#if reauthPhase === 'manual'}
+								<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'idle')} disabled={reauthBusy}>
+									{$_('profile.reauthUsePassword')}
+								</Button>
+							{:else}
+								<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'manual')} disabled={reauthBusy}>
+									{$_('profile.reauthUseManualToken')}
+								</Button>
+							{/if}
+						</div>
+					</div>
+				</div>
+			{/if}
+		</section>
+
+		<!-- Identity (registry detail: email / linked accounts / 2FA / created) -->
+		<section>
 				<div class="rounded-lg border border-border bg-card p-4">
 					<div class="flex items-center justify-between gap-2">
 						<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
@@ -304,17 +588,17 @@
 								{/if}
 								<!-- Linked Accounts -->
 								{#if detail.github || detail.twitter || detail.homepage}
-									<div class="space-y-1 pt-0.5">
+									<div class="space-y-1 pt-0.5 flex flex-col gap-2">
 										<span class="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">{$_('profile.linkedAccounts')}</span>
 										{#if detail.github}
 											<div class="flex items-center gap-2 text-xs">
-												<IconGithub class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+												<svg class="block h-3.5 w-3.5 shrink-0 self-center text-muted-foreground" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
 												<a href={`https://github.com/${detail.github}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">{detail.github}</a>
 											</div>
 										{/if}
 										{#if detail.twitter}
 											<div class="flex items-center gap-2 text-xs">
-												<IconTwitter class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+												<svg class="block h-3.5 w-3.5 shrink-0 self-center text-muted-foreground" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
 												<a href={`https://twitter.com/${detail.twitter}`} target="_blank" rel="noreferrer" class="truncate text-foreground transition-colors hover:text-brand hover:underline">@{detail.twitter}</a>
 											</div>
 										{/if}
@@ -334,49 +618,6 @@
 						{/if}
 					</dl>
 				</div>
-			<div class="rounded-lg border border-border bg-card p-4">
-				<div class="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
-					<IconRegistry /> {$_('profile.registry')}
-				</div>
-				<p class="mt-2 truncate font-mono text-xs">{profile.registry ?? 'https://registry.npmjs.org/'}</p>
-				<p class="mt-1 text-xs text-muted-foreground">{$_('profile.secretsStored')}</p>
-			</div>
-		</section>
-
-		<!-- npm_token export -->
-		<section class="rounded-lg border border-border bg-card p-4">
-			<div class="flex items-center justify-between gap-3">
-				<div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
-					<IconKey /> {$_('profile.npmToken')}
-				</div>
-				<div class="flex shrink-0 items-center gap-1.5">
-					{#if token}
-						<Button variant="ghost" size="icon" class="h-7 w-7" onclick={() => (showToken = !showToken)} aria-label={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')} title={showToken ? $_('addProfile.hidePassword') : $_('addProfile.showPassword')}>
-							{#if showToken}<IconEyeOff class="h-3.5 w-3.5" />{:else}<IconEye class="h-3.5 w-3.5" />{/if}
-						</Button>
-						<Button variant="ghost" size="icon" class="h-7 w-7" onclick={copyToken} aria-label={$_('profile.copyToken')} title={$_('profile.copyToken')}>
-							{#if copied}<IconCheck class="h-3.5 w-3.5 text-success" />{:else}<IconCopy class="h-3.5 w-3.5" />{/if}
-						</Button>
-					{:else if tokenLoading}
-						<IconLoader class="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-					{:else}
-						<Button variant="outline" size="sm" onclick={loadToken}>
-							<IconEye class="h-3.5 w-3.5" /> {$_('profile.revealToken')}
-						</Button>
-					{/if}
-				</div>
-			</div>
-			<div class="mt-2">
-				{#if tokenError}
-					<p class="text-xs text-destructive">{tokenError}</p>
-				{:else if token}
-					<p class="break-all rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">
-						{showToken ? token : '•'.repeat(Math.min(token.length, 40))}
-					</p>
-				{:else}
-					<p class="text-xs text-muted-foreground">{$_('profile.tokenHidden')}</p>
-				{/if}
-			</div>
 		</section>
 	</div>
 {:else}

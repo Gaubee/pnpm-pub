@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { connect, daemon, activeProfile, openAddProfile, ui } from '$lib/store.js';
+	import { connect, daemon, activeProfile } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
@@ -51,10 +51,12 @@
 
 	/**
 	 * Re-auth gate: a profile exists but the active one is NOT authenticated
-	 * (token expired / password changed / never finished auth). Force the Add
-	 * Profile dialog open as a "re-authenticate" surface — the user re-enters
-	 * the password and the daemon silently re-mints a token. Does NOT redirect
-	 * to a route (keeps the current page mounted behind the dialog).
+	 * (token expired / password changed / never finished auth). Route the user
+	 * to that profile's detail page, which hosts the inline re-auth card
+	 * (password pre-filled from keychain, user may overwrite it). The card
+	 * guards navigation while a renewal is in progress. We do NOT redirect when
+	 * the user is already on that page (avoids a loop), or when no profile is
+	 * resolvable (onboarding still owns that case below).
 	 */
 	const needsReauth = $derived(
 		$daemon.profilesLoaded &&
@@ -62,8 +64,13 @@
 			($activeProfile?.authStatus ?? 'unauthenticated') !== 'authenticated',
 	);
 	$effect(() => {
-		// Only re-open when the dialog isn't already open (avoid fighting user closes).
-		if (needsReauth && !$ui.addProfileOpen) openAddProfile();
+		if (!needsReauth) return;
+		const target = $activeProfile?.username;
+		if (!target) return;
+		// Already viewing the expired profile's detail page → let the card handle it.
+		const detailPath = `/profiles/${encodeURIComponent(target)}`;
+		if (page.url.pathname === detailPath) return;
+		goto(`${detailPath}${window.location.hash}`, { replaceState: true });
 	});
 
 	/**
