@@ -23,7 +23,8 @@
 		buttonLabel?: string;
 		/** Disable the configure button (e.g. no repository metadata available). */
 		disabled?: boolean;
-		onconfigure?: () => void;
+		/** Receives the triggering event so callers can stopPropagation. */
+		onconfigure?: (event: MouseEvent) => void;
 	} = $props();
 
 	const shieldClass = $derived(status === 'configured' ? 'text-success' : 'text-muted-foreground/50');
@@ -42,7 +43,7 @@
 		<span class={labelClass}>{text}</span>
 	</div>
 	{#if buttonLabel && onconfigure}
-		<Button variant={status === 'configured' ? 'brand' : 'outline'} size="sm" {disabled} onclick={onconfigure}>
+		<Button variant={status === 'configured' ? 'brand' : 'outline'} size="sm" {disabled} onclick={(e) => onconfigure?.(e)}>
 			<IconShield class="h-3.5 w-3.5" />
 			{buttonLabel}
 		</Button>
