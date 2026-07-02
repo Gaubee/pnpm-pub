@@ -16,6 +16,7 @@
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip/index.js';
 	import RepoIcon from '$lib/components/repo-icon.svelte';
+	import ConfirmAction from '$lib/components/confirm-action.svelte';
 	import type { RepoInfo } from '$lib/components/repo-info-types.js';
 	import { actions, daemon } from '$lib/store.js';
 	import TarballTree from '$lib/components/tarball-tree.svelte';
@@ -190,13 +191,19 @@
 	// The local package directory (for "open folder"). Publish → source path;
 	// setup-oidc → its path. Unpublish / placeholder have no local path.
 	const sourcePath = $derived(publishData?.source.path ?? oidcCtx?.path ?? '');
-	// The npm registry page for events that carry only a package name
-	// (unpublish, create-placeholder). Publish could also use this but already
-	// has a richer repo link. Unpublish links to the specific version page.
-	const packageName = $derived(unpublishCtx?.name ?? (event.payload?.kind === 'create-placeholder' ? event.payload.data.name : ''));
+	// The npm registry page link. For publish, derived from target name/version.
+	// For unpublish, from its name/version. For create-placeholder, name only.
+	const packageName = $derived(
+		unpublishCtx?.name
+			?? publishTarget?.target.name
+			?? (event.payload?.kind === 'create-placeholder' ? event.payload.data.name : ''),
+	);
+	const packageVersion = $derived(
+		unpublishCtx?.version ?? publishTarget?.target.version ?? '',
+	);
 	const npmUrl = $derived.by(() => {
 		if (!packageName) return '';
-		if (unpublishCtx?.version) return `https://www.npmjs.com/package/${packageName}/v/${unpublishCtx.version}`;
+		if (packageVersion) return `https://www.npmjs.com/package/${packageName}/v/${packageVersion}`;
 		return `https://www.npmjs.com/package/${packageName}`;
 	});
 	// Whether the right-corner group has any action to show at all.
@@ -444,10 +451,6 @@
 				{$_('eventCard.configureOidc', { values: { name: oidcCtx.name } })} <span class="font-mono">{oidcCtx.name}</span>
 				{#if oidcCtx.repo}· repo <span class="font-mono">{oidcCtx.repo}</span>{/if}
 			</div>
-		{:else if unpublishCtx}
-			<div class="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-				{$_('eventCard.unpublishAction')}
-			</div>
 		{/if}
 
 		{#if !isPending && event.result && event.status !== 'rejected'}
@@ -627,34 +630,40 @@
 
 		{#if !isPending && (isRetryable || isUnpublishable)}
 			{#if confirmUnpublish}
-				<div class="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
-					<p class="text-[11px] text-destructive">
-						{$_('eventCard.unpublishConfirm', { values: { name: publishData?.target.name ?? '', version: publishData?.target.version ?? '' } })}
-					</p>
-					<ButtonGroup>
-						<Button variant="destructive" size="sm" class="flex-1" onclick={doUnpublish}>
-							{$_('eventCard.unpublish')}
-						</Button>
-						<Button variant="outline" size="sm" onclick={() => (confirmUnpublish = false)}>
-							{$_('common.cancel')}
-						</Button>
-					</ButtonGroup>
-				</div>
+				{@const warn = $_('eventCard.unpublishConfirm', {
+					values: {
+						name: unpublishCtx?.name ?? publishData?.target.name ?? '',
+						version: unpublishCtx?.version ?? publishData?.target.version ?? '',
+					},
+				})}
+				<ConfirmAction
+					bind:open={confirmUnpublish}
+					{warn}
+					confirmLabel={event.payload?.kind === 'unpublish' ? $_('eventCard.retry') : $_('eventCard.unpublish')}
+					onConfirm={event.payload?.kind === 'unpublish' ? retry : doUnpublish}
+				/>
 			{:else}
-				<!-- Action + auto-close share one ButtonGroup; the separator divides
-				     the publish actions from the countdown. ButtonGroup nests the
-				     AutoCloseBar's own buttons seamlessly. -->
+				<!-- Action + auto-close share one ButtonGroup. Retry-for-publish is a
+				     direct brand button; unpublish (from publish-success) and
+				     retry-for-unpublish use ConfirmAction (two-step confirmation). -->
 				<div class="pt-1">
 					<ButtonGroup>
-						{#if isRetryable}
+						{#if isPublish && isRetryableStatus}
 							<Button variant="brand" size="sm" class="flex-1" onclick={retry}>
 								<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
 							</Button>
 						{/if}
 						{#if isUnpublishable}
-							<Button variant="outline" size="sm" class={isRetryable ? '' : 'flex-1'} onclick={() => (confirmUnpublish = true)}>
-								<IconTrash class="h-3.5 w-3.5" /> {$_('eventCard.unpublish')}
-							</Button>
+							<ConfirmAction bind:open={confirmUnpublish} warn={$_('eventCard.unpublishConfirm', { values: { name: publishData?.target.name ?? '', version: publishData?.target.version ?? '' } })} confirmLabel={$_('eventCard.unpublish')} flex={!isRetryableStatus} onConfirm={doUnpublish}>
+								{#snippet triggerIcon()}<IconTrash class="h-3.5 w-3.5" />{/snippet}
+								{#snippet triggerLabel()}{$_('eventCard.unpublish')}{/snippet}
+							</ConfirmAction>
+						{/if}
+						{#if event.payload?.kind === 'unpublish' && isRetryableStatus}
+							<ConfirmAction bind:open={confirmUnpublish} warn={$_('eventCard.unpublishConfirm', { values: { name: unpublishCtx?.name ?? '', version: unpublishCtx?.version ?? '' } })} confirmLabel={$_('eventCard.retry')} flex onConfirm={retry}>
+								{#snippet triggerIcon()}<IconRotateCw class="h-3.5 w-3.5" />{/snippet}
+								{#snippet triggerLabel()}{$_('eventCard.retry')}{/snippet}
+							</ConfirmAction>
 						{/if}
 						{#if autoClose && variant === 'full'}
 							<ButtonGroupSeparator />
