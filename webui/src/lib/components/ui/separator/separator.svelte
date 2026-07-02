@@ -1,11 +1,23 @@
 <script lang="ts">
-	import { cn } from '$lib/utils.js';
+	import { Separator as SeparatorPrimitive } from "bits-ui";
+	import { cn } from "$lib/utils.js";
 
-	let { class: className = undefined, orientation = 'horizontal' }: { class?: string; orientation?: 'horizontal' | 'vertical' } = $props();
+	let {
+		ref = $bindable(null),
+		class: className,
+		"data-slot": dataSlot = "separator",
+		...restProps
+	}: SeparatorPrimitive.RootProps = $props();
 </script>
 
-<div
-	role="separator"
-	aria-orientation={orientation}
-	class={cn('shrink-0 bg-border', orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px', className)}
-></div>
+<SeparatorPrimitive.Root
+	bind:ref
+	data-slot={dataSlot}
+	class={cn(
+		"bg-border shrink-0 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:w-px",
+		// this is different in shadcn/ui but self-stretch breaks things for us
+		"data-[orientation=vertical]:h-full",
+		className
+	)}
+	{...restProps}
+/>
