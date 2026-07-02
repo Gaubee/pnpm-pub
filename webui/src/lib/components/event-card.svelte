@@ -135,19 +135,28 @@
 	);
 	const tarballSummary = $derived(event.tarballSummary ?? null);
 
-	// Repo-info for the publish target (host/shortName/browseUrl/faviconUrl/brand).
-	// Fetched once via the daemon's TTL-cached resolver; null until resolved.
+	// --- Right-corner actions (repo link / open folder / npm link) ---
+	// Every card renders a unified ButtonGroup; which actions appear depends on
+	// the event kind and the data it carries.
 	let repoInfo = $state<RepoInfo | null>(null);
+	// The raw repository string to resolve, drawn from whichever event kind
+	// carries one (publish.target.repository, or setup-oidc's repo field).
+	const repoRaw = $derived(publishData?.target.repository ?? oidcCtx?.repo ?? '');
 	$effect(() => {
-		const repo = publishData?.target.repository;
-		if (!repo) { repoInfo = null; return; }
+		if (!repoRaw) { repoInfo = null; return; }
 		// Fire-and-forget; the store memoizes so re-renders are cheap.
-		void actions.repoInfo(repo).then((info) => { repoInfo = info; });
+		void actions.repoInfo(repoRaw).then((info) => { repoInfo = info; });
 	});
-	// The package directory path (for "open folder"). Tarball source → its dir.
-	const sourcePath = $derived(
-		publishData ? (publishData.source.kind === 'directory' ? publishData.source.path : publishData.source.path) : '',
-	);
+	// The local package directory (for "open folder"). Publish → source path;
+	// setup-oidc → its path. Unpublish / placeholder have no local path.
+	const sourcePath = $derived(publishData?.source.path ?? oidcCtx?.path ?? '');
+	// The npm registry page for events that carry only a package name
+	// (unpublish, create-placeholder). Publish could also use this but already
+	// has a richer repo link.
+	const packageName = $derived(unpublishCtx?.name ?? (event.payload?.kind === 'create-placeholder' ? event.payload.data.name : ''));
+	const npmUrl = $derived(packageName ? `https://www.npmjs.com/package/${packageName}` : '');
+	// Whether the right-corner group has any action to show at all.
+	const hasCornerActions = $derived(!!repoInfo || !!sourcePath || !!npmUrl || overrideActive);
 	const isRetryable = $derived(isPublish && (event.status === 'failed' || event.status === 'expired' || event.status === 'rejected'));
 	const isUnpublishable = $derived(isPublish && event.status === 'success');
 	let confirmUnpublish = $state(false);
@@ -293,49 +302,75 @@
 			</div>
 		</div>
 
-		<!-- Right-side actions / identity. Publish events with a resolved repo
-		     show a ButtonGroup (open repo + open folder); everything else falls
-		     back to the effective-profile identity pill. -->
-		{#if isPublish && repoInfo}
-			<ButtonGroup>
+		<!-- Right-corner actions — a unified ButtonGroup on every card. Which
+		     actions appear depends on the event kind + the data it carries:
+		     a repo link (publish / setup-oidc), an open-folder button (publish /
+		     setup-oidc), or an npm page link (unpublish / placeholder). A
+		     context-override identity chip leads the group when relevant. -->
+		{#if hasCornerActions}
+		<ButtonGroup>
+			{#if overrideActive}
+				<!-- Cross-profile event: show whose identity it runs under. -->
+				<div class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-warning/60 bg-warning/10 px-2 text-[11px] font-medium text-foreground">
+					<Avatar class="h-4 w-4">
+						{#if effectiveProfileRecord?.avatarUrl}
+							<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
+						{/if}
+						<AvatarFallback class="text-[8px]">{initials(effectiveProfile)}</AvatarFallback>
+					</Avatar>
+					<span class="max-w-[6rem] truncate">{effectiveProfile}</span>
+				</div>
+			{/if}
+			{#if repoInfo}
 				<a
 					href={repoInfo.browseUrl}
 					target="_blank"
 					rel="noreferrer"
-					class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-l-0 border-input bg-transparent px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+					class="inline-flex h-7 items-center gap-1.5 bg-transparent px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 					title={repoInfo.host}
 				>
 					<RepoIcon brand={repoInfo.brand} faviconUrl={repoInfo.faviconUrl} class="h-3.5 w-3.5" />
 					<span class="max-w-[8rem] truncate">{repoInfo.shortName}</span>
 				</a>
+			{/if}
+			{#if sourcePath}
 				<Tooltip>
 					<TooltipTrigger>
 						{#snippet child({ props })}
 							<button
 								type="button"
 								{...props}
-								class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-l-0 border-input bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-								onclick={() => sourcePath && actions.openPath(sourcePath)}
+								class="inline-flex h-7 w-7 items-center justify-center bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+								onclick={() => actions.openPath(sourcePath)}
 								aria-label={$_('eventCard.openFolder')}
 							>
 								<IconFolderOpen class="h-3.5 w-3.5" />
 							</button>
 						{/snippet}
 					</TooltipTrigger>
-					<TooltipContent class="max-w-xs break-all font-mono text-[10px]">{sourcePath || '—'}</TooltipContent>
+					<TooltipContent class="max-w-xs break-all font-mono text-[10px]">{sourcePath}</TooltipContent>
 				</Tooltip>
-			</ButtonGroup>
-		{:else}
-			<!-- Effective identity pill (Chapter 6.2.2 context override). -->
-			<div class="flex items-center gap-1.5 rounded-full border px-2 py-1 {overrideActive ? 'border-warning bg-warning/10' : 'border-border'}">
-				<Avatar class="h-5 w-5">
-					{#if effectiveProfileRecord?.avatarUrl}
-						<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
-					{/if}
-					<AvatarFallback class="text-[9px]">{initials(effectiveProfile)}</AvatarFallback>
-				</Avatar>
-				<span class="max-w-[8rem] truncate text-[11px] font-medium">{effectiveProfile}</span>
-			</div>
+			{/if}
+			{#if npmUrl}
+				<Tooltip>
+					<TooltipTrigger>
+						{#snippet child({ props })}
+							<a
+								{...props}
+								href={npmUrl}
+								target="_blank"
+								rel="noreferrer"
+								class="inline-flex h-7 w-7 items-center justify-center bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+								aria-label={$_('eventCard.openOnNpm')}
+							>
+								<IconPlaceholder class="h-3.5 w-3.5" />
+							</a>
+						{/snippet}
+					</TooltipTrigger>
+				<TooltipContent class="font-mono text-[10px]">{packageName}</TooltipContent>
+			</Tooltip>
+		{/if}
+		</ButtonGroup>
 		{/if}
 	</CardHeader>
 
