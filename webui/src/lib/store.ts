@@ -326,8 +326,13 @@ export const actions = {
 			try {
 				const res = await apiFetch(`/api/repo-info?repo=${encodeURIComponent(repo)}`);
 				const json = (await res.json()) as { ok: boolean; info: RepoInfo | null };
-				return json?.ok ? (json.info ?? null) : null;
+				const info = json?.ok ? (json.info ?? null) : null;
+				// Don't cache nulls in-process: a transient failure (401, network)
+				// shouldn't poison the cache for the whole session.
+				if (!info) repoInfoCache.delete(repo);
+				return info;
 			} catch {
+				repoInfoCache.delete(repo);
 				return null;
 			}
 		})();
