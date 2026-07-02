@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 import { TrustedPublisherConfigSchema } from '$shared/schemas.js';
-import type { TrustedPublisherConfig, NpmPackage, ProfileDetail } from './types.js';
+import type { TrustedPublisherConfig, NpmPackage, PackageDetail, ProfileDetail } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Response schemas (passthrough for forward-compat with new daemon fields)
@@ -108,6 +108,34 @@ const ProfileDetailResponseSchema = z.object({
   error: z.string().optional(),
 });
 
+const PackageDetailResponseSchema = z.object({
+  ok: z.boolean(),
+  detail: z
+    .object({
+      name: z.string(),
+      version: z.string(),
+      description: z.string().nullable(),
+      readme: z.string(),
+      license: z.string().nullable(),
+      repository: z.string().nullable(),
+      homepage: z.string().nullable(),
+      lastPublish: z.string().nullable(),
+      modified: z.string().nullable(),
+      keywords: z.array(z.string()),
+      collaborators: z.array(
+        z.object({
+          username: z.string(),
+          access: z.string().optional(),
+          email: z.string().optional(),
+        }),
+      ),
+      weeklyDownloads: z.number(),
+    })
+    .optional(),
+  needsReauth: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Derived types (re-exported for callers)
 // ---------------------------------------------------------------------------
@@ -122,6 +150,7 @@ export type NpmPackageResponse = { ok: boolean; items?: NpmPackage[]; total?: nu
 export type ProfileTokenResponse = z.infer<typeof ProfileTokenResponseSchema>;
 export type ProfilePasswordResponse = z.infer<typeof ProfilePasswordResponseSchema>;
 export type ProfileDetailResponse = { ok: boolean; detail?: ProfileDetail; needsReauth?: boolean; error?: string };
+export type PackageDetailResponse = { ok: boolean; detail?: PackageDetail; needsReauth?: boolean; error?: string };
 
 // ---------------------------------------------------------------------------
 // Parsers
@@ -164,7 +193,11 @@ export function parseProfilePasswordResponse(value: unknown): ProfilePasswordRes
 }
 
 export function parseProfileDetailResponse(value: unknown): ProfileDetailResponse | null {
-  return safeOrNull(ProfileDetailResponseSchema, value);
+	return safeOrNull(ProfileDetailResponseSchema, value);
+}
+
+export function parsePackageDetailResponse(value: unknown): PackageDetailResponse | null {
+	return safeOrNull(PackageDetailResponseSchema, value);
 }
 
 /** Run safeParse; return the data on success, null on failure. */

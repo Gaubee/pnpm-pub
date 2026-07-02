@@ -68,6 +68,38 @@ export interface NpmPackage {
 	keywords?: string[];
 	score?: number;
 }
+/**
+ * A collaborator/maintainer of a package (mirrors the daemon's
+ * `PackageCollaborator` in src/shared/index.ts). `access` is the npm access
+ * level when available (e.g. 'read'/'write'); `email` only comes from the
+ * packument maintainers list, not the access endpoint.
+ */
+export interface PackageCollaborator {
+	username: string;
+	access?: string;
+	email?: string;
+}
+
+/**
+ * Projected package detail (PackageDetail page). Mirrors the daemon's
+ * `PackageDetail` projection (src/daemon/npm-package-detail.ts) — a merge of the
+ * registry packument (readme/license/repository/homepage/versions/time),
+ * collaborators, and weekly downloads. Never persisted.
+ */
+export interface PackageDetail {
+	name: string;
+	version: string;
+	description: string | null;
+	readme: string;
+	license: string | null;
+	repository: string | null;
+	homepage: string | null;
+	lastPublish: string | null;
+	modified: string | null;
+	keywords: string[];
+	collaborators: PackageCollaborator[];
+	weeklyDownloads: number;
+}
 
 export type PublishSource =
 	| { kind: 'directory'; path: string }
