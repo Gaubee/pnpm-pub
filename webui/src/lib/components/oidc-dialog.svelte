@@ -132,8 +132,16 @@
 
 	// 打开时初始化：已有配置默认选 current tab，否则推断 tab。
 	// 表单字段优先用已有配置预填；无配置时用 repositoryHint 推断。
+	// 注意：这里只在 open 翻转为 true 的那一刻运行一次（读 open 的当前值，
+	// 不让它把后续 open 内的写入重新触发本 effect）。
+	let initializedForOpen = false;
 	$effect(() => {
-		if (!open) return;
+		if (!open) {
+			initializedForOpen = false;
+			return;
+		}
+		if (initializedForOpen) return;
+		initializedForOpen = true;
 		error = null;
 		busy = false;
 		progress = null;
@@ -147,6 +155,17 @@
 			provider = inferredProvider;
 			prefillFromHint();
 		}
+	});
+
+	// 「加载中也允许配置」：对话框在 OIDC 状态仍 loading 时被打开时，config
+	// 为 null；当后台请求完成后，父组件会传入新 config。这里响应式地把这条
+	// 迟到的 config 同步进表单——只填充用户尚未输入的字段，已手填的不覆盖；
+	// 若当前停在 current tab 之外的 provider tab，则顺带切到 current tab。
+	$effect(() => {
+		if (!open) return;
+		const c = config;
+		if (!c) return;
+		mergeLateConfig(c);
 	});
 
 	function resetFields(): void {
@@ -198,6 +217,36 @@
 			ciFilePath = '.gitlab-ci.yml';
 		} else if (inferredProvider === 'github') {
 			workflowFile = '';
+		}
+	}
+
+	/**
+	 * 当对话框已打开、而 config 迟到（loading 期间打开）时，把迟到 config 同步
+	 * 进表单。规则：保留用户已手填的字段（非空不覆盖），仅填充空字段；并把活动
+	 * tab 切到「当前配置」，让用户能看到已存在的可信发布配置。
+	 */
+	function mergeLateConfig(c: TrustedPublisherConfig): void {
+		// 让用户看到「当前配置」tab —— 它仅在已有配置时出现，且是查看/删除入口。
+		if (activeTab !== 'current') activeTab = 'current';
+		if (c.type === 'github') {
+			const [o, ...rest] = c.claims.repository.split('/');
+			if (!repoOwner.trim()) repoOwner = o ?? '';
+			if (!repoName.trim()) repoName = rest.join('/');
+			if (!workflowFile.trim()) workflowFile = c.claims.workflow_ref.file;
+			if (!environment.trim() && c.claims.environment) environment = c.claims.environment;
+		} else if (c.type === 'gitlab') {
+			const [ns, ...rest] = c.claims.project_path.split('/');
+			if (!repoOwner.trim()) repoOwner = ns ?? '';
+			if (!repoName.trim()) repoName = rest.join('/');
+			if (!ciFilePath.trim() && c.claims.ci_config_ref_uri) ciFilePath = c.claims.ci_config_ref_uri;
+			if (!environment.trim() && c.claims.environment) environment = c.claims.environment;
+		} else {
+			if (!orgId.trim()) orgId = c.claims['oidc.circleci.com/org-id'];
+			if (!circleProjectId.trim()) circleProjectId = c.claims['oidc.circleci.com/project-id'];
+			if (!pipelineDefinitionId.trim()) pipelineDefinitionId = c.claims['oidc.circleci.com/pipeline-definition-id'];
+			const ctx = (c.claims['oidc.circleci.com/context-ids'] ?? []).join(', ');
+			if (!contextIds.trim() && ctx) contextIds = ctx;
+			if (!vcsOrigin.trim()) vcsOrigin = c.claims['oidc.circleci.com/vcs-origin'];
 		}
 	}
 

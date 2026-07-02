@@ -124,11 +124,11 @@
 	});
 
 	let oidcDialogOpen = $state(false);
-	let oidcDialogConfig = $state<TrustedPublisherConfig | null>(null);
+	// Reactive: reads from the OIDC store so a config arriving after the dialog
+	// opens (opened while loading) flows in and syncs the form.
+	let oidcDialogConfig = $derived(oidc.configs(name)[0] ?? null);
 
 	function openOidcDialog(_e?: MouseEvent): void {
-		const n = name;
-		oidcDialogConfig = oidc.configs(n)[0] ?? null;
 		oidcDialogOpen = true;
 	}
 	function onOidcChanged(): void {
@@ -241,11 +241,12 @@
 						status={oidcStatus()}
 						text={oidcText()}
 						buttonLabel={$_('packageDetail.configure')}
-						disabled={!repoHint}
 						onconfigure={openOidcDialog}
 					/>
 					{#if !repoHint}
-						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.repositoryRequired')}</p>
+						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.repositoryHint')}</p>
+					{:else}
+						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.oidcHint')}</p>
 					{/if}
 				</section>
 			</div>

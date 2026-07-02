@@ -242,6 +242,7 @@ const en = {
 		loading: 'Loading…',
 		error: 'Failed to load packages.',
 		configureOidc: 'OIDC',
+		openDetail: 'Open {name} details',
 	},
 	packageDetail: {
 		heading: 'Package',
@@ -259,7 +260,8 @@ const en = {
 		collaborators: 'Collaborators',
 		trustedPublishing: 'Trusted Publishing',
 		configure: 'Configure',
-		repositoryRequired: 'Package repository metadata is required for trusted publishing.',
+		repositoryHint: 'No repository metadata — enter the repository inside the dialog.',
+		oidcHint: 'Click Configure to add or edit a trusted publisher.',
 	},
 	publishConfirm: {
 		title: 'Confirm Publish · pnpm-pub',
@@ -589,6 +591,7 @@ const zh: Messages = mapMessages(en, {
 		loading: '加载中…',
 		error: '加载 package 失败。',
 		configureOidc: 'OIDC',
+		openDetail: '打开 {name} 详情',
 	},
 	packageDetail: {
 		heading: '包',
@@ -606,7 +609,8 @@ const zh: Messages = mapMessages(en, {
 		collaborators: '协作者',
 		trustedPublishing: '可信发布',
 		configure: '配置',
-		repositoryRequired: '配置可信发布需要包的仓库元数据。',
+		repositoryHint: '缺少仓库元数据 —— 可在对话框内手动填写仓库。',
+		oidcHint: '点击「配置」新增或编辑可信发布。',
 	},
 	publishConfirm: {
 		title: '确认发布 · pnpm-pub',

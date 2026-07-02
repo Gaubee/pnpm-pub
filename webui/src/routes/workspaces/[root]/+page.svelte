@@ -128,12 +128,13 @@
 	// --- OIDC dialog (single-package mode) ---
 	let oidcDialogOpen = $state(false);
 	let oidcDialogPkg = $state('');
-	let oidcDialogConfig = $state<TrustedPublisherConfig | null>(null);
 	let oidcDialogRepoHint = $state('');
+	// Reactive: reads from oidcState so a config that arrives AFTER the dialog
+	// opens (opened while still loading) flows into the dialog and syncs its form.
+	let oidcDialogConfig = $derived(oidcConfigs(oidcDialogPkg)[0] ?? null);
 
 	function openOidcDialog(pkg: PublishTarget): void {
 		oidcDialogPkg = pkg.name;
-		oidcDialogConfig = oidcConfigs(pkg.name)[0] ?? null;
 		oidcDialogRepoHint = pkg.repository ?? '';
 		oidcDialogOpen = true;
 	}
@@ -316,7 +317,6 @@
 								<Button
 									variant={isOidcConfigured(pkg.name) ? 'brand' : 'outline'}
 									size="sm"
-									disabled={!pkg.repository}
 									onpointerenter={() => maybeFetchOidc(pkg.name)}
 									onclick={() => openOidcDialog(pkg)}
 								>

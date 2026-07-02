@@ -166,15 +166,16 @@
 
 	let oidcDialogOpen = $state(false);
 	let oidcDialogPkg = $state('');
-	let oidcDialogConfig = $state<TrustedPublisherConfig | null>(null);
 	let oidcDialogRepoHint = $state('');
+	// Reactive: reads from the OIDC store so a config that arrives AFTER the
+	// dialog opens (opened while still loading) flows in and syncs the form.
+	let oidcDialogConfig = $derived(oidc.configs(oidcDialogPkg)[0] ?? null);
 
 	function openOidcDialog(e: MouseEvent | KeyboardEvent, pkg: NpmPackage): void {
 		// Stop the click/keyup from bubbling into the card's outer button (which
 		// navigates to the detail route) so opening the OIDC dialog stays put.
 		e.stopPropagation();
 		oidcDialogPkg = pkg.name;
-		oidcDialogConfig = oidc.configs(pkg.name)[0] ?? null;
 		oidcDialogRepoHint = repoHint(pkg);
 		oidcDialogOpen = true;
 	}
@@ -279,21 +280,11 @@
 					out:fade={{ duration: 150 }}
 					class="group rounded-lg border border-border bg-card p-3.5 transition-colors hover:bg-accent/30"
 				>
-					<button
-						type="button"
-						class="flex w-full items-start justify-between gap-3 text-left"
-						onclick={() => gotoDetail(pkg)}
-						onpointerenter={() => oidc.fetch(pkg.name)}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' || e.key === ' ') {
-								e.preventDefault();
-								gotoDetail(pkg);
-							}
-						}}
-					>
+					<div class="flex items-start justify-between gap-3">
+						<!-- Card body: plain text (selectable) — no wrapping button. -->
 						<div class="min-w-0 flex-1">
 							<div class="flex items-center gap-2">
-								<span class="truncate text-sm font-semibold transition-colors group-hover:text-brand group-hover:underline">
+								<span class="truncate text-sm font-semibold transition-colors group-hover:text-brand">
 									{pkg.name}
 								</span>
 								<Badge variant="outline" class="font-mono text-[10px]">{pkg.version}</Badge>
@@ -310,17 +301,31 @@
 								{/if}
 							</div>
 						</div>
-					</button>
 
-				<!-- OIDC status row + Configure action. The card's outer button
-				     navigates to the detail route; the configure click stops
-				     propagation so opening the dialog stays on this page. -->
+						<!-- inline-end detail navigation: an icon button (keeps the card
+						     body selectable while still giving a clear, clickable affordance
+						     into the PackageDetail route). -->
+						<button
+							type="button"
+							class="shrink-0 self-stretch rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+							aria-label={$_('packages.openDetail', { values: { name: pkg.name } })}
+							title={$_('packages.openDetail', { values: { name: pkg.name } })}
+							onpointerenter={() => oidc.fetch(pkg.name)}
+							onclick={() => gotoDetail(pkg)}
+						>
+							<IconChevronRight class="h-4 w-4" />
+						</button>
+					</div>
+
+				<!-- OIDC status row + Configure action. The configure click stops
+				     propagation so opening the dialog never navigates to the detail
+				     route. Configuration is always allowed — the repository, when
+				     missing, is just entered manually inside the dialog. -->
 					<div class="mt-2 border-t border-border/60 pt-2">
 						<OidcStatus
 							status={oidcStatusFor(pkg.name)}
 							text={oidcText(pkg.name)}
 							buttonLabel={$_('packages.configureOidc')}
-							disabled={!pkg.repository}
 							onconfigure={(e) => openOidcDialog(e, pkg)}
 						/>
 					</div>
