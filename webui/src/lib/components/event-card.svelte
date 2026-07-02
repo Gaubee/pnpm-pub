@@ -24,7 +24,6 @@
 	import IconOidc from '@lucide/svelte/icons/shield-check';
 	import IconPlaceholder from '@lucide/svelte/icons/package';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
-	import IconArrowRight from '@lucide/svelte/icons/arrow-right';
 	import IconClock from '@lucide/svelte/icons/clock';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconX from '@lucide/svelte/icons/x';
@@ -180,12 +179,17 @@
 	const sourcePath = $derived(publishData?.source.path ?? oidcCtx?.path ?? '');
 	// The npm registry page for events that carry only a package name
 	// (unpublish, create-placeholder). Publish could also use this but already
-	// has a richer repo link.
+	// has a richer repo link. Unpublish links to the specific version page.
 	const packageName = $derived(unpublishCtx?.name ?? (event.payload?.kind === 'create-placeholder' ? event.payload.data.name : ''));
-	const npmUrl = $derived(packageName ? `https://www.npmjs.com/package/${packageName}` : '');
+	const npmUrl = $derived.by(() => {
+		if (!packageName) return '';
+		if (unpublishCtx?.version) return `https://www.npmjs.com/package/${packageName}/v/${unpublishCtx.version}`;
+		return `https://www.npmjs.com/package/${packageName}`;
+	});
 	// Whether the right-corner group has any action to show at all.
 	const hasCornerActions = $derived(!!repoInfo || !!sourcePath || !!npmUrl || overrideActive);
-	const isRetryable = $derived(isPublish && (event.status === 'failed' || event.status === 'expired' || event.status === 'rejected'));
+	const isRetryableStatus = $derived(event.status === 'failed' || event.status === 'expired' || event.status === 'rejected');
+	const isRetryable = $derived((isPublish || event.payload?.kind === 'unpublish') && isRetryableStatus);
 	const isUnpublishable = $derived(isPublish && event.status === 'success');
 	let confirmUnpublish = $state(false);
 	// Confirm/Reject are fire-and-forget WS sends — the daemon drives the actual
@@ -213,10 +217,13 @@
 	}
 
 	function retry(): void {
-		if (!publishData) return;
-		// Re-create the publish event with the SAME payload + SAME groupId so it
-		// folds into the same group in the Events Hub.
-		actions.createEvent('publish', publishData, event.groupId);
+		// Re-create the event with the SAME payload + SAME groupId so it folds
+		// into the same group in the Events Hub.
+		if (publishData) {
+			actions.createEvent('publish', publishData, event.groupId);
+		} else if (unpublishCtx) {
+			actions.createEvent('unpublish', unpublishCtx, event.groupId);
+		}
 	}
 
 	/** Create a pending unpublish event for this package@version. The user then
@@ -316,10 +323,28 @@
 					<span class="truncate text-sm font-semibold">
 						{#if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
 					</span>
-					<Badge variant={statusVariant} class="h-5 capitalize">
-						{#if isPending}<IconClock class="mr-1 h-3 w-3" />{/if}
-						{statusLabel}
-					</Badge>
+					{#if publishTarget}
+						<Badge variant="outline" class="h-5 font-mono text-[10px]">@{publishTarget.target.version}</Badge>
+					{:else if unpublishCtx}
+						<Badge variant="outline" class="h-5 font-mono text-[10px]">@{unpublishCtx.version}</Badge>
+					{/if}
+					{#if event.status === 'rejected' && event.result}
+						<Tooltip>
+							<TooltipTrigger>
+								{#snippet child({ props })}
+									<Badge {...props} variant={statusVariant} class="h-5 capitalize cursor-help">
+										{statusLabel}
+									</Badge>
+								{/snippet}
+							</TooltipTrigger>
+							<TooltipContent class="max-w-sm text-[11px]">{event.result}</TooltipContent>
+						</Tooltip>
+					{:else}
+						<Badge variant={statusVariant} class="h-5 capitalize">
+							{#if isPending}<IconClock class="mr-1 h-3 w-3" />{/if}
+							{statusLabel}
+						</Badge>
+					{/if}
 				</div>
 				<div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
 					<IconClock class="h-3 w-3" /> {timeLabel}
@@ -383,7 +408,7 @@
 							</Button>
 						{/snippet}
 					</TooltipTrigger>
-				<TooltipContent class="font-mono text-[10px]">{packageName}</TooltipContent>
+				<TooltipContent class="max-w-sm break-all font-mono text-[10px]">{npmUrl}</TooltipContent>
 			</Tooltip>
 		{/if}
 		</ButtonGroup>
@@ -398,17 +423,6 @@
 		{/if}
 
 			{#if publishTarget}
-				<div class="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-					<span class="font-semibold">{publishTarget.target.name}</span>
-					{#if publishTarget.target.previousVersion}
-						<span class="text-muted-foreground">{publishTarget.target.previousVersion}</span>
-						<IconArrowRight class="h-3 w-3 text-muted-foreground" />
-					{/if}
-					<span class="text-brand">{publishTarget.target.version}</span>
-				</div>
-				{#if publishTarget.target.repository}
-					<p class="text-[11px] text-muted-foreground">{$_('eventCard.repo')} <span class="font-mono">{publishTarget.target.repository}</span></p>
-				{/if}
 				{#if publishTarget.target.description}
 					<p class="text-xs text-muted-foreground">{publishTarget.target.description}</p>
 				{/if}
@@ -418,14 +432,12 @@
 				{#if oidcCtx.repo}· repo <span class="font-mono">{oidcCtx.repo}</span>{/if}
 			</div>
 		{:else if unpublishCtx}
-			<div class="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 font-mono text-xs">
-				<span class="font-semibold">{unpublishCtx.name}</span>
-				<IconTrash class="h-3 w-3 text-destructive" />
-				<span class="text-destructive">{unpublishCtx.version}</span>
+			<div class="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+				{$_('eventCard.unpublishAction')}
 			</div>
 		{/if}
 
-		{#if !isPending && event.result}
+		{#if !isPending && event.result && event.status !== 'rejected'}
 			{#if variant === 'compact'}
 				<!-- Compact: single-line truncated; click toggles a horizontally-scrollable block (no wrap). -->
 				<button
