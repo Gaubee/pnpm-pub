@@ -14,6 +14,7 @@
 	import { parseOkResponse } from '$lib/rest-response.js';
 	import { errorToMessage } from '$lib/error-projection.js';
 	import TarballTree from '$lib/components/tarball-tree.svelte';
+	import AutoCloseBar from '$lib/components/auto-close-bar.svelte';
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconOidc from '@lucide/svelte/icons/shield-check';
 	import IconPlaceholder from '@lucide/svelte/icons/package';
@@ -35,7 +36,19 @@
 		/** Log display mode: 'full' (wrapped, scrollable both axes) or 'compact'
 		 *  (single-line truncated; click toggles a horizontally-scrollable block). */
 		variant = 'full',
-	}: { event: PubEvent; variant?: 'full' | 'compact' } = $props();
+		/**
+		 * When true (only meaningful with variant='full'), a freshly-resolved card
+		 * shows an AutoCloseBar countdown at the inline-end of the card footer.
+		 * `onAutoClose` is invoked when the countdown elapses or the user closes.
+		 */
+		autoClose = false,
+		onAutoClose,
+	}: {
+		event: PubEvent;
+		variant?: 'full' | 'compact';
+		autoClose?: boolean;
+		onAutoClose?: () => void;
+	} = $props();
 
 	const STATUS_VARIANTS = {
 		pending: 'brand',
@@ -325,7 +338,11 @@
 						</Button>
 					{/if}
 				</div>
+				{/if}
 			{/if}
+
+		{#if !isPending && autoClose && variant === 'full'}
+			<AutoCloseBar seconds={5} onclose={onAutoClose} />
 		{/if}
 	</CardContent>
 </Card>

@@ -9,8 +9,9 @@
 	 * Unlike the old layout, this page NEVER locks navigation — pending tasks
 	 * are surfaced via the sidebar badge, and the user is free to navigate away.
 	 */
-	import { onMount } from 'svelte';
-	import { pendingEvents, daemon } from '$lib/store.js';
+	import { onMount, untrack } from 'svelte';
+	import { pendingEvents } from '$lib/store.js';
+	import { daemon } from '$lib/store.js';
 	import { apiFetch } from '$lib/api-fetch.js';
 	import type { PubEvent } from '$lib/types.js';
 	import EventCard from '$lib/components/event-card.svelte';
@@ -24,7 +25,6 @@
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
 	import IconShield from '@lucide/svelte/icons/shield-check';
-	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
 	import IconHistory from '@lucide/svelte/icons/history';
 	import IconArrowRight from '@lucide/svelte/icons/arrow-right';
 	import { _ } from 'svelte-i18n';
@@ -34,6 +34,56 @@
 	// OIDC 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
 	let oidcName = $state('');
 	let oidcDialogOpen = $state(false);
+
+	// Resolved events briefly linger at the top so the user can see the result
+	// (success/failed) instead of having it vanish to history instantly.
+	//
+	// `seenPendingIds` / `handled` are deliberately NON-reactive: they only track
+	// the pending→resolved transition and must not drive (nor re-trigger) the
+	// effect. Only `held` is `$state` because it drives the rendered card list.
+	const seenPendingIds = new Set<string>();
+	const handled = new Set<string>();
+	let held = $state<Map<string, PubEvent>>(new Map());
+
+	function dismiss(id: string): void {
+		handled.add(id);
+		if (!held.has(id)) return;
+		const next = new Map(held);
+		next.delete(id);
+		held = next;
+	}
+
+	$effect(() => {
+		// Remember every id we've ever observed as pending.
+		for (const e of $pendingEvents) seenPendingIds.add(e.id);
+
+		// Snapshot any freshly-resolved id we previously saw as pending (and
+		// haven't handled yet) into `held` so it lingers at the top.
+		const toAdd: PubEvent[] = [];
+		for (const e of $daemon.events) {
+			if (e.status === 'pending') continue;
+			if (handled.has(e.id)) continue;
+			if (seenPendingIds.has(e.id)) {
+				handled.add(e.id);
+				toAdd.push(e);
+			}
+		}
+		// Update `held` without establishing a dependency on it inside this
+		// effect (read+write of the same state would loop forever).
+		if (toAdd.length > 0) {
+			held = untrack(() => {
+				const next = new Map(held);
+				for (const e of toAdd) next.set(e.id, e);
+				return next;
+			});
+		}
+	});
+
+	// Pending events + held (recently-resolved) events, newest-first.
+	const surfaceEvents = $derived.by(() => {
+		const merged = [...$pendingEvents, ...held.values()];
+		return merged.sort((a, b) => b.createdAt - a.createdAt);
+	});
 
 	// Preview-history: the latest few events, fetched from the daemon (REST).
 	const PREVIEW_COUNT = 5;
@@ -70,13 +120,6 @@
 		actionsOpen = false;
 		oidcDialogOpen = true;
 	}
-
-	function forceRefreshToken(): void {
-		if ($daemon.defaultProfile) {
-			actions.createEvent('refresh-token', { username: $daemon.defaultProfile });
-		}
-		actionsOpen = false;
-	}
 </script>
 
 <svelte:head><title>{$_('events.title')}</title></svelte:head>
@@ -106,27 +149,21 @@
 						<Input id="oidc-name" bind:value={oidcName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && openOidcDialog()} />
 						<Button variant="brand" size="sm" class="w-full" disabled={!oidcName.trim()} onclick={openOidcDialog}>{$_('events.configureTrustedPublish')}</Button>
 					</div>
-					<div class="space-y-1.5 border-t border-border pt-3">
-						<Button
-							variant="ghost"
-							size="sm"
-							class="w-full justify-start px-0 text-muted-foreground hover:bg-transparent"
-							onclick={forceRefreshToken}
-						>
-							<IconRefresh class="h-3.5 w-3.5" /> {$_('events.forceRefreshToken')}
-						</Button>
-					</div>
 				</div>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
 	</header>
 
-	<!-- Pending (active) events — full, expanded -->
-	{#if $pendingEvents.length > 0}
+	<!-- Pending (active) + recently-resolved (lingering) events — full, expanded -->
+	{#if surfaceEvents.length > 0}
 		<section class="space-y-2.5">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
-			{#each $pendingEvents as event (event.id)}
-				<EventCard {event} />
+			{#each surfaceEvents as event (event.id)}
+				<EventCard
+					{event}
+					autoClose={held.has(event.id)}
+					onAutoClose={() => dismiss(event.id)}
+				/>
 			{/each}
 		</section>
 	{/if}
