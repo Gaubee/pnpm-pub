@@ -1,25 +1,26 @@
 <script lang="ts">
 	/**
-	 * Auto-close bar — a small self-contained countdown shown at the inline-end
-	 * of a freshly-resolved EventCard on the Active Events page.
+	 * Auto-close bar — a self-contained countdown rendered as ButtonGroup
+	 * children, intended to nest inside a parent ButtonGroup on a resolved
+	 * EventCard's footer (separated by a ButtonGroupSeparator).
 	 *
 	 * Lifecycle:
-	 *   counting  → renders `[Auto-close (Ns) | Cancel]` as a ButtonGroup.
+	 *   counting  → renders `[Auto-close (Ns) | Cancel]`.
 	 *               The left segment closes immediately on click; the right
 	 *               segment stops the timer and flips to `cancelled`. When the
 	 *               timer reaches 0 it auto-closes.
 	 *   cancelled → renders a single `[Close]` button (manual close).
 	 *
 	 * The parent owns the "remove me" side-effect via `onclose`; this component
-	 * only drives the countdown UI + transitions.
+	 * only drives the countdown UI + transitions. It renders ButtonGroup
+	 * children directly (no wrapper) so it composes inside a parent group.
 	 */
 	import { untrack } from 'svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
 	import { _ } from 'svelte-i18n';
 
 	let {
-		seconds = 5,
+		seconds = 10,
 		onclose,
 	}: { seconds?: number; onclose?: () => void } = $props();
 
@@ -50,19 +51,15 @@
 	}
 </script>
 
-<div class="ms-auto flex pt-1">
-	{#if phase === 'counting'}
-		<ButtonGroup>
-			<Button variant="outline" size="sm" onclick={closeNow}>
-				{$_('eventCard.autoClose')} ({remaining}s)
-			</Button>
-			<Button variant="ghost" size="sm" onclick={cancelCountdown}>
-				{$_('common.cancel')}
-			</Button>
-		</ButtonGroup>
-	{:else}
-		<Button variant="outline" size="sm" onclick={closeNow}>
-			{$_('common.close')}
-		</Button>
-	{/if}
-</div>
+{#if phase === 'counting'}
+	<Button variant="outline" size="sm" onclick={closeNow}>
+		{$_('eventCard.autoClose')} ({remaining}s)
+	</Button>
+	<Button variant="ghost" size="sm" onclick={cancelCountdown}>
+		{$_('common.cancel')}
+	</Button>
+{:else}
+	<Button variant="outline" size="sm" onclick={closeNow}>
+		{$_('common.close')}
+	</Button>
+{/if}

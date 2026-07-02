@@ -68,6 +68,7 @@ export interface NpmPackage {
 	keywords?: string[];
 	score?: number;
 }
+
 /**
  * A collaborator/maintainer of a package (mirrors the daemon's
  * `PackageCollaborator` in src/shared/index.ts). `access` is the npm access
@@ -109,6 +110,9 @@ export interface PublishContext {
 	source: PublishSource;
 	args: string[];
 	target: PublishTarget;
+	/** Current git branch of the publish source (daemon-filled hint for the
+	 *  publish-branch option). Absent/empty when not a git repo. */
+	branch?: string;
 }
 
 export interface OidcContext {
@@ -161,11 +165,17 @@ export interface RefreshTokenContext {
 	username: string;
 }
 
+export interface UnpublishContext {
+	name: string;
+	version: string;
+}
+
 export type EventKind =
 	| 'publish'
 	| 'setup-oidc'
 	| 'create-placeholder'
-	| 'refresh-token';
+	| 'refresh-token'
+	| 'unpublish';
 
 export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'action-required' | 'rejected';
 
@@ -173,7 +183,8 @@ export type EventPayload =
 	| { kind: 'publish'; data: PublishContext }
 	| { kind: 'setup-oidc'; data: OidcContext }
 	| { kind: 'create-placeholder'; data: CreatePlaceholderContext }
-	| { kind: 'refresh-token'; data: RefreshTokenContext };
+	| { kind: 'refresh-token'; data: RefreshTokenContext }
+	| { kind: 'unpublish'; data: UnpublishContext };
 
 /** Payload data shape for one concrete Event kind. */
 export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
@@ -230,4 +241,5 @@ export type WsClientMessage =
 	| { type: 'confirm-event'; id: string }
 	| { type: 'reject-event'; id: string }
 	| { type: 'scan-workspace'; root: string }
-	| { type: 'create-event'; kind: EventKind; payload: unknown; groupId?: string };
+	| { type: 'create-event'; kind: EventKind; payload: unknown; groupId?: string }
+	| { type: 'update-event'; id: string; args: string[] };

@@ -18,6 +18,7 @@ import type {
 	EventKind,
 	EventPayloadData,
 } from './types';
+import type { RepoInfo } from './components/repo-info-types.js';
 import { filterVisibleEvents, sortEvents } from './event-projection.js';
 import { parseOkResponse } from './rest-response.js';
 import { apiFetch } from './api-fetch.js';
@@ -282,6 +283,12 @@ export const actions = {
 	reject(id: string): void {
 		send({ type: 'reject-event', id });
 	},
+	/** Edit a pending publish event's CLI args before confirmation. The daemon
+	 *  mutates the event in place and re-broadcasts it; the scheduler re-reads
+	 *  args live at confirm time, so the edit takes effect on the next confirm. */
+	updateEvent(id: string, args: string[]): void {
+		send({ type: 'update-event', id, args });
+	},
 	scanWorkspace(root: string): void {
 		send({ type: 'scan-workspace', root });
 	},
@@ -309,7 +316,43 @@ export const actions = {
 			send({ type: 'create-event', kind, payload, ...(groupId ? { groupId } : {}) });
 		},
 	// import/export are handled via REST (/api/export, /api/import), not WS.
+	/** Resolve a repository string into a display descriptor (host/shortName/
+	 *  browseUrl/faviconUrl/brand). Backed by the daemon's TTL cache; results are
+	 *  also memoized in-process here so repeated renders never re-fetch. */
+	async repoInfo(repo: string): Promise<RepoInfo | null> {
+		const cached = repoInfoCache.get(repo);
+		if (cached) return cached;
+		const promise = (async () => {
+			try {
+				const res = await apiFetch(`/api/repo-info?repo=${encodeURIComponent(repo)}`);
+				const json = (await res.json()) as { ok: boolean; info: RepoInfo | null };
+				return json?.ok ? (json.info ?? null) : null;
+			} catch {
+				return null;
+			}
+		})();
+		// Cache the promise itself so concurrent callers share one request.
+		repoInfoCache.set(repo, promise);
+		return promise;
+	},
+	/** Open a local directory in the OS file manager (Finder/Explorer/…). */
+	async openPath(path: string): Promise<boolean> {
+		try {
+			const res = await apiFetch('/api/open-path', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ path }),
+			});
+			const json = parseOkResponse(await res.json());
+			return json?.ok ?? false;
+		} catch {
+			return false;
+		}
+	},
 };
+
+/** In-process cache of repo-info promises (keyed by raw repository string). */
+const repoInfoCache = new Map<string, Promise<RepoInfo | null>>();
 
 /** Convenience: are we waiting on any pending event? (Tray keepOnTop hint.) */
 export function hasPending(): boolean {

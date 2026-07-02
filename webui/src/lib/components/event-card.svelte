@@ -8,11 +8,16 @@
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { Badge, type BadgeVariant } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { ButtonGroup, ButtonGroupSeparator } from '$lib/components/ui/button-group/index.js';
 	import { Card, CardContent, CardHeader } from '$lib/components/ui/card/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import { Label } from '$lib/components/ui/label/index.js';
+	import { Separator } from '$lib/components/ui/separator/index.js';
+	import { Switch } from '$lib/components/ui/switch/index.js';
+	import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip/index.js';
+	import RepoIcon from '$lib/components/repo-icon.svelte';
+	import type { RepoInfo } from '$lib/components/repo-info-types.js';
 	import { actions, daemon } from '$lib/store.js';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import { parseOkResponse } from '$lib/rest-response.js';
-	import { errorToMessage } from '$lib/error-projection.js';
 	import TarballTree from '$lib/components/tarball-tree.svelte';
 	import AutoCloseBar from '$lib/components/auto-close-bar.svelte';
 	import IconPublish from '@lucide/svelte/icons/upload';
@@ -29,6 +34,9 @@
 	import IconFolder from '@lucide/svelte/icons/folder';
 	import IconFile from '@lucide/svelte/icons/file';
 	import IconLoader from '@lucide/svelte/icons/loader-circle';
+	import IconGitBranch from '@lucide/svelte/icons/git-branch';
+	import IconAlertTriangle from '@lucide/svelte/icons/triangle-alert';
+	import IconFolderOpen from '@lucide/svelte/icons/folder-open';
 	import { _ } from 'svelte-i18n';
 
 	let {
@@ -65,6 +73,7 @@
 			'setup-oidc': IconOidc,
 			'create-placeholder': IconPlaceholder,
 			'refresh-token': IconRefresh,
+			unpublish: IconTrash,
 			import: IconRefresh,
 			export: IconRefresh,
 		})[kind] ?? IconPublish;
@@ -110,6 +119,7 @@
 				: null,
 	);
 	const oidcCtx = $derived(event.payload?.kind === 'setup-oidc' ? event.payload.data : null);
+	const unpublishCtx = $derived(event.payload?.kind === 'unpublish' ? event.payload.data : null);
 
 	const timeLabel = $derived(new Date(event.createdAt).toLocaleTimeString());
 
@@ -124,11 +134,46 @@
 		event.payload?.kind === 'publish' ? event.payload.data : null,
 	);
 	const tarballSummary = $derived(event.tarballSummary ?? null);
-	const isRetryable = $derived(isPublish && (event.status === 'failed' || event.status === 'expired'));
+
+	// Repo-info for the publish target (host/shortName/browseUrl/faviconUrl/brand).
+	// Fetched once via the daemon's TTL-cached resolver; null until resolved.
+	let repoInfo = $state<RepoInfo | null>(null);
+	$effect(() => {
+		const repo = publishData?.target.repository;
+		if (!repo) { repoInfo = null; return; }
+		// Fire-and-forget; the store memoizes so re-renders are cheap.
+		void actions.repoInfo(repo).then((info) => { repoInfo = info; });
+	});
+	// The package directory path (for "open folder"). Tarball source → its dir.
+	const sourcePath = $derived(
+		publishData ? (publishData.source.kind === 'directory' ? publishData.source.path : publishData.source.path) : '',
+	);
+	const isRetryable = $derived(isPublish && (event.status === 'failed' || event.status === 'expired' || event.status === 'rejected'));
 	const isUnpublishable = $derived(isPublish && event.status === 'success');
-	let actionBusy = $state(false);
-	let actionError = $state<string | null>(null);
 	let confirmUnpublish = $state(false);
+	// Confirm/Reject are fire-and-forget WS sends — the daemon drives the actual
+	// status transition. These flags give immediate "working…" feedback and are
+	// cleared the moment the event leaves `pending` (i.e. the daemon replied).
+	let confirming = $state(false);
+	let rejecting = $state(false);
+	$effect(() => {
+		// Re-run whenever status changes; clear once it's no longer pending.
+		if (event.status !== 'pending') {
+			confirming = false;
+			rejecting = false;
+		}
+	});
+
+	function doConfirm(): void {
+		if (!canConfirm || confirming) return;
+		confirming = true;
+		actions.confirm(event.id);
+	}
+	function doReject(): void {
+		if (rejecting) return;
+		rejecting = true;
+		actions.reject(event.id);
+	}
 
 	function retry(): void {
 		if (!publishData) return;
@@ -137,27 +182,16 @@
 		actions.createEvent('publish', publishData, event.groupId);
 	}
 
-	async function doUnpublish(): Promise<void> {
-		if (!publishData || actionBusy) return;
-		actionBusy = true;
-		actionError = null;
-		const name = publishData.target.name;
-		const version = publishData.target.version;
-		try {
-			const res = await apiFetch('/api/unpublish', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ package: name, version }),
-			});
-			const json = parseOkResponse(await res.json());
-			if (!json) { actionError = $_('eventCard.unpublishFailed'); return; }
-			if (!json.ok) { actionError = json.error ?? $_('eventCard.unpublishFailed'); return; }
-			confirmUnpublish = false;
-		} catch (err) {
-			actionError = errorToMessage(err);
-		} finally {
-			actionBusy = false;
-		}
+	/** Create a pending unpublish event for this package@version. The user then
+	 *  confirms/rejects on the new EventCard, exactly like publish — we no longer
+	 *  fire-and-forget a destructive REST call from an inline confirmation card. */
+	function doUnpublish(): void {
+		if (!publishData) return;
+		actions.createEvent('unpublish', {
+			name: publishData.target.name,
+			version: publishData.target.version,
+		}, event.groupId);
+		confirmUnpublish = false;
 	}
 
 	/** Human-readable byte size. */
@@ -165,6 +199,72 @@
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+	}
+
+	// --- Advanced publish options (only for pending publish events) ---
+	// The publish `args` are the single source of truth (the daemon re-reads them
+	// live at confirm time). We parse them into structured accessors for display,
+	// and every control mutation rebuilds the args and ships an `update-event`.
+	let advancedOpen = $state(false);
+
+	const currentBranch = $derived(publishData?.branch ?? '');
+
+	/** Find `--flag <value>` (or `--flag=value`) in args; returns undefined if absent. */
+	function argValue(args: string[], flag: string): string | undefined {
+		for (let i = 0; i < args.length; i++) {
+			const a = args[i]!;
+			if (a === flag) { const next = args[i + 1]; if (next && !next.startsWith('-')) return next; }
+			if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1);
+		}
+		return undefined;
+	}
+	const accessArg = $derived.by(() => {
+		const v = publishData ? argValue(publishData.args, '--access') : undefined;
+		return v === 'restricted' ? 'restricted' : 'public';
+	});
+	const tagArg = $derived(publishData ? (argValue(publishData.args, '--tag') ?? '') : '');
+	/** A boolean flag is "on" when present as `--flag` and "off" only when an
+	 *  explicit `--no-flag` is present. Absent ⇒ default (per-option). */
+	function hasFlag(args: string[], flag: string): boolean { return args.includes(flag); }
+
+	const isScopedPkg = $derived(!!publishData && publishData.target.name.startsWith('@'));
+	const ignoreScriptsOn = $derived(publishData ? hasFlag(publishData.args, '--ignore-scripts') : false);
+	const noGitChecksOn = $derived(publishData ? hasFlag(publishData.args, '--no-git-checks') : false);
+	const publishBranchOn = $derived(publishData ? argValue(publishData.args, '--publish-branch') !== undefined : false);
+	const publishBranchValue = $derived(publishData ? (argValue(publishData.args, '--publish-branch') ?? '') : '');
+
+	// publish-branch mismatch gate: blocks the Confirm button client-side.
+	const branchMismatch = $derived(publishBranchOn && !!currentBranch && publishBranchValue !== currentBranch);
+	const branchNoCurrent = $derived(publishBranchOn && !currentBranch);
+	const canConfirm = $derived(isPending && !branchMismatch);
+
+	/** Rebuild args from the current structured state + a partial override, then
+	 *  ship an update-event. Carries forward the --access arg always. */
+	function rebuildArgs(overrides?: {
+		access?: 'public' | 'restricted';
+		tag?: string;
+		ignoreScripts?: boolean;
+		noGitChecks?: boolean;
+		publishBranchOn?: boolean;
+		publishBranch?: string;
+	}): void {
+		if (!publishData) return;
+		const access = overrides?.access ?? accessArg;
+		const tag = overrides?.tag !== undefined ? overrides.tag : tagArg;
+		const ignoreScripts = overrides?.ignoreScripts ?? ignoreScriptsOn;
+		const branchOn = overrides?.publishBranchOn ?? publishBranchOn;
+		const branchVal = overrides?.publishBranch !== undefined ? overrides.publishBranch : publishBranchValue;
+		const noGitChecks = overrides?.noGitChecks ?? (branchOn ? false : noGitChecksOn);
+
+		const args: string[] = ['--access', access];
+		if (tag && tag !== 'latest') args.push('--tag', tag);
+		if (ignoreScripts) args.push('--ignore-scripts');
+		// Git checks default ON at the daemon; we emit --no-git-checks to opt out.
+		// Enabling publish-branch turns git checks back ON (drops --no-git-checks)
+		// and narrows the allowed branch via --publish-branch.
+		if (!branchOn && noGitChecks) args.push('--no-git-checks');
+		if (branchOn && branchVal) args.push('--publish-branch', branchVal);
+		actions.updateEvent(event.id, args);
 	}
 </script>
 
@@ -177,7 +277,7 @@
 			<div class="min-w-0">
 				<div class="flex items-center gap-2">
 					<span class="truncate text-sm font-semibold">
-						{#if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else}{event.kind}{/if}
+						{#if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
 					</span>
 					<Badge variant={statusVariant} class="h-5 capitalize">
 						{#if isPending}<IconClock class="mr-1 h-3 w-3" />{/if}
@@ -193,16 +293,50 @@
 			</div>
 		</div>
 
-		<!-- Effective identity pill (Chapter 6.2.2 context override). -->
-		<div class="flex items-center gap-1.5 rounded-full border px-2 py-1 {overrideActive ? 'border-warning bg-warning/10' : 'border-border'}">
-			<Avatar class="h-5 w-5">
-				{#if effectiveProfileRecord?.avatarUrl}
-					<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
-				{/if}
-				<AvatarFallback class="text-[9px]">{initials(effectiveProfile)}</AvatarFallback>
-			</Avatar>
-			<span class="max-w-[8rem] truncate text-[11px] font-medium">{effectiveProfile}</span>
-		</div>
+		<!-- Right-side actions / identity. Publish events with a resolved repo
+		     show a ButtonGroup (open repo + open folder); everything else falls
+		     back to the effective-profile identity pill. -->
+		{#if isPublish && repoInfo}
+			<ButtonGroup>
+				<a
+					href={repoInfo.browseUrl}
+					target="_blank"
+					rel="noreferrer"
+					class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-l-0 border-input bg-transparent px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+					title={repoInfo.host}
+				>
+					<RepoIcon brand={repoInfo.brand} faviconUrl={repoInfo.faviconUrl} class="h-3.5 w-3.5" />
+					<span class="max-w-[8rem] truncate">{repoInfo.shortName}</span>
+				</a>
+				<Tooltip>
+					<TooltipTrigger>
+						{#snippet child({ props })}
+							<button
+								type="button"
+								{...props}
+								class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-l-0 border-input bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+								onclick={() => sourcePath && actions.openPath(sourcePath)}
+								aria-label={$_('eventCard.openFolder')}
+							>
+								<IconFolderOpen class="h-3.5 w-3.5" />
+							</button>
+						{/snippet}
+					</TooltipTrigger>
+					<TooltipContent class="max-w-xs break-all font-mono text-[10px]">{sourcePath || '—'}</TooltipContent>
+				</Tooltip>
+			</ButtonGroup>
+		{:else}
+			<!-- Effective identity pill (Chapter 6.2.2 context override). -->
+			<div class="flex items-center gap-1.5 rounded-full border px-2 py-1 {overrideActive ? 'border-warning bg-warning/10' : 'border-border'}">
+				<Avatar class="h-5 w-5">
+					{#if effectiveProfileRecord?.avatarUrl}
+						<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
+					{/if}
+					<AvatarFallback class="text-[9px]">{initials(effectiveProfile)}</AvatarFallback>
+				</Avatar>
+				<span class="max-w-[8rem] truncate text-[11px] font-medium">{effectiveProfile}</span>
+			</div>
+		{/if}
 	</CardHeader>
 
 	<CardContent class="space-y-3">
@@ -231,6 +365,12 @@
 			<div class="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
 				{$_('eventCard.configureOidc', { values: { name: oidcCtx.name } })} <span class="font-mono">{oidcCtx.name}</span>
 				{#if oidcCtx.repo}· repo <span class="font-mono">{oidcCtx.repo}</span>{/if}
+			</div>
+		{:else if unpublishCtx}
+			<div class="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 font-mono text-xs">
+				<span class="font-semibold">{unpublishCtx.name}</span>
+				<IconTrash class="h-3 w-3 text-destructive" />
+				<span class="text-destructive">{unpublishCtx.version}</span>
 			</div>
 		{/if}
 
@@ -281,21 +421,121 @@
 			</div>
 		{/if}
 
-		{#if actionError}
-			<div class="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive" role="alert">
-				{actionError}
-			</div>
-		{/if}
-
 		{#if isPending}
-			<div class="flex items-center gap-2 pt-1">
-				<Button variant="brand" size="sm" class="flex-1" onclick={() => actions.confirm(event.id)}>
-					<IconCheck class="h-3.5 w-3.5" />
-					{#if event.kind === 'setup-oidc'}{$_('eventCard.confirmSetupOidc')}{:else if event.kind === 'refresh-token'}{$_('eventCard.confirmTokenRefresh')}{:else}{$_('eventCard.confirmPublish')}{/if}
-				</Button>
-				<Button variant="outline" size="sm" onclick={() => actions.reject(event.id)}>
-					<IconX class="h-3.5 w-3.5" /> {$_('eventCard.reject')}
-				</Button>
+			{#if isPublish}
+				<!-- Advanced publish options — edit args before confirmation. -->
+				<div class="rounded-md border border-border">
+					<button
+						type="button"
+						class="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+						onclick={() => (advancedOpen = !advancedOpen)}
+						aria-expanded={advancedOpen}
+						title={advancedOpen ? $_('eventCard.advancedCollapse') : $_('eventCard.advancedExpand')}
+					>
+						<IconChevronRight class="h-3 w-3 transition-transform {advancedOpen ? 'rotate-90' : ''}" />
+						{$_('eventCard.advanced')}
+					</button>
+					{#if advancedOpen}
+						<div class="space-y-3 border-t border-border px-3 py-2.5">
+							<div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+								<!-- Access -->
+								<div class="space-y-1">
+									<Label class="text-[11px] text-muted-foreground">{$_('eventCard.access')}</Label>
+									{#if isScopedPkg}
+										<ButtonGroup>
+											<Button variant={accessArg === 'public' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => rebuildArgs({ access: 'public' })}>
+												{$_('eventCard.accessPublic')}
+											</Button>
+											<Button variant={accessArg === 'restricted' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => rebuildArgs({ access: 'restricted' })}>
+												{$_('eventCard.accessRestricted')}
+											</Button>
+										</ButtonGroup>
+									{:else}
+										<p class="text-[11px] text-muted-foreground/70">{$_('eventCard.accessNonScopedHint')}</p>
+									{/if}
+								</div>
+								<!-- Tag -->
+								<div class="space-y-1">
+									<Label for="tag-{event.id}" class="text-[11px] text-muted-foreground">{$_('eventCard.tag')}</Label>
+									<Input
+										id="tag-{event.id}"
+										value={tagArg}
+										placeholder={$_('eventCard.tagPlaceholder')}
+										class="h-7 text-[11px]"
+										oninput={(e) => rebuildArgs({ tag: (e.currentTarget as HTMLInputElement).value })}
+									/>
+								</div>
+								<!-- ignore-scripts -->
+								<div class="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
+									<div class="min-w-0">
+										<Label class="text-[11px]">{$_('eventCard.ignoreScripts')}</Label>
+										<p class="text-[10px] text-muted-foreground/60">{$_('eventCard.ignoreScriptsHint')}</p>
+									</div>
+									<Switch checked={ignoreScriptsOn} onCheckedChange={(v: boolean) => rebuildArgs({ ignoreScripts: v })} />
+								</div>
+								<!-- no-git-checks -->
+								<div class="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
+									<div class="min-w-0">
+										<Label class="text-[11px]">{$_('eventCard.noGitChecks')}</Label>
+										<p class="text-[10px] text-muted-foreground/60">{$_('eventCard.noGitChecksHint')}</p>
+									</div>
+									<Switch checked={noGitChecksOn} disabled={publishBranchOn} onCheckedChange={(v: boolean) => rebuildArgs({ noGitChecks: v })} />
+								</div>
+							</div>
+							<!-- publish-branch (full width) -->
+							<div class="rounded-md border border-border px-2.5 py-2">
+								<div class="flex items-center justify-between gap-2">
+									<div class="min-w-0">
+										<Label class="text-[11px]">{$_('eventCard.publishBranch')}</Label>
+										<p class="text-[10px] text-muted-foreground/60">{$_('eventCard.publishBranchHint')}</p>
+									</div>
+									<Switch
+										checked={publishBranchOn}
+										onCheckedChange={(v: boolean) => rebuildArgs({ publishBranchOn: v, publishBranch: v ? (publishBranchValue || currentBranch) : '' })}
+									/>
+								</div>
+								{#if publishBranchOn}
+									<div class="mt-2 space-y-1.5">
+										<div class="flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+											<IconGitBranch class="h-3 w-3" />
+											{$_('eventCard.currentBranch')}:
+											<Badge variant="outline" class="font-mono text-[10px]">{currentBranch || $_('eventCard.branchUnknown')}</Badge>
+										</div>
+										<Input
+											value={publishBranchValue}
+											placeholder={currentBranch || 'main'}
+											class="h-7 font-mono text-[11px]"
+											oninput={(e) => rebuildArgs({ publishBranch: (e.currentTarget as HTMLInputElement).value })}
+										/>
+										{#if branchMismatch}
+											<p class="flex items-center gap-1 text-[10px] text-destructive">
+												<IconAlertTriangle class="h-3 w-3" />
+												{$_('eventCard.branchMismatch', { values: { branch: currentBranch || '?' } })}
+											</p>
+										{:else if branchNoCurrent}
+											<p class="flex items-center gap-1 text-[10px] text-muted-foreground/60">
+												<IconAlertTriangle class="h-3 w-3" />
+												{$_('eventCard.branchNoCurrent')}
+											</p>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<div class="pt-1">
+				<ButtonGroup>
+					<Button variant={event.kind === 'unpublish' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={doConfirm}>
+						{#if confirming}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconCheck class="h-3.5 w-3.5" />{/if}
+						{#if confirming}{$_('eventCard.confirming')}{:else if event.kind === 'setup-oidc'}{$_('eventCard.confirmSetupOidc')}{:else if event.kind === 'refresh-token'}{$_('eventCard.confirmTokenRefresh')}{:else if event.kind === 'unpublish'}{$_('eventCard.confirmUnpublish')}{:else}{$_('eventCard.confirmPublish')}{/if}
+					</Button>
+					<Button variant="outline" size="sm" disabled={rejecting} onclick={doReject}>
+						{#if rejecting}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconX class="h-3.5 w-3.5" />{/if}
+						{$_('eventCard.reject')}
+					</Button>
+				</ButtonGroup>
 			</div>
 		{:else if isExpired || needsAction}
 			<!-- Chapter 6.2.4: expired/manual refresh events surface the renew flow. -->
@@ -315,34 +555,45 @@
 					<p class="text-[11px] text-destructive">
 						{$_('eventCard.unpublishConfirm', { values: { name: publishData?.target.name ?? '', version: publishData?.target.version ?? '' } })}
 					</p>
-					<div class="flex items-center gap-2">
-						<Button variant="destructive" size="sm" class="flex-1" disabled={actionBusy} onclick={doUnpublish}>
-							{#if actionBusy}<IconLoader class="h-3.5 w-3.5 animate-spin" />{/if}
+					<ButtonGroup>
+						<Button variant="destructive" size="sm" class="flex-1" onclick={doUnpublish}>
 							{$_('eventCard.unpublish')}
 						</Button>
-						<Button variant="outline" size="sm" disabled={actionBusy} onclick={() => (confirmUnpublish = false)}>
+						<Button variant="outline" size="sm" onclick={() => (confirmUnpublish = false)}>
 							{$_('common.cancel')}
 						</Button>
-					</div>
+					</ButtonGroup>
 				</div>
 			{:else}
-				<div class="flex items-center gap-2 pt-1">
-					{#if isRetryable}
-						<Button variant="brand" size="sm" class="flex-1" onclick={retry}>
-							<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
-						</Button>
-					{/if}
-					{#if isUnpublishable}
-						<Button variant="outline" size="sm" class={isRetryable ? '' : 'flex-1'} onclick={() => (confirmUnpublish = true)}>
-							<IconTrash class="h-3.5 w-3.5" /> {$_('eventCard.unpublish')}
-						</Button>
-					{/if}
+				<!-- Action + auto-close share one ButtonGroup; the separator divides
+				     the publish actions from the countdown. ButtonGroup nests the
+				     AutoCloseBar's own buttons seamlessly. -->
+				<div class="pt-1">
+					<ButtonGroup>
+						{#if isRetryable}
+							<Button variant="brand" size="sm" class="flex-1" onclick={retry}>
+								<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
+							</Button>
+						{/if}
+						{#if isUnpublishable}
+							<Button variant="outline" size="sm" class={isRetryable ? '' : 'flex-1'} onclick={() => (confirmUnpublish = true)}>
+								<IconTrash class="h-3.5 w-3.5" /> {$_('eventCard.unpublish')}
+							</Button>
+						{/if}
+						{#if autoClose && variant === 'full'}
+							<ButtonGroupSeparator />
+							<AutoCloseBar seconds={10} onclose={onAutoClose} />
+						{/if}
+					</ButtonGroup>
 				</div>
-				{/if}
 			{/if}
-
-		{#if !isPending && autoClose && variant === 'full'}
-			<AutoCloseBar seconds={5} onclose={onAutoClose} />
+		{:else if !isPending && autoClose && variant === 'full'}
+			<!-- Resolved with no action buttons but still auto-closable. -->
+			<div class="pt-1">
+				<ButtonGroup>
+					<AutoCloseBar seconds={10} onclose={onAutoClose} />
+				</ButtonGroup>
+			</div>
 		{/if}
 	</CardContent>
 </Card>

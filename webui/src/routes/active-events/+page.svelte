@@ -85,6 +85,22 @@
 		return merged.sort((a, b) => b.createdAt - a.createdAt);
 	});
 
+	// Smooth-scroll to the top when a new event appears at the top of the list
+	// (a fresh pending publish, or a newly-held resolved event). We watch the
+	// newest event's id — when it changes, a new card landed at the top.
+	let prevTopId = '';
+	let prevTopIdWasSet = false;
+	$effect(() => {
+		const top = surfaceEvents[0];
+		const topId = top?.id ?? '';
+		if (topId === prevTopId) return;
+		// Skip the very first run (the list may already have content from a
+		// reconnect — don't yank the viewport on mount).
+		if (!prevTopIdWasSet) { prevTopIdWasSet = true; prevTopId = topId; return; }
+		prevTopId = topId;
+		window.scrollTo({ top: 0, behavior: 'smooth' });
+	});
+
 	// Preview-history: the latest few events, fetched from the daemon (REST).
 	const PREVIEW_COUNT = 5;
 	let previewEvents = $state<PubEvent[]>([]);
@@ -104,6 +120,28 @@
 	}
 
 	onMount(() => {
+		void fetchPreview();
+	});
+
+	// Live-refresh RECENT ACTIVITY. The daemon pushes every event change over the
+	// WS (store emit → broadcast), which updates `$daemon.events` in real time.
+	// We watch the latest resolvedAt timestamp as a reactive signal: whenever an
+	// event resolves (pending → success/failed/…), the signal changes and we
+	// re-fetch the preview so a freshly-published package shows up immediately.
+	const lastResolvedAt = $derived(
+		$daemon.events.reduce((max, e) => {
+			const t = e.resolvedAt;
+			return typeof t === 'number' && t > max ? t : max;
+		}, 0),
+	);
+	let prevResolvedAt = 0;
+	$effect(() => {
+		const now = lastResolvedAt;
+		// Only re-fetch when the signal actually advances (a new resolution).
+		// The initial fetch is handled by onMount, so skip the first effect run.
+		if (now === prevResolvedAt) return;
+		prevResolvedAt = now;
+		if (now === 0) return;
 		void fetchPreview();
 	});
 
