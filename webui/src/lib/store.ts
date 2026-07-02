@@ -354,6 +354,20 @@ export const actions = {
 			return false;
 		}
 	},
+	/** Open a URL in the OS default browser (the webview can't do this itself). */
+	async openUrl(url: string): Promise<boolean> {
+		try {
+			const res = await apiFetch('/api/open-url', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ url }),
+			});
+			const json = parseOkResponse(await res.json());
+			return json?.ok ?? false;
+		} catch {
+			return false;
+		}
+	},
 };
 
 /** In-process cache of repo-info promises (keyed by raw repository string). */

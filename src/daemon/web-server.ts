@@ -314,6 +314,23 @@ export class WebServer {
             return json(res, 500, { ok: false, error: errorToMessage(err) });
           }
         }
+        if (url === '/api/open-url' && method === 'POST') {
+          // Open a URL in the OS default browser. Inside the opentray webview,
+          // <a target="_blank"> is intercepted/not forwarded to the system
+          // browser, so the page calls this endpoint to shell out to the opener.
+          const parsed = parseOrThrow(z.object({ url: z.string().min(1) }), body, 'open-url body');
+          const target = parsed.url;
+          const cmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
+          const args = process.platform === 'win32' ? ['', target] : [target];
+          try {
+            const { execFile } = await import('node:child_process');
+            const { promisify } = await import('node:util');
+            await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
+            return json(res, 200, { ok: true });
+          } catch (err) {
+            return json(res, 500, { ok: false, error: errorToMessage(err) });
+          }
+        }
         if (url === '/api/profiles' && method === 'DELETE') {
           const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
           const ok = await this.deps.store.removeProfile(username);

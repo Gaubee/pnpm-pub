@@ -398,7 +398,7 @@
 				<Tooltip>
 					<TooltipTrigger>
 						{#snippet child({ props })}
-							<Button {...props} variant="outline" size="sm" href={repoInfo!.browseUrl} target="_blank" rel="noreferrer" class="gap-1 px-2 text-[11px]">
+							<Button {...props} variant="outline" size="sm" onclick={() => actions.openUrl(repoInfo!.browseUrl)} class="gap-1 px-2 text-[11px]">
 								<RepoIcon brand={repoInfo!.brand} faviconUrl={repoInfo!.faviconUrl} class="h-3.5 w-3.5" />
 								<span class="max-w-[10rem] truncate">{repoInfo!.slug}</span>
 							</Button>
@@ -423,7 +423,7 @@
 				<Tooltip>
 					<TooltipTrigger>
 						{#snippet child({ props })}
-							<Button {...props} variant="outline" size="icon-sm" href={npmUrl} target="_blank" rel="noreferrer" aria-label={$_('eventCard.openOnNpm')}>
+							<Button {...props} variant="outline" size="icon-sm" onclick={() => actions.openUrl(npmUrl)} aria-label={$_('eventCard.openOnNpm')}>
 								<IconPlaceholder class="h-3.5 w-3.5" />
 							</Button>
 						{/snippet}
@@ -639,7 +639,7 @@
 				<ConfirmAction
 					bind:open={confirmUnpublish}
 					{warn}
-					confirmLabel={event.payload?.kind === 'unpublish' ? $_('eventCard.retry') : $_('eventCard.unpublish')}
+					confirmLabel={$_('eventCard.unpublish')}
 					onConfirm={event.payload?.kind === 'unpublish' ? retry : doUnpublish}
 				/>
 			{:else}
