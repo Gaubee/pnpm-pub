@@ -454,28 +454,28 @@
 		{/if}
 
 		{#if !isPending && event.result && event.status !== 'rejected'}
-			{#if variant === 'compact'}
-				<!-- Compact: single-line truncated; click toggles a horizontally-scrollable block (no wrap). -->
+			{@const isError = isExpired || event.status === 'failed'}
+			{@const firstLine = (event.result.split(/\r?\n/)[0] ?? '').trim()}
+			<div class="rounded-md border {isError ? 'border-destructive/40' : 'border-border'}">
 				<button
 					type="button"
-					class="w-full cursor-pointer rounded-md bg-muted/40 px-3 py-2 text-left font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}"
+					class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {isError ? 'text-destructive' : 'text-muted-foreground'}"
 					onclick={() => (logExpanded = !logExpanded)}
-					title={logExpanded ? $_('eventCard.collapse') : $_('events.expand')}
+					aria-expanded={logExpanded}
 				>
-					{#if logExpanded}
-						<div class="max-h-40 overflow-x-auto overflow-y-auto whitespace-pre">
-							{event.result}
-						</div>
-					{:else}
-						<div class="truncate">{event.result}</div>
+					<IconChevronRight class="h-3 w-3 shrink-0 transition-transform {logExpanded ? 'rotate-90' : ''}" />
+					<IconAlertTriangle class="h-3 w-3 shrink-0 {isError ? 'text-destructive' : 'text-muted-foreground'}" />
+					<span class="shrink-0 font-medium">{$_('eventCard.errorLog')}:</span>
+					{#if !logExpanded}
+						<span class="truncate font-mono">{firstLine}</span>
 					{/if}
 				</button>
-			{:else}
-				<!-- Full: wrapped, scrollable both axes. -->
-				<div class="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 font-mono text-[11px] {isExpired || event.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}">
-					{event.result}
-				</div>
-			{/if}
+				{#if logExpanded}
+					<div class="max-h-48 overflow-auto border-t {isError ? 'border-destructive/40' : 'border-border'} px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {isError ? 'text-destructive' : 'text-muted-foreground'}">
+						{event.result}
+					</div>
+				{/if}
+			</div>
 		{/if}
 
 		{#if tarballSummary}
