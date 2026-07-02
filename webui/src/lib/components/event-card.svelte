@@ -293,7 +293,11 @@
 
 	const isScopedPkg = $derived(!!publishData && publishData.target.name.startsWith('@'));
 	const ignoreScriptsOn = $derived(publishData ? hasFlag(publishData.args, '--ignore-scripts') : false);
-	const noGitChecksOn = $derived(publishData ? hasFlag(publishData.args, '--no-git-checks') : false);
+	// No-git-checks defaults ON: if the args carry no explicit --git-checks,
+	// we treat it as opted-out (the common case for feature-branch publishes).
+	const noGitChecksOn = $derived(
+		publishData ? (hasFlag(publishData.args, '--git-checks') ? false : true) : false,
+	);
 	const publishBranchOn = $derived(publishData ? argValue(publishData.args, '--publish-branch') !== undefined : false);
 	const publishBranchValue = $derived(publishData ? (argValue(publishData.args, '--publish-branch') ?? '') : '');
 

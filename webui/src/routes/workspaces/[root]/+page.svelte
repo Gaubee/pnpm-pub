@@ -180,7 +180,9 @@
 	}
 	function publishPayload(pkg: PublishTarget) {
 		const access = pkgAccess[pkg.name] ?? 'public';
-		return { source: { kind: 'directory' as const, path: pkg.path }, args: ['--access', access], target: pkg };
+		// --no-git-checks defaults ON: publishing from a feature branch is the
+		// common case, and the daemon's git-check preflight would otherwise block it.
+		return { source: { kind: 'directory' as const, path: pkg.path }, args: ['--access', access, '--no-git-checks'], target: pkg };
 	}
 	/** Whether the package name is scoped (`@scope/name`) — only scoped packages
 	 *  honor `--access` (non-scoped are always public). */
