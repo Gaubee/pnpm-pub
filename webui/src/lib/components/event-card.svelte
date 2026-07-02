@@ -311,7 +311,7 @@
 		<ButtonGroup>
 			{#if overrideActive}
 				<!-- Cross-profile event: show whose identity it runs under. -->
-				<div class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-warning/60 bg-warning/10 px-2 text-[11px] font-medium text-foreground">
+				<div data-slot="button" class="inline-flex h-7 items-center gap-1.5 border border-warning/60 bg-warning/10 px-2 text-[11px] font-medium text-foreground">
 					<Avatar class="h-4 w-4">
 						{#if effectiveProfileRecord?.avatarUrl}
 							<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
@@ -322,30 +322,25 @@
 				</div>
 			{/if}
 			{#if repoInfo}
-				<a
-					href={repoInfo.browseUrl}
-					target="_blank"
-					rel="noreferrer"
-					class="inline-flex h-7 items-center gap-1.5 bg-transparent px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-					title={repoInfo.host}
-				>
-					<RepoIcon brand={repoInfo.brand} faviconUrl={repoInfo.faviconUrl} class="h-3.5 w-3.5" />
-					<span class="max-w-[8rem] truncate">{repoInfo.shortName}</span>
-				</a>
+				<Tooltip>
+					<TooltipTrigger>
+						{#snippet child({ props })}
+							<Button {...props} variant="outline" size="sm" href={repoInfo!.browseUrl} target="_blank" rel="noreferrer" class="gap-1 px-2 text-[11px]">
+								<RepoIcon brand={repoInfo!.brand} faviconUrl={repoInfo!.faviconUrl} class="h-3.5 w-3.5" />
+								<span class="max-w-[10rem] truncate">{repoInfo!.slug}</span>
+							</Button>
+						{/snippet}
+					</TooltipTrigger>
+					<TooltipContent class="max-w-sm break-all font-mono text-[10px]">{repoInfo.browseUrl}</TooltipContent>
+				</Tooltip>
 			{/if}
 			{#if sourcePath}
 				<Tooltip>
 					<TooltipTrigger>
 						{#snippet child({ props })}
-							<button
-								type="button"
-								{...props}
-								class="inline-flex h-7 w-7 items-center justify-center bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-								onclick={() => actions.openPath(sourcePath)}
-								aria-label={$_('eventCard.openFolder')}
-							>
+							<Button {...props} variant="outline" size="icon-sm" onclick={() => actions.openPath(sourcePath)} aria-label={$_('eventCard.openFolder')}>
 								<IconFolderOpen class="h-3.5 w-3.5" />
-							</button>
+							</Button>
 						{/snippet}
 					</TooltipTrigger>
 					<TooltipContent class="max-w-xs break-all font-mono text-[10px]">{sourcePath}</TooltipContent>
@@ -355,16 +350,9 @@
 				<Tooltip>
 					<TooltipTrigger>
 						{#snippet child({ props })}
-							<a
-								{...props}
-								href={npmUrl}
-								target="_blank"
-								rel="noreferrer"
-								class="inline-flex h-7 w-7 items-center justify-center bg-transparent text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-								aria-label={$_('eventCard.openOnNpm')}
-							>
+							<Button {...props} variant="outline" size="icon-sm" href={npmUrl} target="_blank" rel="noreferrer" aria-label={$_('eventCard.openOnNpm')}>
 								<IconPlaceholder class="h-3.5 w-3.5" />
-							</a>
+							</Button>
 						{/snippet}
 					</TooltipTrigger>
 				<TooltipContent class="font-mono text-[10px]">{packageName}</TooltipContent>

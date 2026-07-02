@@ -35,6 +35,8 @@ export interface RepoInfo {
   host: string;
   /** Repo segment after the last `/` (e.g. `repo` from `owner/repo`). */
   shortName: string;
+  /** Full owner/repo slug (e.g. `owner/repo`); falls back to shortName. */
+  slug: string;
   /** Full URL to open in a browser. */
   browseUrl: string;
   /** Favicon URL for unknown hosts (third-party service); empty for brands. */
@@ -95,6 +97,7 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
       return {
         host,
         shortName,
+        slug: slug || shortName,
         browseUrl: slug ? `${brand.url}/${slug}` : brand.url,
         faviconUrl: '',
         brand: brand.brand,
@@ -105,6 +108,7 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
     return {
       host,
       shortName,
+      slug: slug || shortName,
       browseUrl,
       faviconUrl: `https://icons.duckduckgo.com/ip3/${host}.ico`,
       brand: null,
@@ -120,6 +124,7 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
     return {
       host: 'github.com',
       shortName,
+      slug,
       browseUrl: `https://github.com/${slug}`,
       faviconUrl: '',
       brand: 'github',

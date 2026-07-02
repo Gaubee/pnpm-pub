@@ -17,6 +17,8 @@ export interface RepoInfo {
 	host: string;
 	/** Repo segment after the last `/` (e.g. `repo` from `owner/repo`). */
 	shortName: string;
+	/** Full owner/repo slug (e.g. `owner/repo`); falls back to shortName. */
+	slug: string;
 	/** Full URL to open in a browser. */
 	browseUrl: string;
 	/** Favicon URL for unknown hosts (third-party service); empty for brands. */

@@ -180,7 +180,13 @@ async function readPackageJson(
     const pkg: unknown = JSON.parse(text);
     if (!isRecord(pkg)) return null;
     if (typeof pkg.name !== 'string') return null;
-    const repository = parseRepository(pkg.repository);
+    let repository = parseRepository(pkg.repository);
+    // package.json without a repository field → fall back to the git remote
+    // origin URL (walks up from the package dir to find .git/config). Stored as
+    // the raw URL so repo-info.ts can still detect the forge host.
+    if (!repository) {
+      repository = await readGitRemoteUrl(fs.dirname(file), fs);
+    }
     return {
       name: pkg.name,
       version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
@@ -207,6 +213,52 @@ function parseRepository(value: unknown): string | undefined {
   }
   if (isRecord(value) && typeof value.url === 'string') {
     return normalizeRepository(value.url);
+  }
+  return undefined;
+}
+
+/**
+ * When a package.json omits `repository`, fall back to the git remote origin URL
+ * so the EventCard can still show a repo link. Walks upward from the package dir
+ * looking for a `.git/config` (handles monorepos where the repo root is an
+ * ancestor) and parses the `[remote "origin"]` url. Returns the RAW url (not
+ * slug-normalized) so repo-info.ts can detect the host for non-GitHub forges.
+ */
+async function readGitRemoteUrl(pkgDir: string, fs: FsAPI): Promise<string | undefined> {
+  let dir = pkgDir;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const configPath = fs.join(dir, '.git', 'config');
+    if (await fs.exists(configPath)) {
+      try {
+        const text = await fs.readFile(configPath);
+        const url = parseGitConfigOrigin(text);
+        if (url) return url;
+      } catch {
+        /* unreadable config — give up */
+      }
+      return undefined; // found a .git/config but no origin → stop walking
+    }
+    const parent = fs.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/** Extract the `url` under `[remote "origin"]` from a .git/config file body. */
+function parseGitConfigOrigin(configText: string): string | undefined {
+  let inOrigin = false;
+  for (const rawLine of configText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    const header = line.match(/^\[(.+)\]$/);
+    if (header) {
+      inOrigin = /^remote\s+"origin"\s*$/i.test(header[1]!.trim().replace(/\s+/g, ' '));
+      continue;
+    }
+    if (inOrigin) {
+      const m = line.match(/^url\s*=\s*(.+)$/i);
+      if (m?.[1]) return m[1].trim();
+    }
   }
   return undefined;
 }
