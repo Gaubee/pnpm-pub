@@ -19,6 +19,7 @@ import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } f
 import { realFs } from './real-fs.js';
 import { applyToken, unpublishVersion, verifyCredentials } from './npm-api.js';
 import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
+import { fetchPackageDetail, type PackageDetailResult } from './npm-package-detail.js';
 import { readProfileDetail } from './npm-profile-client.js';
 import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
 import { exportBundle, importBundle } from './crypto.js';
@@ -86,6 +87,15 @@ export class WebServer {
    */
   private packagesCache = new Map<string, { promise: Promise<NpmPackage[]>; expiresAt: number }>();
   private static readonly PACKAGES_CACHE_TTL_MS = 60_000;
+
+  /**
+   * Per-package detail projection cache (PackageDetail page). The packument +
+   * collaborators + downloads fan-out is several network calls, so we cache the
+   * merged projection for ~60s and dedup concurrent in-flight fetches per
+   * package:registry. A failure deletes the slot so it isn't poisoned.
+   */
+  private detailCache = new Map<string, { promise: Promise<PackageDetailResult>; expiresAt: number }>();
+  private static readonly DETAIL_CACHE_TTL_MS = 60_000;
 
   /**
    * Token liveness probe cache. `resolveTrustAuth` verifies the active token
@@ -236,6 +246,17 @@ export class WebServer {
           }, 'packages query');
           const result = await this.listPackages(parsed.q, parsed.sort, parsed.page, parsed.pageSize);
           return json(res, result.ok ? 200 : result.status, result);
+        }
+        // PackageDetail page — GET /api/packages/<name>/detail. The dispatcher is
+        // exact-string, so the path param is parsed via regex here. Scoped names
+        // are URL-encoded (`@scope%2Fpkg`, no bare `/`) so the capture is safe.
+        const detailMatch = url.match(/^\/api\/packages\/([^/]+)\/detail$/);
+        if (detailMatch && method === 'GET') {
+          const name = decodeURIComponent(detailMatch[1]!);
+          if (!name) throw new Error('Invalid or missing package name.');
+          const result = await this.listPackageDetailCached(name);
+          this.deps.log?.(`[packages] detail ${name}: ${result.ok ? 'ok' : `fail ${result.status}`}`);
+          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, detail: result.detail } : { ok: false, error: result.error });
         }
         if (url === '/api/events' && method === 'GET') {
           const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
@@ -913,6 +934,38 @@ export class WebServer {
     const start = safePage * safePageSize;
     const items = sorted.slice(start, start + safePageSize);
     return { ok: true, items, total: sorted.length, page: safePage, pageSize: safePageSize };
+  }
+
+  /**
+   * Resolve a single package's detail projection (packument + collaborators +
+   * downloads), with ~60s caching + in-flight dedup keyed by `name@registry`.
+   * Mirrors {@link listPackages}'s cache discipline: share one promise while
+   * fresh, delete the slot on rejection so a transient failure isn't sticky.
+   */
+  private async listPackageDetailCached(name: string): Promise<PackageDetailResult> {
+    const auth = await this.resolveTrustAuth();
+    if (!authIsOk(auth)) {
+      const denied = authDeniedBody(auth);
+      return { ok: false, status: 401, error: denied.error };
+    }
+    const cacheKey = `${name.toLowerCase()}@${auth.registry}`;
+    const now = Date.now();
+    let entry = this.detailCache.get(cacheKey);
+    if (!entry || entry.expiresAt <= now) {
+      const promise = fetchPackageDetail(name, { token: auth.token, registry: auth.registry }).catch(
+        (err: unknown) => {
+          this.detailCache.delete(cacheKey);
+          throw err;
+        },
+      );
+      entry = { promise, expiresAt: now + WebServer.DETAIL_CACHE_TTL_MS };
+      this.detailCache.set(cacheKey, entry);
+    }
+    try {
+      return await entry.promise;
+    } catch (err: unknown) {
+      return { ok: false, status: 502, error: errorToMessage(err) };
+    }
   }
 
   private async restoreRenewCredentialState(

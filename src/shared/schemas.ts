@@ -298,6 +298,45 @@ export const TrustedPublisherConfigSchema = z.discriminatedUnion('type', [
 export type TrustedPublisherConfig = z.infer<typeof TrustedPublisherConfigSchema>;
 
 // ---------------------------------------------------------------------------
+// Package detail (PackageDetail page) — projection of a registry packument.
+// ---------------------------------------------------------------------------
+
+export const PackageCollaboratorSchema = z
+  .object({
+    username: z.string(),
+    access: z.string().optional(),
+    email: z.string().optional(),
+  })
+  .passthrough();
+export type PackageCollaborator = z.infer<typeof PackageCollaboratorSchema>;
+
+export const PackageDetailSchema = z
+  .object({
+    name: z.string(),
+    version: z.string(),
+    description: z.string().nullable(),
+    readme: z.string(),
+    license: z.string().nullable(),
+    repository: z.string().nullable(),
+    homepage: z.string().nullable(),
+    /** ISO-8601 publish time of the latest dist-tag version, if known. */
+    lastPublish: z.string().nullable(),
+    /** ISO-8601 of the most recent packument modification, if known. */
+    modified: z.string().nullable(),
+    keywords: z.array(z.string()),
+    collaborators: z.array(PackageCollaboratorSchema),
+    weeklyDownloads: z.number().int().nonnegative(),
+  })
+  .passthrough();
+export type PackageDetail = z.infer<typeof PackageDetailSchema>;
+
+export const PackageDetailResponseSchema = z.object({
+  ok: z.literal(true),
+  detail: PackageDetailSchema,
+});
+export type PackageDetailResponse = z.infer<typeof PackageDetailResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // WS protocol
 // ---------------------------------------------------------------------------
 
