@@ -649,7 +649,7 @@
 				<div class="pt-1">
 					<ButtonGroup>
 						{#if isPublish && isRetryableStatus}
-							<Button variant="brand" size="sm" class="flex-1" onclick={retry}>
+							<Button variant="outline" size="sm" class="flex-1" onclick={retry}>
 								<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
 							</Button>
 						{/if}
