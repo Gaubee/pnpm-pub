@@ -77,10 +77,10 @@
 			export: IconRefresh,
 		})[kind] ?? IconPublish;
 
-	// Action-type accent color — the card's primary tint, derived from the event
-	// KIND (not its status). publish → brand (blue), unpublish → destructive
-	// (red), everything else → neutral. Applied to the card border/ring and the
-	// top-left icon; intentionally independent of the status badge color.
+	// Action-type accent color — drives ONLY the top-left icon tint, derived
+	// from the event KIND. publish → brand (blue), unpublish → destructive
+	// (red), everything else → neutral. The card border uses the STATUS color
+	// (see below), so the two signals stay independent.
 	const kindAccent = $derived.by(() => {
 		switch (event.kind) {
 			case 'publish': return 'brand';
@@ -88,22 +88,35 @@
 			default: return '';
 		}
 	});
-	const kindRing = $derived(
-		kindAccent === 'brand' ? 'ring-brand/40'
-			: kindAccent === 'destructive' ? 'ring-destructive/40'
-				: 'ring-border',
-	);
 	const kindIconClass = $derived(
 		kindAccent === 'brand' ? 'bg-brand/10 text-brand'
 			: kindAccent === 'destructive' ? 'bg-destructive/10 text-destructive'
 				: 'bg-accent text-muted-foreground',
 	);
-	// Full class strings (Tailwind can't compose dynamic fragments).
-	const kindBorderClass = $derived(
-		kindAccent === 'brand' ? 'border-brand/30'
-			: kindAccent === 'destructive' ? 'border-destructive/30'
-				: '',
-	);
+	// Card border / ring tint — driven by the event STATUS (not the kind).
+	// pending → brand, success → green, failed → red, rejected → muted,
+	// expired/action-required → warning. Static class strings (Tailwind can't
+	// compose dynamic fragments).
+	const statusRing = $derived.by(() => {
+		switch (event.status) {
+			case 'pending': return 'ring-brand/40';
+			case 'success': return 'ring-success/40';
+			case 'failed': return 'ring-destructive/40';
+			case 'expired':
+			case 'action-required': return 'ring-warning/40';
+			default: return 'ring-border'; // rejected
+		}
+	});
+	const statusBorder = $derived.by(() => {
+		switch (event.status) {
+			case 'pending': return 'border-brand/30';
+			case 'success': return 'border-success/30';
+			case 'failed': return 'border-destructive/30';
+			case 'expired':
+			case 'action-required': return 'border-warning/30';
+			default: return 'border-border'; // rejected
+		}
+	});
 
 	const IconCmp = $derived(iconFor(event.kind));
 
@@ -312,7 +325,7 @@
 	}
 </script>
 
-<Card class="transition-shadow {isPending ? `ring-2 ${kindRing} shadow-md` : kindBorderClass}">
+<Card class="transition-shadow {isPending ? `ring-2 ${statusRing} shadow-md` : statusBorder}">
 	<CardHeader class="flex-row items-center justify-between gap-3 pb-3">
 		<div class="flex min-w-0 items-center gap-2.5">
 			<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md {kindIconClass}">
