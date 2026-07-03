@@ -225,9 +225,11 @@ function isDryRunPublish(args: string[]): boolean {
 function isRecursivePublish(args: string[]): boolean {
   let recursive = false;
   for (const arg of args) {
-    if (arg === '-r' || arg === '--recursive') recursive = true;
-    if (arg === '--no-recursive') recursive = false;
+    // pnpm accepts `-r`/`--recursive` and the legacy aliases `-m`/`--multi`.
+    if (arg === '-r' || arg === '--recursive' || arg === '-m' || arg === '--multi') recursive = true;
+    if (arg === '--no-recursive' || arg === '--no-multi') recursive = false;
     if (arg.startsWith('--recursive=')) recursive = arg.slice('--recursive='.length) !== 'false';
+    if (arg.startsWith('--multi=')) recursive = arg.slice('--multi='.length) !== 'false';
   }
   return recursive;
 }
@@ -343,41 +345,76 @@ function resolvePublishOtp(args: string[]): string | undefined {
   return undefined;
 }
 
+/** Resolve the `-C`/`--dir <path>` global option (last write wins, like pnpm).
+ *  Returns the cwd to publish from, relative to `cwd`. When unset, returns `cwd`. */
+function resolvePublishDir(args: string[], cwd: string): string {
+  let dir: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '-C' || arg === '--dir') {
+      const next = args[index + 1];
+      if (next && !next.startsWith('-')) dir = next;
+      continue;
+    }
+    if (arg.startsWith('--dir=')) {
+      const value = arg.slice('--dir='.length);
+      if (value.length > 0) dir = value;
+      continue;
+    }
+    if (arg.startsWith('-C=')) {
+      const value = arg.slice('-C='.length);
+      if (value.length > 0) dir = value;
+    }
+  }
+  return dir ? path.resolve(cwd, dir) : cwd;
+}
+
+/** True when the argv requests SLSA provenance (`--provenance` or `--provenance=true`). */
+function isProvenancePublish(args: string[]): boolean {
+  for (const arg of args) {
+    if (arg === '--provenance') return true;
+    if (arg.startsWith('--provenance=')) return arg.slice('--provenance='.length) !== 'false';
+  }
+  return false;
+}
+
+/** Strip `-C`/`--dir` (and its value) from the argv — the daemon sets the
+ *  subprocess `cwd` authoritatively, so forwarding the flag would make pnpm
+ *  resolve the path a second time. Mirrors `stripOverriddenArgs`. */
+function stripDirOverride(args: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === '-C' || arg === '--dir') {
+      const next = args[index + 1];
+      if (next !== undefined && !next.startsWith('-')) index += 1;
+      continue;
+    }
+    if (arg.startsWith('--dir=') || arg.startsWith('-C=')) continue;
+    out.push(arg);
+  }
+  return out;
+}
+
 const PUBLISH_OPTIONS_WITH_VALUE = new Set([
   '--access',
   '--changed-files-ignore-pattern',
+  '--dir',
   '--filter',
   '--filter-prod',
+  '--loglevel',
   '--otp',
   '--publish-branch',
   '--registry',
+  '--reporter',
   '--tag',
   '--test-pattern',
+  // Short aliases of value-taking options.
+  '-C', // --dir
+  '-F', // --filter
 ]);
-
-const PUBLISH_BOOLEAN_OPTIONS = new Set([
-  '--dry-run',
-  '--no-dry-run',
-  '--fail-if-no-match',
-  '--no-fail-if-no-match',
-  '--force',
-  '--ignore-scripts',
-  '--no-ignore-scripts',
-  '--json',
-  '--no-json',
-  '--no-git-checks',
-  '--recursive',
-  '--no-recursive',
-  '-r',
-  '--report-summary',
-  '--no-report-summary',
-]);
-
-class PublishArgumentError extends Error {}
-
-function unknownPublishOptionMessage(option: string): string {
-  return `ERROR Unknown option: '${option.replace(/^-+/, '')}'`;
-}
 
 function isNativeUnknownCliConfigOption(arg: string): boolean {
   return arg.startsWith('--config.');
@@ -390,28 +427,6 @@ function formatNativeUnknownCliConfigWarning(arg: string): string {
 
 function formatNativeUnknownCliConfigWarnings(args: string[]): string {
   return args.filter(isNativeUnknownCliConfigOption).map(formatNativeUnknownCliConfigWarning).join('');
-}
-
-function assertSupportedPublishArgs(args: string[]): void {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (!arg) continue;
-    if (arg === '--') return;
-    if (PUBLISH_OPTIONS_WITH_VALUE.has(arg)) {
-      index += 1;
-      continue;
-    }
-    if (PUBLISH_BOOLEAN_OPTIONS.has(arg)) continue;
-    if (arg.startsWith('--')) {
-      const optionName = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
-      if (isNativeUnknownCliConfigOption(optionName)) continue;
-      if (PUBLISH_OPTIONS_WITH_VALUE.has(optionName) || PUBLISH_BOOLEAN_OPTIONS.has(optionName)) continue;
-      throw new PublishArgumentError(unknownPublishOptionMessage(optionName));
-    }
-    if (arg.startsWith('-')) {
-      throw new PublishArgumentError(unknownPublishOptionMessage(arg));
-    }
-  }
 }
 
 function findPublishPositionalArg(args: string[]): string | undefined {
@@ -645,7 +660,7 @@ function readRecursiveFilters(args: string[]): RecursiveFilter[] {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--filter') {
+    if (arg === '--filter' || arg === '-F') {
       const next = args[index + 1];
       if (next && !next.startsWith('-')) {
         filters.push({ value: next, edgeKind: 'all' });
@@ -655,6 +670,11 @@ function readRecursiveFilters(args: string[]): RecursiveFilter[] {
     }
     if (arg.startsWith('--filter=')) {
       const value = arg.slice('--filter='.length);
+      if (value.length > 0) filters.push({ value, edgeKind: 'all' });
+      continue;
+    }
+    if (arg.startsWith('-F=')) {
+      const value = arg.slice('-F='.length);
       if (value.length > 0) filters.push({ value, edgeKind: 'all' });
       continue;
     }
@@ -1154,25 +1174,30 @@ export class PublishScheduler {
       client.exit(1, 'No profile');
       return;
     }
-    try {
-      assertSupportedPublishArgs(req.args);
-    } catch (error: unknown) {
-      if (error instanceof PublishArgumentError) {
-        client.log('stderr', error.message + '\n');
-        client.exit(1, error.message);
-        return;
-      }
-      throw error;
+    // Chapter 7.1.2 — drop-in parity: unknown flags are forwarded verbatim to
+    // `pnpm publish`. pnpm-pub only intercepts the flags it routes on
+    // (--recursive/--dry-run/--access/--tag/--filter/...); everything else is
+    // the user's responsibility and pnpm will report any genuine errors.
+    // The global `-C`/`--dir <path>` overrides the publish cwd (like pnpm); we
+    // resolve it here and strip it from the forwarded argv so pnpm does not
+    // re-resolve it against the already-set subprocess cwd.
+    const effectiveCwd = resolvePublishDir(req.args, req.cwd);
+    const publishArgs = effectiveCwd === req.cwd ? req.args : stripDirOverride(req.args);
+    if (isProvenancePublish(publishArgs)) {
+      client.log(
+        'stderr',
+        '> note: --provenance passed through to pnpm. SLSA provenance normally requires a supported CI (GitHub Actions) with OIDC. For trusted publishing from CI, use pnpm-pub\'s OIDC Trusted-Publish flow.\n',
+      );
     }
-    await this.collectWorkspaceFromCwd(req.cwd, client);
-    const source = await resolvePublishSource(req.cwd, req.args);
+    await this.collectWorkspaceFromCwd(effectiveCwd, client);
+    const source = await resolvePublishSource(effectiveCwd, publishArgs);
 
     // Recursive non-dry-run publish is its own event kind: it requires pnpm
     // (no API fallback) and carries multiple targets enumerated via
     // `pnpm list -r`. Dry-run recursive still uses the single-package event
     // path (runRecursivePublishDryRun).
-    const isRecursive = isRecursivePublish(req.args);
-    const isDryRun = isDryRunPublish(req.args);
+    const isRecursive = isRecursivePublish(publishArgs);
+    const isDryRun = isDryRunPublish(publishArgs);
     if (isRecursive && !isDryRun) {
       // Recursive publish REQUIRES pnpm — refuse early (no event, no fallback).
       if (!(await hasPnpm(source.path))) {
@@ -1183,7 +1208,7 @@ export class PublishScheduler {
       }
       let targets: PublishTarget[];
       try {
-        targets = await this.enumerateRecursiveTargets(source.path, req.args, client);
+        targets = await this.enumerateRecursiveTargets(source.path, publishArgs, client);
       } catch (error: unknown) {
         const msg = errorToMessage(error);
         client.log('stderr', msg + '\n');
@@ -1205,7 +1230,7 @@ export class PublishScheduler {
           kind: 'recursive-publish',
           data: {
             source,
-            args: req.args,
+            args: publishArgs,
             targets,
             ...(branch ? { branch } : {}),
           },
@@ -1228,7 +1253,7 @@ export class PublishScheduler {
         kind: 'publish',
         data: {
           source,
-          args: req.args,
+          args: publishArgs,
           target: { ...target, path: source.path },
           ...(branch ? { branch } : {}),
         },

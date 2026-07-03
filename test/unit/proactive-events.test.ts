@@ -1319,7 +1319,7 @@ describe('Feature: WebUI-created proactive events', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('Scenario: Given an unknown publish option, When intercepted, Then it fails before source resolution', async () => {
+  it('Scenario: Given an unknown publish option, When intercepted, Then it is forwarded verbatim (drop-in parity, no pre-rejection)', async () => {
     const packageDir = path.join(sandbox, 'publish-unknown-option');
     await fsp.mkdir(packageDir, { recursive: true });
     await fsp.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'unknown-option-pkg', version: '1.0.0' }), 'utf8');
@@ -1332,21 +1332,26 @@ describe('Feature: WebUI-created proactive events', () => {
     store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
     const scheduler = new PublishScheduler(store);
 
+    // Chapter 7.1.2 — pnpm-pub no longer pre-rejects unknown flags; they are
+    // forwarded to `pnpm publish`, which reports any genuine errors. The intent
+    // is accepted and a pending event is created.
     await scheduler.intercept(
       {
         command: 'publish',
         cwd: packageDir,
-        args: ['--dry-run', '--no-git-checks', '-t', 'beta'],
+        args: ['--dry-run', '--no-git-checks', '--made-up-flag'],
       },
       { log, exit },
     );
 
-    expect(store.getEvents()).toEqual([]);
-    expect(packPackageMock).not.toHaveBeenCalled();
-    expect(readPackageTarballMock).not.toHaveBeenCalled();
-    expect(publishPackageMock).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith('stderr', "ERROR Unknown option: 't'\n");
-    expect(exit).toHaveBeenCalledWith(1, "ERROR Unknown option: 't'");
+    const pending = store.getEvents().find((event) => event.status === 'pending');
+    expect(pending?.payload?.kind).toBe('publish');
+    if (pending?.payload?.kind !== 'publish') return;
+    // The unknown flag must be preserved verbatim in the forwarded argv.
+    expect(pending.payload.data.args).toContain('--made-up-flag');
+    // No early failure: stderr/exit are not invoked at intercept time.
+    expect(log).not.toHaveBeenCalledWith('stderr', expect.stringContaining('Unknown option'));
+    expect(exit).not.toHaveBeenCalledWith(1, expect.stringContaining('Unknown option'));
   });
 
   it('Scenario: Given a config namespace publish option, When dry-run is confirmed, Then it warns and preserves source resolution', async () => {
@@ -3389,5 +3394,136 @@ describe('Feature: WebUI-created proactive events', () => {
     expect(pending?.payload?.kind).toBe('publish');
     if (pending?.payload?.kind !== 'publish') return;
     expect(pending.payload.data.source).toEqual({ kind: 'directory', path: packageDir });
+  });
+
+  // -------------------------------------------------------------------------
+  // CLI parity (Chapter 7.1.2): pnpm-pub as a drop-in for `pnpm publish`.
+  // -------------------------------------------------------------------------
+
+  it('Scenario: Given the -m/--multi recursive aliases, When intercepted, Then they route to a recursive-publish event like -r', async () => {
+    for (const recursiveAlias of ['-m', '--multi']) {
+      vi.resetAllMocks();
+      const workspaceRoot = path.join(sandbox, `publish-multi-${recursiveAlias}`);
+      const packageDir = path.join(workspaceRoot, 'packages/pkg');
+      await fsp.mkdir(packageDir, { recursive: true });
+      await fsp.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'root', version: '1.0.0', private: true }), 'utf8');
+      await fsp.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'multi-pkg', version: '2.0.0' }), 'utf8');
+
+      const store = new DaemonStore();
+      await store.load();
+      await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+      const scheduler = new PublishScheduler(store);
+
+      hasPnpmMock.mockResolvedValue(true);
+      listRecursivePackagesMock.mockResolvedValue([
+        { name: 'root', version: '1.0.0', path: workspaceRoot, private: true },
+        { name: 'multi-pkg', version: '2.0.0', path: packageDir, private: false },
+      ]);
+
+      await scheduler.intercept(
+        { command: 'publish', cwd: workspaceRoot, args: [recursiveAlias, '--no-git-checks'] },
+        { log: vi.fn(), exit: vi.fn() },
+      );
+
+      const pending = store.getEvents().find((e) => e.status === 'pending');
+      expect(pending?.payload?.kind).toBe('recursive-publish');
+    }
+  });
+
+  it('Scenario: Given the -F filter alias, When intercepted with a recursive publish, Then the alias is honored as a filter selector', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-filter-alias');
+    const pkgA = path.join(workspaceRoot, 'packages/a');
+    const pkgB = path.join(workspaceRoot, 'packages/b');
+    await fsp.mkdir(pkgA, { recursive: true });
+    await fsp.mkdir(pkgB, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'root', version: '1.0.0', private: true }), 'utf8');
+    await fsp.writeFile(path.join(pkgA, 'package.json'), JSON.stringify({ name: 'pkg-a', version: '1.0.0' }), 'utf8');
+    await fsp.writeFile(path.join(pkgB, 'package.json'), JSON.stringify({ name: 'pkg-b', version: '1.0.0' }), 'utf8');
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    const scheduler = new PublishScheduler(store);
+
+    hasPnpmMock.mockResolvedValue(true);
+    listRecursivePackagesMock.mockResolvedValue([
+      { name: 'pkg-a', version: '1.0.0', path: pkgA, private: false },
+      { name: 'pkg-b', version: '1.0.0', path: pkgB, private: false },
+    ]);
+
+    await scheduler.intercept(
+      { command: 'publish', cwd: workspaceRoot, args: ['-r', '-F', 'pkg-a', '--no-git-checks'] },
+      { log: vi.fn(), exit: vi.fn() },
+    );
+
+    const pending = store.getEvents().find((e) => e.status === 'pending');
+    expect(pending?.payload?.kind).toBe('recursive-publish');
+    if (pending?.payload?.kind !== 'recursive-publish') return;
+    // -F pkg-a narrows the selection to pkg-a only; pkg-b is filtered out.
+    expect(pending.payload.data.targets).toHaveLength(1);
+    expect(pending.payload.data.targets[0]?.name).toBe('pkg-a');
+  });
+
+  it('Scenario: Given -C/--dir <path>, When intercepted, Then the effective cwd is overridden and the flag is stripped from forwarded args', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-dir-override');
+    const targetDir = path.join(workspaceRoot, 'pkg');
+    await fsp.mkdir(targetDir, { recursive: true });
+    await fsp.writeFile(path.join(targetDir, 'package.json'), JSON.stringify({ name: 'dir-pkg', version: '3.1.4' }), 'utf8');
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    const scheduler = new PublishScheduler(store);
+
+    // Note: cwd is the workspace root, but -C points into pkg/.
+    await scheduler.intercept(
+      { command: 'publish', cwd: workspaceRoot, args: ['-C', './pkg', '--dry-run', '--no-git-checks'] },
+      { log: vi.fn(), exit: vi.fn() },
+    );
+
+    const pending = store.getEvents().find((e) => e.status === 'pending');
+    expect(pending?.payload?.kind).toBe('publish');
+    if (pending?.payload?.kind !== 'publish') return;
+    // The publish source must resolve to the -C directory, not the original cwd.
+    expect(pending.payload.data.source).toEqual({ kind: 'directory', path: targetDir });
+    expect(pending.payload.data.target.name).toBe('dir-pkg');
+    // -C and its value are stripped from the forwarded argv (the subprocess cwd
+    // is authoritative); --dry-run/--no-git-checks are preserved.
+    expect(pending.payload.data.args).not.toContain('-C');
+    expect(pending.payload.data.args).not.toContain('./pkg');
+    expect(pending.payload.data.args).toEqual(expect.arrayContaining(['--dry-run', '--no-git-checks']));
+  });
+
+  it('Scenario: Given --provenance, When intercepted, Then a one-time advisory note is written to stderr and the flag is forwarded', async () => {
+    const packageDir = path.join(sandbox, 'publish-provenance');
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'prov-pkg', version: '1.0.0' }), 'utf8');
+    const exit = vi.fn();
+    const stderr: string[] = [];
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    const scheduler = new PublishScheduler(store);
+
+    await scheduler.intercept(
+      { command: 'publish', cwd: packageDir, args: ['--provenance', '--no-git-checks'] },
+      {
+        log: (stream, data) => {
+          if (stream === 'stderr') stderr.push(data);
+        },
+        exit,
+      },
+    );
+
+    // The flag is forwarded verbatim (drop-in parity).
+    const pending = store.getEvents().find((e) => e.status === 'pending');
+    expect(pending?.payload?.kind).toBe('publish');
+    if (pending?.payload?.kind !== 'publish') return;
+    expect(pending.payload.data.args).toContain('--provenance');
+    // An advisory note about CI/OIDC is emitted exactly once on stderr.
+    const note = stderr.join('');
+    expect(note).toContain('--provenance');
+    expect(note).toMatch(/CI|OIDC|trusted/i);
   });
 });

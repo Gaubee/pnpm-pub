@@ -52,9 +52,12 @@ export function stripOverriddenArgs(args: string[], flags: string[]): string[] {
   return out;
 }
 
-/** Ensure the recursive flag is present in the forwarded argv. */
+/** Ensure the recursive flag is present in the forwarded argv. Recognizes the
+ *  `-r`/`--recursive` aliases and pnpm's legacy `-m`/`--multi` as "already
+ *  recursive" so we never prepend a duplicate. */
 export function ensureRecursive(args: string[]): string[] {
-  return args.includes('-r') || args.includes('--recursive') ? args : ['-r', ...args];
+  const alreadyRecursive = args.some((arg) => arg === '-r' || arg === '--recursive' || arg === '-m' || arg === '--multi');
+  return alreadyRecursive ? args : ['-r', ...args];
 }
 
 interface RunPublishSubprocessOpts {

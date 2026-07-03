@@ -417,6 +417,7 @@ export async function main(argv: string[]): Promise<void> {
     )
     .command('status', 'Check the running daemon and active profile')
     .command('stop', 'Gracefully stop the daemon')
+    .command('version', 'Print the pnpm-pub version')
     .option('profile', { type: 'string', describe: 'Profile to use for the action' })
     .help(false)
     .version(false)
@@ -443,6 +444,13 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (positional[0] === 'stop') {
     process.exit(await runStop());
+  }
+  if (positional[0] === 'version') {
+    // pnpm-pub's own version. Note `pnpm-pub --version` is distinct: it is a
+    // publish terminal intent (Chapter 7.1.2) and forwards to `pnpm publish
+    // --version` (≡ `pnpm --version`), preserving muscle-memory parity.
+    process.stdout.write(`${CLI_VERSION}\n`);
+    process.exit(0);
   }
 
   // Fallback: everything is a publish intent. We deliberately re-read the raw
