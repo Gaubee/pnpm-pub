@@ -6,18 +6,18 @@
  * authorises anything over this channel — it only accepts action intents and
  * relays stdout/stderr/exit frames back to the waiting terminal.
  */
-import net from 'node:net';
-import fs from 'node:fs';
-import path from 'node:path';
-import { encodeFrame, FrameReader, isIpcRequest } from '../shared/frame.js';
+import net from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import { encodeFrame, FrameReader, isIpcRequest } from "../shared/frame.js";
 import type {
   IpcPublishRequest,
   IpcHandshake,
   IpcStatusFrame,
   IpcRequest,
-} from '../shared/index.js';
-import { socketPath, runDir, daemonLogPath } from '../shared/paths.js';
-import type { PublishScheduler, PendingClient } from './scheduler.js';
+} from "../shared/index.js";
+import { socketPath, runDir, daemonLogPath } from "../shared/paths.js";
+import type { PublishScheduler, PendingClient } from "./scheduler.js";
 
 export interface IpcServerDeps {
   scheduler: PublishScheduler;
@@ -46,7 +46,7 @@ export class IpcServer {
     }
     // Restrict the run directory to the current user BEFORE the socket is
     // created, so no other user can race in (Chapter 3.2.1).
-    if (process.platform !== 'win32') {
+    if (process.platform !== "win32") {
       try {
         fs.chmodSync(dir, 0o700);
       } catch {
@@ -62,14 +62,14 @@ export class IpcServer {
 
     return new Promise<boolean>((resolve) => {
       const server = net.createServer((socket) => this.handle(socket));
-      server.on('error', () => resolve(false));
+      server.on("error", () => resolve(false));
       server.listen(sock, () => {
         this.server = server;
         // Chapter 3.2.1 hard requirement: chmod 600 on the socket file. We do
         // this SYNCHRONOUSLY inside the listening callback (the file now
         // exists) so the permission is in effect before any client connects —
         // there is no window where the socket is world-readable.
-        if (process.platform !== 'win32') {
+        if (process.platform !== "win32") {
           try {
             fs.chmodSync(sock, 0o600);
           } catch {
@@ -87,7 +87,7 @@ export class IpcServer {
     const makeClient = (): PendingClient => ({
       log: (stream, data) => safeWrite(socket, encodeFrame({ type: stream, data })),
       exit: (code, message) => {
-        safeWrite(socket, encodeFrame({ type: 'exit', code, message }));
+        safeWrite(socket, encodeFrame({ type: "exit", code, message }));
         try {
           socket.end();
         } catch {
@@ -96,11 +96,11 @@ export class IpcServer {
       },
     });
 
-    socket.on('data', async (chunk) => {
+    socket.on("data", async (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcRequest(frame)) {
-          writeExit(socket, 1, 'invalid IPC request');
+          writeExit(socket, 1, "invalid IPC request");
           continue;
         }
         await this.dispatch(frame, socket, () => {
@@ -109,7 +109,7 @@ export class IpcServer {
         });
       }
     });
-    socket.on('error', () => {
+    socket.on("error", () => {
       /* connection reset — ignore */
     });
   }
@@ -125,7 +125,7 @@ export class IpcServer {
         // Newer CLI -> old daemon: instruct self-destruct.
         if (isNewerVersion(frame.cliVersion, this.deps.cliVersion)) {
           // Signal exit; CLI will spawn a fresh daemon.
-          writeExit(socket, 0, 'daemon-outdated');
+          writeExit(socket, 0, "daemon-outdated");
           this.deps.onStop?.();
           return;
         }
@@ -138,10 +138,10 @@ export class IpcServer {
       return;
     }
     const cmd = frame.command;
-    if (cmd === 'status') {
+    if (cmd === "status") {
       const info = this.deps.onStatus?.() ?? { active: true };
       const status: IpcStatusFrame = {
-        type: 'status',
+        type: "status",
         active: info.active,
         profile: info.profile,
         pid: info.pid,
@@ -154,12 +154,12 @@ export class IpcServer {
       }
       return;
     }
-    if (cmd === 'stop') {
-      safeWrite(socket, encodeFrame({ type: 'status', active: false }));
+    if (cmd === "stop") {
+      safeWrite(socket, encodeFrame({ type: "status", active: false }));
       await this.deps.onStop?.();
       return;
     }
-    if (cmd === 'start') {
+    if (cmd === "start") {
       if (frame.profileOverride && frame.profileOverride.length > 0) {
         const applied = (await this.deps.onStart?.(frame.profileOverride)) ?? true;
         if (!applied) {
@@ -173,7 +173,7 @@ export class IpcServer {
           return;
         }
       }
-      safeWrite(socket, encodeFrame({ type: 'status', active: true }));
+      safeWrite(socket, encodeFrame({ type: "status", active: true }));
       try {
         socket.end();
       } catch {
@@ -202,30 +202,30 @@ function safeWrite(socket: net.Socket, buf: Uint8Array): void {
 }
 
 function writeExit(socket: net.Socket, code: number, message: string): void {
-  safeWrite(socket, encodeFrame({ type: 'exit', code, message }));
+  safeWrite(socket, encodeFrame({ type: "exit", code, message }));
 }
 
 function isIpcHandshake(frame: IpcRequest): frame is IpcHandshake {
-  return 'cliVersion' in frame && typeof frame.cliVersion === 'string';
+  return "cliVersion" in frame && typeof frame.cliVersion === "string";
 }
 
 function isIpcPublishRequest(frame: IpcRequest): frame is IpcPublishRequest {
   return (
-    'command' in frame &&
-    frame.command === 'publish' &&
-    typeof frame.cwd === 'string' &&
+    "command" in frame &&
+    frame.command === "publish" &&
+    typeof frame.cwd === "string" &&
     Array.isArray(frame.args) &&
-    frame.args.every((arg) => typeof arg === 'string') &&
+    frame.args.every((arg) => typeof arg === "string") &&
     isOptionalString(frame.profileOverride)
   );
 }
 
 function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === 'string';
+  return value === undefined || typeof value === "string";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNewerVersion(candidate: string, current: string): boolean {
@@ -244,10 +244,12 @@ interface ParsedSemver {
 }
 
 function parseSemver(version: string): ParsedSemver {
-  const [withoutBuild = ''] = version.split('+', 1);
-  const [core = '', prereleaseText] = withoutBuild.split('-', 2);
-  const parts = core.split('.');
-  const prerelease = prereleaseText ? prereleaseText.split('.').filter((part) => part.length > 0) : [];
+  const [withoutBuild = ""] = version.split("+", 1);
+  const [core = "", prereleaseText] = withoutBuild.split("-", 2);
+  const parts = core.split(".");
+  const prerelease = prereleaseText
+    ? prereleaseText.split(".").filter((part) => part.length > 0)
+    : [];
   return {
     core: [readVersionPart(parts[0]), readVersionPart(parts[1]), readVersionPart(parts[2])],
     prerelease,

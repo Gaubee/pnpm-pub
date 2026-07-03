@@ -2,12 +2,12 @@
  * memfs adapter for the workspace engine tests (Chapter 10.1.3).
  * Lets us build an entire virtual monorepo in memory and scan it.
  */
-import path from 'node:path';
-import { Volume, createFsFromVolume } from 'memfs';
-import type { IFs } from 'memfs';
-import type { fs as FsAPI } from '../../src/daemon/fs-types.js';
+import path from "node:path";
+import { Volume, createFsFromVolume } from "memfs";
+import type { IFs } from "memfs";
+import type { fs as FsAPI } from "../../src/daemon/fs-types.js";
 
-export const ROOT = '/proj';
+export const ROOT = "/proj";
 
 export interface MemVolume {
   /** The fs facade the scanner talks to. */
@@ -25,7 +25,7 @@ export function makeVolume(): MemVolume {
   const fs: FsAPI = {
     join: (...parts: string[]) => path.posix.join(...parts),
     dirname: (p) => path.posix.dirname(p),
-    home: () => '/home/test',
+    home: () => "/home/test",
     async exists(p) {
       return mem.existsSync(p);
     },
@@ -43,8 +43,8 @@ export function makeVolume(): MemVolume {
     async readFile(p) {
       const data = await mem.promises.readFile(p);
       // memfs returns a Uint8Array; coerce to a UTF-8 string.
-      if (typeof data === 'string') return data;
-      return Buffer.from(data).toString('utf8');
+      if (typeof data === "string") return data;
+      return Buffer.from(data).toString("utf8");
     },
   };
 

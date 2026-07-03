@@ -5,11 +5,11 @@
  * Vite WebUI server and the daemon runtime. Dev mode must not build/copy the
  * WebUI; Vite is the document origin and proxies daemon API/WS traffic.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { once } from 'node:events';
-import net from 'node:net';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type SpawnFn = typeof spawn;
 
@@ -24,7 +24,7 @@ interface ChildExit {
   signal: NodeJS.Signals | null;
 }
 
-const IS_WINDOWS = process.platform === 'win32';
+const IS_WINDOWS = process.platform === "win32";
 
 export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
   const active = new Set<ManagedChild>();
@@ -42,30 +42,30 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
     void killActiveChildren(signal);
   };
 
-  process.once('exit', () => {
+  process.once("exit", () => {
     for (const { child } of active) {
-      void terminateChild(child, 'SIGTERM');
+      void terminateChild(child, "SIGTERM");
     }
   });
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 
   try {
     const webui = spawnManaged(
       spawnImpl,
       active,
-      'pnpm',
+      "pnpm",
       [
-        '--dir',
-        'webui',
-        'exec',
-        'vite',
-        'dev',
-        '--host',
-        '127.0.0.1',
-        '--port',
+        "--dir",
+        "webui",
+        "exec",
+        "vite",
+        "dev",
+        "--host",
+        "127.0.0.1",
+        "--port",
         webuiPort,
-        '--strictPort',
+        "--strictPort",
       ],
       { PNPM_PUB_DEV_DAEMON_PORT: daemonPort },
     );
@@ -77,16 +77,10 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
     // handshake this daemon depends on, so the WebUI WS connection silently
     // fails under bun). tsx matches Node's http semantics; keychain (keytar)
     // works under tsx via the ESM __dirname shim in keychain.ts.
-    const daemon = spawnManaged(
-      spawnImpl,
-      active,
-      'pnpm',
-      ['exec', 'tsx', 'src/daemon/dev.ts'],
-      {
-        PNPM_PUB_DEV_DAEMON_PORT: daemonPort,
-        PNPM_PUB_DEV_WEBVIEW_URL: webviewUrl,
-      },
-    );
+    const daemon = spawnManaged(spawnImpl, active, "pnpm", ["exec", "tsx", "src/daemon/dev.ts"], {
+      PNPM_PUB_DEV_DAEMON_PORT: daemonPort,
+      PNPM_PUB_DEV_WEBVIEW_URL: webviewUrl,
+    });
     const exit = await waitForFirstChildExit(webui, daemon);
     if (!shuttingDown) {
       console.error(
@@ -97,9 +91,9 @@ export async function main(spawnImpl: SpawnFn = spawn): Promise<void> {
       process.exitCode = exit.code;
     }
   } finally {
-    process.off('SIGINT', onSignal);
-    process.off('SIGTERM', onSignal);
-    await killActiveChildren('SIGINT');
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    await killActiveChildren("SIGINT");
   }
 }
 
@@ -111,7 +105,7 @@ function spawnManaged(
   env: NodeJS.ProcessEnv = {},
 ): ManagedChild {
   const child = spawnImpl(command, [...args], {
-    stdio: 'inherit',
+    stdio: "inherit",
     detached: !IS_WINDOWS,
     env: {
       ...process.env,
@@ -119,18 +113,22 @@ function spawnManaged(
       PNPM_PUB_DEV_SUPERVISOR_PID: String(process.pid),
     },
   });
-  const managed = { child, label: `${command} ${args.join(' ')}` };
+  const managed = { child, label: `${command} ${args.join(" ")}` };
   active.add(managed);
   const clear = () => active.delete(managed);
-  child.once('exit', (code, signal) => {
-    console.error(`[dev] child exit: ${managed.label} code=${String(code)} signal=${String(signal)}`);
+  child.once("exit", (code, signal) => {
+    console.error(
+      `[dev] child exit: ${managed.label} code=${String(code)} signal=${String(signal)}`,
+    );
     clear();
   });
-  child.once('close', (code, signal) => {
-    console.error(`[dev] child close: ${managed.label} code=${String(code)} signal=${String(signal)}`);
+  child.once("close", (code, signal) => {
+    console.error(
+      `[dev] child close: ${managed.label} code=${String(code)} signal=${String(signal)}`,
+    );
     clear();
   });
-  child.once('error', clear);
+  child.once("error", clear);
   return managed;
 }
 
@@ -146,35 +144,39 @@ function killChild(child: ChildProcess, signal: NodeJS.Signals): Promise<void> {
       resolve();
     };
     const forceKill = setTimeout(() => {
-      void terminateChild(child, 'SIGKILL').catch(finish);
+      void terminateChild(child, "SIGKILL").catch(finish);
     }, 2_000);
     const giveUp = setTimeout(finish, 5_000);
-    void once(child, 'exit').then(finish).catch(finish);
-    void once(child, 'close').then(finish).catch(finish);
+    void once(child, "exit").then(finish).catch(finish);
+    void once(child, "close").then(finish).catch(finish);
     void terminateChild(child, signal).catch(finish);
   });
 }
 
-function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+function waitForChildExit(
+  child: ChildProcess,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
   });
 }
 
 function waitForFirstChildExit(...children: ManagedChild[]): Promise<ChildExit> {
   return Promise.race(
-    children.map(({ child, label }) => waitForChildExit(child).then((exit) => ({ label, ...exit }))),
+    children.map(({ child, label }) =>
+      waitForChildExit(child).then((exit) => ({ label, ...exit })),
+    ),
   );
 }
 
 function allocateRandomPort(): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
-      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const port = typeof addr === "object" && addr ? addr.port : 0;
       server.close((error) => {
         if (error) reject(error);
         else resolve(port);
@@ -206,12 +208,12 @@ async function terminateChild(child: ChildProcess, signal: NodeJS.Signals): Prom
 }
 
 function isMissingProcess(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && (error as { code?: string }).code === 'ESRCH';
+  return error instanceof Error && "code" in error && (error as { code?: string }).code === "ESRCH";
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   void main().catch((err: unknown) => {
-    console.error('[dev] fatal:', err);
+    console.error("[dev] fatal:", err);
     process.exit(1);
   });
 }

@@ -4,9 +4,9 @@
  * `safeParse`, returning null on validation failure (mirrors the old hand-
  * written validators but with full structural coverage).
  */
-import { z } from 'zod';
-import { TrustedPublisherConfigSchema } from '$shared/schemas.js';
-import type { TrustedPublisherConfig, NpmPackage, PackageDetail, ProfileDetail } from './types.js';
+import { z } from "zod";
+import { TrustedPublisherConfigSchema } from "$shared/schemas.js";
+import type { TrustedPublisherConfig, NpmPackage, PackageDetail, ProfileDetail } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Response schemas (passthrough for forward-compat with new daemon fields)
@@ -44,7 +44,7 @@ const NpmProfileLookupResponseSchema = z.object({
       username: z.string(),
       registry: z.string(),
       avatarUrl: z.string().nullable(),
-      source: z.enum(['authenticated-profile', 'registry-profile', 'maintainer-gravatar', 'none']),
+      source: z.enum(["authenticated-profile", "registry-profile", "maintainer-gravatar", "none"]),
     })
     .optional(),
 });
@@ -146,11 +146,28 @@ export type ImportResponse = z.infer<typeof ImportResponseSchema>;
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 export type NpmProfileLookupResponse = z.infer<typeof NpmProfileLookupResponseSchema>;
 export type TrustListResponse = { ok: boolean; configs?: TrustedPublisherConfig[]; error?: string };
-export type NpmPackageResponse = { ok: boolean; items?: NpmPackage[]; total?: number; page?: number; pageSize?: number; error?: string };
+export type NpmPackageResponse = {
+  ok: boolean;
+  items?: NpmPackage[];
+  total?: number;
+  page?: number;
+  pageSize?: number;
+  error?: string;
+};
 export type ProfileTokenResponse = z.infer<typeof ProfileTokenResponseSchema>;
 export type ProfilePasswordResponse = z.infer<typeof ProfilePasswordResponseSchema>;
-export type ProfileDetailResponse = { ok: boolean; detail?: ProfileDetail; needsReauth?: boolean; error?: string };
-export type PackageDetailResponse = { ok: boolean; detail?: PackageDetail; needsReauth?: boolean; error?: string };
+export type ProfileDetailResponse = {
+  ok: boolean;
+  detail?: ProfileDetail;
+  needsReauth?: boolean;
+  error?: string;
+};
+export type PackageDetailResponse = {
+  ok: boolean;
+  detail?: PackageDetail;
+  needsReauth?: boolean;
+  error?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Parsers
@@ -177,11 +194,11 @@ export function parseNpmProfileLookupResponse(value: unknown): NpmProfileLookupR
 }
 
 export function parseTrustListResponse(value: unknown): TrustListResponse | null {
-	return safeOrNull(TrustListResponseSchema, value);
+  return safeOrNull(TrustListResponseSchema, value);
 }
 
 export function parsePackagesResponse(value: unknown): NpmPackageResponse | null {
-	return safeOrNull(PackagesResponseSchema, value);
+  return safeOrNull(PackagesResponseSchema, value);
 }
 
 export function parseProfileTokenResponse(value: unknown): ProfileTokenResponse | null {
@@ -193,11 +210,11 @@ export function parseProfilePasswordResponse(value: unknown): ProfilePasswordRes
 }
 
 export function parseProfileDetailResponse(value: unknown): ProfileDetailResponse | null {
-	return safeOrNull(ProfileDetailResponseSchema, value);
+  return safeOrNull(ProfileDetailResponseSchema, value);
 }
 
 export function parsePackageDetailResponse(value: unknown): PackageDetailResponse | null {
-	return safeOrNull(PackageDetailResponseSchema, value);
+  return safeOrNull(PackageDetailResponseSchema, value);
 }
 
 /** Run safeParse; return the data on success, null on failure. */

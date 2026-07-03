@@ -11,14 +11,14 @@ services:
     image: verdaccio/verdaccio:6
     container_name: pnpm-pub-verdaccio
     ports:
-      - '4873:4873'
+      - "4873:4873"
     environment:
       VERDACCIO_PUBLIC_URL: http://localhost:4873
     volumes:
       - ./verdaccio.config.yaml:/verdaccio/conf/config.yaml:ro
       - verdaccio-storage:/verdaccio/storage
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:4873/-/ping']
+      test: ["CMD", "wget", "-qO-", "http://localhost:4873/-/ping"]
       interval: 2s
       timeout: 3s
       retries: 30

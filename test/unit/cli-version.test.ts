@@ -6,7 +6,7 @@
  * terminal intent (Chapter 7.1.2) that forwards verbatim to
  * `pnpm publish --version` (≡ `pnpm --version`).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 
 const mockState = vi.hoisted((): { responseFrames: unknown[]; frames: unknown[] } => ({
   responseFrames: [],
@@ -16,8 +16,8 @@ const mockState = vi.hoisted((): { responseFrames: unknown[]; frames: unknown[] 
 // Mock node:net so the CLI never spawns or contacts a real daemon. The version
 // subcommand must short-circuit before any IPC, so the socket is never used —
 // but mocking keeps the test hermetic if routing ever regresses.
-vi.mock('node:net', async () => {
-  const { EventEmitter } = await import('node:events');
+vi.mock("node:net", async () => {
+  const { EventEmitter } = await import("node:events");
 
   class CliVersionMockSocket extends EventEmitter {
     write(chunk: Buffer | Uint8Array | string): boolean {
@@ -25,11 +25,11 @@ vi.mock('node:net', async () => {
       return true;
     }
     end(): this {
-      setImmediate(() => this.emit('close'));
+      setImmediate(() => this.emit("close"));
       return this;
     }
     destroy(): this {
-      setImmediate(() => this.emit('close'));
+      setImmediate(() => this.emit("close"));
       return this;
     }
   }
@@ -39,14 +39,14 @@ vi.mock('node:net', async () => {
   return {
     default: {
       createConnection: vi.fn(() => {
-        setImmediate(() => socket.emit('connect'));
+        setImmediate(() => socket.emit("connect"));
         return socket;
       }),
     },
   };
 });
 
-describe('CLI version subcommand', () => {
+describe("CLI version subcommand", () => {
   beforeEach(() => {
     vi.resetModules();
     mockState.frames = [];
@@ -57,15 +57,15 @@ describe('CLI version subcommand', () => {
     vi.restoreAllMocks();
   });
 
-  it('Scenario: Given the version subcommand, When run, Then it prints pnpm-pub version and exits 0 without IPC', async () => {
-    const { main } = await import('../../src/cli/cli.js');
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+  it("Scenario: Given the version subcommand, When run, Then it prints pnpm-pub version and exits 0 without IPC", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new ExitCode(code ?? 0);
     });
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     try {
-      await main(['node', 'pnpm-pub', 'version']);
+      await main(["node", "pnpm-pub", "version"]);
     } catch (err) {
       expectExitCode(err, 0);
     }
@@ -86,7 +86,7 @@ class ExitCode {
 function expectExitCode(value: unknown, code: number): void {
   expect(value).toBeInstanceOf(ExitCode);
   if (!(value instanceof ExitCode)) {
-    throw new Error('Expected process.exit to throw ExitCode.');
+    throw new Error("Expected process.exit to throw ExitCode.");
   }
   expect(value.code).toBe(code);
 }

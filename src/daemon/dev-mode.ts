@@ -13,19 +13,19 @@ export interface DevTrayMode {
 }
 
 export function resolveDevTrayMode(
-  env: Partial<Pick<NodeJS.ProcessEnv, 'PNPM_PUB_DEV_NO_TRAY' | 'PNPM_PUB_DEV_STRICT_TRAY'>>,
+  env: Partial<Pick<NodeJS.ProcessEnv, "PNPM_PUB_DEV_NO_TRAY" | "PNPM_PUB_DEV_STRICT_TRAY">>,
   platform: NodeJS.Platform,
 ): DevTrayMode {
-  const trayDisabledByEnv = env.PNPM_PUB_DEV_NO_TRAY === '1';
-  const supportsNativeTray = platform === 'darwin' || platform === 'win32';
+  const trayDisabledByEnv = env.PNPM_PUB_DEV_NO_TRAY === "1";
+  const supportsNativeTray = platform === "darwin" || platform === "win32";
   const withTray = supportsNativeTray && !trayDisabledByEnv;
-  const strictTrayMount = withTray && env.PNPM_PUB_DEV_STRICT_TRAY === '1';
+  const strictTrayMount = withTray && env.PNPM_PUB_DEV_STRICT_TRAY === "1";
 
   if (trayDisabledByEnv) {
     return {
       withTray,
       strictTrayMount,
-      notice: 'native tray disabled by PNPM_PUB_DEV_NO_TRAY=1; running headless',
+      notice: "native tray disabled by PNPM_PUB_DEV_NO_TRAY=1; running headless",
     };
   }
 

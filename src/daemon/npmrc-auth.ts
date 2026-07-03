@@ -14,10 +14,10 @@
  * All functions here are pure / side-effect-bounded so they can be unit-tested
  * without spawning pnpm.
  */
-import { promises as fsp } from 'node:fs';
-import path from 'node:path';
+import { promises as fsp } from "node:fs";
+import path from "node:path";
 
-const NPMRC_FILENAME = '.npmrc';
+const NPMRC_FILENAME = ".npmrc";
 
 /** Lines we strip+replace when injecting our own authoritative values.
  *  Matches the canonical `//<host>[:<path>]/:_authToken=` form (colon required
@@ -36,8 +36,8 @@ const REGISTRY_LINE_RE = /^\s*registry\s*=/;
  * never reaches the registry — every publish then fails auth.
  */
 export function registryAuthPrefix(registry: string): string {
-  const noProto = registry.replace(/^[a-z]+:\/\//i, '');
-  const noTrailing = noProto.replace(/\/+$/, '');
+  const noProto = registry.replace(/^[a-z]+:\/\//i, "");
+  const noTrailing = noProto.replace(/\/+$/, "");
   return `//${noTrailing}/`;
 }
 
@@ -53,14 +53,21 @@ export function registryAuthPrefix(registry: string): string {
  *
  * Blank lines are dropped so the result stays tidy regardless of input shape.
  */
-export function mergeAuthIntoNpmrc(content: string, registry: string, prefix: string, token: string): string {
+export function mergeAuthIntoNpmrc(
+  content: string,
+  registry: string,
+  prefix: string,
+  token: string,
+): string {
   const preserved = content
-    .split('\n')
-    .filter((line) => line.trim().length > 0 && !AUTH_LINE_RE.test(line) && !REGISTRY_LINE_RE.test(line));
+    .split("\n")
+    .filter(
+      (line) => line.trim().length > 0 && !AUTH_LINE_RE.test(line) && !REGISTRY_LINE_RE.test(line),
+    );
   const registryLine = `registry=${registry}`;
   const authLine = `${prefix}:_authToken=${token}`;
   const managed = `${registryLine}\n${authLine}\n`;
-  return preserved.length > 0 ? `${preserved.join('\n')}\n${managed}` : managed;
+  return preserved.length > 0 ? `${preserved.join("\n")}\n${managed}` : managed;
 }
 
 /** Existing `.npmrc` state captured for restore (or `null` if none existed). */
@@ -107,7 +114,7 @@ export async function withTempNpmrc<T>(
 ): Promise<T> {
   const snapshot = await captureSnapshot(cwd);
   const prefix = registryAuthPrefix(registry);
-  const previous = snapshot.original?.toString('utf8') ?? '';
+  const previous = snapshot.original?.toString("utf8") ?? "";
   const next = mergeAuthIntoNpmrc(previous, registry, prefix, token);
   await fsp.writeFile(snapshot.file, next, { mode: 0o600 });
   try {

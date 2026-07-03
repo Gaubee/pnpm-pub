@@ -6,13 +6,13 @@
  * (Chapter 1.3.1 / 7.1.2). The produced tarball is returned as bytes so the
  * NPM API layer can attach it to the publish request.
  */
-import { spawn } from 'node:child_process';
-import { promises as fsp } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { Buffer } from 'node:buffer';
-import { gunzip } from 'node:zlib';
-import { promisify } from 'node:util';
+import { spawn } from "node:child_process";
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Buffer } from "node:buffer";
+import { gunzip } from "node:zlib";
+import { promisify } from "node:util";
 
 const gunzipAsync = promisify(gunzip);
 
@@ -47,19 +47,19 @@ export interface PackOptions {
 function parsePackageMetadata(text: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (!isJsonObject(parsed)) {
-    throw new Error('Invalid package.json metadata.');
+    throw new Error("Invalid package.json metadata.");
   }
   return parsed;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readTarString(block: Buffer, start: number, length: number): string {
   const raw = block.subarray(start, start + length);
   const nul = raw.indexOf(0);
-  return raw.subarray(0, nul >= 0 ? nul : raw.length).toString('utf8');
+  return raw.subarray(0, nul >= 0 ? nul : raw.length).toString("utf8");
 }
 
 function readTarSize(block: Buffer): number {
@@ -82,7 +82,16 @@ function tarEntryName(block: Buffer): string {
   return prefix ? `${prefix}/${name}` : name;
 }
 
-function walkTarEntries(tarball: Buffer, visit: (entry: { header: Buffer; name: string; size: number; bodyStart: number; bodyEnd: number }) => void): void {
+function walkTarEntries(
+  tarball: Buffer,
+  visit: (entry: {
+    header: Buffer;
+    name: string;
+    size: number;
+    bodyStart: number;
+    bodyEnd: number;
+  }) => void,
+): void {
   let offset = 0;
   while (offset + 512 <= tarball.length) {
     const header = tarball.subarray(offset, offset + 512);
@@ -100,23 +109,23 @@ function walkTarEntries(tarball: Buffer, visit: (entry: { header: Buffer; name: 
 function extractPackageJsonFromTar(tarball: Buffer): string {
   let packageJson: string | null = null;
   walkTarEntries(tarball, ({ name, bodyStart, bodyEnd }) => {
-    if (name === 'package/package.json' || name.endsWith('/package.json')) {
-      packageJson = tarball.subarray(bodyStart, bodyEnd).toString('utf8');
+    if (name === "package/package.json" || name.endsWith("/package.json")) {
+      packageJson = tarball.subarray(bodyStart, bodyEnd).toString("utf8");
     }
   });
   if (packageJson) {
     return packageJson;
   }
-  throw new Error('Tarball does not contain package.json metadata.');
+  throw new Error("Tarball does not contain package.json metadata.");
 }
 
 function normalizePackageTarPath(name: string): string {
-  return name.startsWith('package/') ? name.slice('package/'.length) : name;
+  return name.startsWith("package/") ? name.slice("package/".length) : name;
 }
 
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function readDependencyObjectNames(value: unknown): string[] {
@@ -137,12 +146,12 @@ function readBundledDependencyNames(metadata: Record<string, unknown>): string[]
 }
 
 function readNodeModulesPackageName(file: string): string | undefined {
-  const prefix = 'node_modules/';
+  const prefix = "node_modules/";
   if (!file.startsWith(prefix)) return undefined;
-  const parts = file.slice(prefix.length).split('/');
+  const parts = file.slice(prefix.length).split("/");
   const first = parts[0];
   if (!first) return undefined;
-  if (first.startsWith('@')) {
+  if (first.startsWith("@")) {
     const second = parts[1];
     return second ? `${first}/${second}` : undefined;
   }
@@ -158,7 +167,7 @@ function summarizeTar(tarball: Buffer): PackageTarballSummary {
   let entryCount = 0;
   walkTarEntries(tarball, ({ header, name, size }) => {
     const type = readTarString(header, 156, 1);
-    if (type && type !== '0') return;
+    if (type && type !== "0") return;
     const normalized = normalizePackageTarPath(name);
     if (!normalized) return;
     unpackedSize += size;
@@ -182,7 +191,7 @@ function summarizeTar(tarball: Buffer): PackageTarballSummary {
 /** Normalize child-process output chunks before adding them to captured output. */
 export function normalizeOutputChunk(chunk: unknown): Buffer | null {
   if (Buffer.isBuffer(chunk)) return chunk;
-  if (typeof chunk === 'string') return Buffer.from(chunk, 'utf8');
+  if (typeof chunk === "string") return Buffer.from(chunk, "utf8");
   if (chunk instanceof Uint8Array) return Buffer.from(chunk);
   return null;
 }
@@ -193,19 +202,23 @@ function pushOutputChunk(chunks: Buffer[], chunk: unknown): void {
 }
 
 /** Run a command, capturing stdout/stderr text. */
-function run(cmd: string, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
+function run(
+  cmd: string,
+  args: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, shell: process.platform === 'win32' });
+    const child = spawn(cmd, args, { cwd, shell: process.platform === "win32" });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    child.stdout.on('data', (chunk: unknown) => pushOutputChunk(stdoutChunks, chunk));
-    child.stderr.on('data', (chunk: unknown) => pushOutputChunk(stderrChunks, chunk));
-    child.on('error', () => resolve({ code: 1, stdout: '', stderr: 'spawn failed' }));
-    child.on('close', (code) =>
+    child.stdout.on("data", (chunk: unknown) => pushOutputChunk(stdoutChunks, chunk));
+    child.stderr.on("data", (chunk: unknown) => pushOutputChunk(stderrChunks, chunk));
+    child.on("error", () => resolve({ code: 1, stdout: "", stderr: "spawn failed" }));
+    child.on("close", (code) =>
       resolve({
         code: code ?? 0,
-        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
       }),
     );
   });
@@ -213,7 +226,7 @@ function run(cmd: string, args: string[], cwd: string): Promise<{ code: number; 
 
 /** Whether a given binary is resolvable on PATH. */
 async function has(cmd: string, cwd: string): Promise<boolean> {
-  const probe = await run(cmd, ['--version'], cwd);
+  const probe = await run(cmd, ["--version"], cwd);
   return probe.code === 0;
 }
 
@@ -227,7 +240,7 @@ async function newestTgz(dir: string): Promise<string | null> {
   }
   let newest: { path: string; mtime: number } | null = null;
   for (const entry of entries) {
-    if (!entry.endsWith('.tgz')) continue;
+    if (!entry.endsWith(".tgz")) continue;
     const full = path.join(dir, entry);
     try {
       const st = await fsp.stat(full);
@@ -246,24 +259,24 @@ async function newestTgz(dir: string): Promise<string | null> {
  */
 export async function packPackage(cwd: string, opts: PackOptions = {}): Promise<PackResult> {
   // Read metadata BEFORE packing so we can name/validate the result.
-  const pkgJsonPath = path.join(cwd, 'package.json');
-  const metadata = parsePackageMetadata(await fsp.readFile(pkgJsonPath, 'utf8'));
+  const pkgJsonPath = path.join(cwd, "package.json");
+  const metadata = parsePackageMetadata(await fsp.readFile(pkgJsonPath, "utf8"));
 
-  const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pnpm-pub-pack-'));
+  const outputDir = await fsp.mkdtemp(path.join(os.tmpdir(), "pnpm-pub-pack-"));
   try {
     let res: { code: number; stdout: string; stderr: string };
     if (opts.ignoreScripts) {
-      if (await has('npm', cwd)) {
-        res = await run('npm', ['pack', '--pack-destination', outputDir, '--ignore-scripts'], cwd);
+      if (await has("npm", cwd)) {
+        res = await run("npm", ["pack", "--pack-destination", outputDir, "--ignore-scripts"], cwd);
       } else {
-        throw new Error('npm is required on PATH to pack with --ignore-scripts.');
+        throw new Error("npm is required on PATH to pack with --ignore-scripts.");
       }
-    } else if (await has('pnpm', cwd)) {
-      res = await run('pnpm', ['pack', '--pack-destination', outputDir], cwd);
-    } else if (await has('npm', cwd)) {
-      res = await run('npm', ['pack', '--pack-destination', outputDir], cwd);
+    } else if (await has("pnpm", cwd)) {
+      res = await run("pnpm", ["pack", "--pack-destination", outputDir], cwd);
+    } else if (await has("npm", cwd)) {
+      res = await run("npm", ["pack", "--pack-destination", outputDir], cwd);
     } else {
-      throw new Error('Neither pnpm nor npm is available on PATH; cannot pack.');
+      throw new Error("Neither pnpm nor npm is available on PATH; cannot pack.");
     }
     if (res.code !== 0) {
       throw new Error(`pack failed (exit ${res.code}): ${res.stderr || res.stdout}`);
@@ -271,7 +284,7 @@ export async function packPackage(cwd: string, opts: PackOptions = {}): Promise<
 
     const packedTarballFile = await newestTgz(outputDir);
     if (!packedTarballFile) {
-      throw new Error('pack succeeded but no .tgz was produced');
+      throw new Error("pack succeeded but no .tgz was produced");
     }
     const tarball = await fsp.readFile(packedTarballFile);
 

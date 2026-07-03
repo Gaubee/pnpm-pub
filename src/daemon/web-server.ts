@@ -5,33 +5,60 @@
  * carrying the daemon's per-process WebToken. All NPM write intents are
  * funnelled through the WS bridge into the scheduler.
  */
-import http from 'node:http';
-import path from 'node:path';
-import { promises as fsp, existsSync } from 'node:fs';
-import { Buffer } from 'node:buffer';
-import type { DaemonStore } from './store.js';
-import type { PublishScheduler } from './scheduler.js';
-import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
-import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage, TrustedPublisherConfig } from '../shared/index.js';
-import { z } from 'zod';
-import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
-import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot, readWorkspacePackages } from './workspace.js';
-import { realFs } from './real-fs.js';
-import { applyToken, verifyCredentials } from './npm-api.js';
-import { getCachedRepoInfo } from './repo-info.js';
-import { listMaintainerPackages, type NpmPackage } from './npm-packages.js';
-import { fetchPackageDetail, type PackageDetailResult } from './npm-package-detail.js';
-import { readProfileDetail } from './npm-profile-client.js';
-import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTotpSecret, getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
-import { exportBundle, importBundle } from './crypto.js';
-import { burnBuffer } from './totp.js';
-import { lookupNpmProfileIdentity } from './avatar.js';
-import { recordTokenCreatedAt } from './auto-renew.js';
+import http from "node:http";
+import path from "node:path";
+import { promises as fsp, existsSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import type { DaemonStore } from "./store.js";
+import type { PublishScheduler } from "./scheduler.js";
+import type { TrayHost } from "./tray-host.js";
+import { acceptWebSocket, WebSocketConnection, type SocketLike } from "./ws.js";
+import type {
+  BackupBundle,
+  PubEvent,
+  WsClientMessage,
+  WsServerMessage,
+  TrustedPublisherConfig,
+} from "../shared/index.js";
+import { z } from "zod";
 import {
-	listTrustedPublishers,
-	addTrustedPublisher,
-	removeTrustedPublisher,
-} from './oidc-trust.js';
+  BackupBundleSchema,
+  WsClientMessageSchema,
+  TrustedPublisherConfigSchema,
+} from "../shared/schemas.js";
+import {
+  findProjectRoot,
+  scanWorkspace,
+  isPublishableByProfile,
+  isRiskyRoot,
+  readWorkspacePackages,
+} from "./workspace.js";
+import { realFs } from "./real-fs.js";
+import { applyToken, verifyCredentials } from "./npm-api.js";
+import { getCachedRepoInfo } from "./repo-info.js";
+import { listMaintainerPackages, type NpmPackage } from "./npm-packages.js";
+import { fetchPackageDetail, type PackageDetailResult } from "./npm-package-detail.js";
+import { readProfileDetail } from "./npm-profile-client.js";
+import {
+  setToken,
+  setTotpSecret,
+  getToken,
+  getTotpSecret,
+  deleteToken,
+  deleteTotpSecret,
+  getProfileSecrets,
+  setProfileSecrets,
+  type ProfileSecrets,
+} from "./keychain.js";
+import { exportBundle, importBundle } from "./crypto.js";
+import { burnBuffer } from "./totp.js";
+import { lookupNpmProfileIdentity } from "./avatar.js";
+import { recordTokenCreatedAt } from "./auto-renew.js";
+import {
+  listTrustedPublishers,
+  addTrustedPublisher,
+  removeTrustedPublisher,
+} from "./oidc-trust.js";
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -42,19 +69,19 @@ export interface WebServerDeps {
 }
 
 const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.webmanifest': 'application/manifest+json',
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".webmanifest": "application/manifest+json",
 };
 
 type JsonObject = Record<string, unknown>;
@@ -65,9 +92,9 @@ type JsonObject = Record<string, unknown>;
  * registry liveness probe (`expired` — caller should surface a re-auth signal).
  */
 type ResolvedAuth =
-  | { status: 'ok'; token: string; totpSecret: string; registry: string }
-  | { status: 'missing' }
-  | { status: 'expired' };
+  | { status: "ok"; token: string; totpSecret: string; registry: string }
+  | { status: "missing" }
+  | { status: "expired" };
 
 export class WebServer {
   private server?: http.Server;
@@ -79,7 +106,10 @@ export class WebServer {
    * network call behind 2FA, so we (a) dedup concurrent in-flight checks per
    * package (share one promise) and (b) keep results for 30s before re-querying.
    */
-  private trustCache = new Map<string, { promise: Promise<TrustedPublisherConfig[]>; expiresAt: number }>();
+  private trustCache = new Map<
+    string,
+    { promise: Promise<TrustedPublisherConfig[]>; expiresAt: number }
+  >();
   private static readonly TRUST_CACHE_TTL_MS = 30_000;
 
   /**
@@ -96,7 +126,10 @@ export class WebServer {
    * merged projection for ~60s and dedup concurrent in-flight fetches per
    * package:registry. A failure deletes the slot so it isn't poisoned.
    */
-  private detailCache = new Map<string, { promise: Promise<PackageDetailResult>; expiresAt: number }>();
+  private detailCache = new Map<
+    string,
+    { promise: Promise<PackageDetailResult>; expiresAt: number }
+  >();
   private static readonly DETAIL_CACHE_TTL_MS = 60_000;
 
   /**
@@ -111,22 +144,34 @@ export class WebServer {
   private authProbeCache = new Map<string, { authValid: boolean; expiresAt: number }>();
   private static readonly AUTH_PROBE_TTL_MS = 60_000;
 
+  /**
+   * The tray host, attached after construction (it's built later than the
+   * WebServer and may stay null in dev/headless). Drives set-pin / window-hidden
+   * WS messages and provides the initial pin snapshot sent on connect.
+   */
+  private trayHost: TrayHost | null = null;
+
   constructor(private deps: WebServerDeps) {
     // Relay store events to every authed WebUI client.
-    this.deps.store.on('event', (msg) => this.broadcast(msg));
-    this.deps.store.on('profiles', (msg) => this.broadcast(msg));
-    this.deps.store.on('workspaces', (msg) => this.broadcast(msg));
+    this.deps.store.on("event", (msg) => this.broadcast(msg));
+    this.deps.store.on("profiles", (msg) => this.broadcast(msg));
+    this.deps.store.on("workspaces", (msg) => this.broadcast(msg));
+  }
+
+  /** Attach the tray host so WS pin/hide messages can drive it. */
+  attachTray(trayHost: TrayHost): void {
+    this.trayHost = trayHost;
   }
 
   async start(port = 0): Promise<number> {
     return new Promise<number>((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleHttp(req, res));
-      server.on('upgrade', (req, socket) => this.handleUpgrade(req, socket));
-      server.on('error', reject);
-      server.listen(port, '127.0.0.1', () => {
+      server.on("upgrade", (req, socket) => this.handleUpgrade(req, socket));
+      server.on("error", reject);
+      server.listen(port, "127.0.0.1", () => {
         this.server = server;
         const addr = server.address();
-        resolve(typeof addr === 'object' && addr ? addr.port : port);
+        resolve(typeof addr === "object" && addr ? addr.port : port);
       });
     });
   }
@@ -134,7 +179,7 @@ export class WebServer {
   async stop(): Promise<void> {
     for (const s of this.sockets) {
       try {
-        s.write({ type: 'toast', level: 'info', message: 'Daemon shutting down.' });
+        s.write({ type: "toast", level: "info", message: "Daemon shutting down." });
       } catch {
         /* ignore */
       }
@@ -148,62 +193,72 @@ export class WebServer {
   // ----- HTTP: SPA + token-scoped JSON API -----
 
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = (req.url ?? '/').split('?')[0]!;
-    const method = req.method ?? 'GET';
+    const url = (req.url ?? "/").split("?")[0]!;
+    const method = req.method ?? "GET";
 
     // JSON API endpoints — all token-guarded (Chapter 3.2.2 强鉴权).
-    if (url.startsWith('/api/')) {
+    if (url.startsWith("/api/")) {
       if (!this.checkAuth(req)) {
         this.deps.log?.(`[api] 401 ${method} ${url} (auth failed — no/bad Bearer)`);
-        return json(res, 401, { ok: false, error: 'Unauthorized' });
+        return json(res, 401, { ok: false, error: "Unauthorized" });
       }
       try {
-        const body = method !== 'GET' ? await readJson(req) : {};
-        if (url === '/api/npm-profile' && method === 'GET') {
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const username = query.get('username');
-          if (!username) throw new Error('Invalid or missing username.');
+        const body = method !== "GET" ? await readJson(req) : {};
+        if (url === "/api/npm-profile" && method === "GET") {
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const username = query.get("username");
+          if (!username) throw new Error("Invalid or missing username.");
           const result = await lookupNpmProfileIdentity(
             username,
-            query.get('registry') ?? 'https://registry.npmjs.org/',
+            query.get("registry") ?? "https://registry.npmjs.org/",
           );
           return json(res, 200, { ok: true, profile: result });
         }
-        if (url === '/api/profile-token' && method === 'GET') {
+        if (url === "/api/profile-token" && method === "GET") {
           // Resolve the profile's npm_token from the in-memory credential pool
           // first, falling back to the merged keychain item (one read). The
           // WebUI uses this for the Profile "show / copy npm_token" affordance.
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const username = query.get('username');
-          if (!username) throw new Error('Invalid or missing username.');
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const username = query.get("username");
+          if (!username) throw new Error("Invalid or missing username.");
           let token = this.deps.store.getCredentials(username)?.token ?? null;
           if (!token) {
             const secrets = await getProfileSecrets(username);
             token = secrets?.npm_token ?? null;
           }
-          return json(res, 200, token ? { ok: true, token } : { ok: false, error: 'No token stored for this profile.' });
+          return json(
+            res,
+            200,
+            token ? { ok: true, token } : { ok: false, error: "No token stored for this profile." },
+          );
         }
-        if (url === '/api/profile-password' && method === 'GET') {
+        if (url === "/api/profile-password" && method === "GET") {
           // Resolve the stored npm password from the in-memory credential pool
           // first, falling back to the merged keychain item (one read). The WebUI
           // pre-fills the re-auth password field with it (the user may overwrite
           // it if the stored password is stale). Never persisted client-side.
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const username = query.get('username');
-          if (!username) throw new Error('Invalid or missing username.');
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const username = query.get("username");
+          if (!username) throw new Error("Invalid or missing username.");
           let password = this.deps.store.getCredentials(username)?.npmPwd ?? null;
           if (!password) {
             const secrets = await getProfileSecrets(username);
             password = secrets?.npm_pwd ?? null;
           }
-          return json(res, 200, password ? { ok: true, password } : { ok: false, error: 'No password stored for this profile.' });
+          return json(
+            res,
+            200,
+            password
+              ? { ok: true, password }
+              : { ok: false, error: "No password stored for this profile." },
+          );
         }
-        if (url === '/api/profile-detail' && method === 'GET') {
+        if (url === "/api/profile-detail" && method === "GET") {
           // Live authenticated profile detail (name/email/social/2FA/created).
           // Resolved from the active profile's token; never persisted — these
           // fields are projections of the registry, not config.
           const username = this.deps.store.getDefault();
-          if (!username) return json(res, 401, { ok: false, error: 'No active profile.' });
+          if (!username) return json(res, 401, { ok: false, error: "No active profile." });
           const auth = await this.resolveTrustAuth();
           if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           try {
@@ -213,70 +268,93 @@ export class WebServer {
             return json(res, 502, { ok: false, error: errorToMessage(err) });
           }
         }
-        if (url === '/api/add-profile' && method === 'POST') {
+        if (url === "/api/add-profile" && method === "POST") {
           const result = await this.addProfile(parseAddProfileBody(body));
           return json(res, 200, result);
         }
-        if (url === '/api/renew' && method === 'POST') {
+        if (url === "/api/renew" && method === "POST") {
           const result = await this.renewProfile(parseRenewProfileBody(body));
           return json(res, 200, result);
         }
-        if (url === '/api/profile/auto-renew' && method === 'POST') {
-          const parsed = parseOrThrow(z.object({ username: z.string().min(1), autoRenew: z.boolean() }), body, 'auto-renew body');
+        if (url === "/api/profile/auto-renew" && method === "POST") {
+          const parsed = parseOrThrow(
+            z.object({ username: z.string().min(1), autoRenew: z.boolean() }),
+            body,
+            "auto-renew body",
+          );
           const existing = this.deps.store.getProfile(parsed.username);
-          if (!existing) return json(res, 404, { ok: false, error: 'Profile not found.' });
+          if (!existing) return json(res, 404, { ok: false, error: "Profile not found." });
           this.deps.store.upsertProfile({ ...existing, autoRenew: parsed.autoRenew });
           return json(res, 200, { ok: true });
         }
-        if (url === '/api/export' && method === 'POST') {
-          const parsed = parseOrThrow(ExportBodySchema, body, 'export body');
+        if (url === "/api/export" && method === "POST") {
+          const parsed = parseOrThrow(ExportBodySchema, body, "export body");
           const result = await this.exportBundle(parsed.password);
           return json(res, 200, result);
         }
-        if (url === '/api/import' && method === 'POST') {
+        if (url === "/api/import" && method === "POST") {
           let parsed;
           try {
-            parsed = parseOrThrow(ImportBodySchema, body, 'import body');
+            parsed = parseOrThrow(ImportBodySchema, body, "import body");
           } catch {
-            return json(res, 400, { ok: false, error: 'Invalid backup bundle.' });
+            return json(res, 400, { ok: false, error: "Invalid backup bundle." });
           }
           const result = await this.importBundle(parsed.bundle, parsed.password, parsed.usernames);
           return json(res, 200, result);
         }
-        if (url === '/api/packages' && method === 'GET') {
+        if (url === "/api/packages" && method === "GET") {
           // Packages hub — list the active profile's published packages from the
           // npm registry, with server-side search / sort / pagination.
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const parsed = parseOrThrow(PackagesQuerySchema, {
-            q: query.get('q') ?? query.get('query') ?? '',
-            sort: query.get('sort') ?? 'date',
-            page: query.get('page') ?? '0',
-            pageSize: query.get('pageSize') ?? query.get('per_page') ?? '25',
-          }, 'packages query');
-          const result = await this.listPackages(parsed.q, parsed.sort, parsed.page, parsed.pageSize);
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const parsed = parseOrThrow(
+            PackagesQuerySchema,
+            {
+              q: query.get("q") ?? query.get("query") ?? "",
+              sort: query.get("sort") ?? "date",
+              page: query.get("page") ?? "0",
+              pageSize: query.get("pageSize") ?? query.get("per_page") ?? "25",
+            },
+            "packages query",
+          );
+          const result = await this.listPackages(
+            parsed.q,
+            parsed.sort,
+            parsed.page,
+            parsed.pageSize,
+          );
           return json(res, result.ok ? 200 : result.status, result);
         }
         // PackageDetail page — GET /api/packages/<name>/detail. The dispatcher is
         // exact-string, so the path param is parsed via regex here. Scoped names
         // are URL-encoded (`@scope%2Fpkg`, no bare `/`) so the capture is safe.
         const detailMatch = url.match(/^\/api\/packages\/([^/]+)\/detail$/);
-        if (detailMatch && method === 'GET') {
+        if (detailMatch && method === "GET") {
           const name = decodeURIComponent(detailMatch[1]!);
-          if (!name) throw new Error('Invalid or missing package name.');
+          if (!name) throw new Error("Invalid or missing package name.");
           const result = await this.listPackageDetailCached(name);
-          this.deps.log?.(`[packages] detail ${name}: ${result.ok ? 'ok' : `fail ${result.status}`}`);
-          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, detail: result.detail } : { ok: false, error: result.error });
+          this.deps.log?.(
+            `[packages] detail ${name}: ${result.ok ? "ok" : `fail ${result.status}`}`,
+          );
+          return json(
+            res,
+            result.ok ? 200 : result.status,
+            result.ok ? { ok: true, detail: result.detail } : { ok: false, error: result.error },
+          );
         }
-        if (url === '/api/events' && method === 'GET') {
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const parsed = parseOrThrow(EventsQuerySchema, {
-            scope: query.get('scope') ?? 'history',
-            name: query.get('name') ?? undefined,
-            q: query.get('q') ?? '',
-            group: query.get('group') ?? undefined,
-            page: query.get('page') ?? '0',
-            limit: query.get('limit') ?? '20',
-          }, 'events query');
+        if (url === "/api/events" && method === "GET") {
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const parsed = parseOrThrow(
+            EventsQuerySchema,
+            {
+              scope: query.get("scope") ?? "history",
+              name: query.get("name") ?? undefined,
+              q: query.get("q") ?? "",
+              group: query.get("group") ?? undefined,
+              page: query.get("page") ?? "0",
+              limit: query.get("limit") ?? "20",
+            },
+            "events query",
+          );
           // Parse `name:pkg keywords` syntax out of the free-text q.
           let name = parsed.name;
           const keywords: string[] = [];
@@ -295,52 +373,70 @@ export class WebServer {
           });
           return json(res, 200, result);
         }
-        if (url === '/api/repo-info' && method === 'GET') {
+        if (url === "/api/repo-info" && method === "GET") {
           // Resolve a repository string (slug or URL) into a display descriptor
           // (host/shortName/browseUrl/faviconUrl/brand), backed by the TTL KV
           // cache. Known forges return an inline-SVG brand; unknown hosts fall
           // back to a third-party favicon service.
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const repo = query.get('repo');
-          if (!repo) throw new Error('Invalid or missing repo.');
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const repo = query.get("repo");
+          if (!repo) throw new Error("Invalid or missing repo.");
           const info = getCachedRepoInfo(this.deps.store.getEventDb(), repo);
           return json(res, 200, { ok: true, info });
         }
-        if (url === '/api/open-path' && method === 'POST') {
+        if (url === "/api/open-path" && method === "POST") {
           // Open a local path in the OS file manager (Finder/Explorer/…).
           // Shells out to the platform opener; only directory opens are honored.
-          const parsed = parseOrThrow(z.object({ path: z.string().min(1) }), body, 'open-path body');
+          const parsed = parseOrThrow(
+            z.object({ path: z.string().min(1) }),
+            body,
+            "open-path body",
+          );
           const target = path.resolve(parsed.path);
-          const cmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-          const args = process.platform === 'win32' ? ['', target] : [target];
+          const cmd =
+            process.platform === "win32"
+              ? "start"
+              : process.platform === "darwin"
+                ? "open"
+                : "xdg-open";
+          const args = process.platform === "win32" ? ["", target] : [target];
           try {
-            const { execFile } = await import('node:child_process');
-            const { promisify } = await import('node:util');
+            const { execFile } = await import("node:child_process");
+            const { promisify } = await import("node:util");
             await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
             return json(res, 200, { ok: true });
           } catch (err) {
             return json(res, 500, { ok: false, error: errorToMessage(err) });
           }
         }
-        if (url === '/api/open-url' && method === 'POST') {
+        if (url === "/api/open-url" && method === "POST") {
           // Open a URL in the OS default browser. Inside the opentray webview,
           // <a target="_blank"> is intercepted/not forwarded to the system
           // browser, so the page calls this endpoint to shell out to the opener.
-          const parsed = parseOrThrow(z.object({ url: z.string().min(1) }), body, 'open-url body');
+          const parsed = parseOrThrow(z.object({ url: z.string().min(1) }), body, "open-url body");
           const target = parsed.url;
-          const cmd = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
-          const args = process.platform === 'win32' ? ['', target] : [target];
+          const cmd =
+            process.platform === "win32"
+              ? "start"
+              : process.platform === "darwin"
+                ? "open"
+                : "xdg-open";
+          const args = process.platform === "win32" ? ["", target] : [target];
           try {
-            const { execFile } = await import('node:child_process');
-            const { promisify } = await import('node:util');
+            const { execFile } = await import("node:child_process");
+            const { promisify } = await import("node:util");
             await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
             return json(res, 200, { ok: true });
           } catch (err) {
             return json(res, 500, { ok: false, error: errorToMessage(err) });
           }
         }
-        if (url === '/api/profiles' && method === 'DELETE') {
-          const username = parseOrThrow(z.object({ username: z.string().min(1) }), body, 'username').username;
+        if (url === "/api/profiles" && method === "DELETE") {
+          const username = parseOrThrow(
+            z.object({ username: z.string().min(1) }),
+            body,
+            "username",
+          ).username;
           const ok = await this.deps.store.removeProfile(username);
           return json(
             res,
@@ -348,74 +444,97 @@ export class WebServer {
             ok ? { ok: true } : { ok: false, error: `Profile ${username} not found.` },
           );
         }
-        if (url === '/api/workspace/pin' && method === 'POST') {
-          const parsed = parseOrThrow(PinWorkspaceBodySchema, body, 'pin body');
+        if (url === "/api/workspace/pin" && method === "POST") {
+          const parsed = parseOrThrow(PinWorkspaceBodySchema, body, "pin body");
           await this.deps.store.pinWorkspace(parsed.path, parsed.pinned);
           return json(res, 200, { ok: true });
         }
-        if (url === '/api/workspace/remove' && method === 'POST') {
-          const parsed = parseOrThrow(z.object({ path: z.string().min(1) }), body, 'remove workspace body');
+        if (url === "/api/workspace/remove" && method === "POST") {
+          const parsed = parseOrThrow(
+            z.object({ path: z.string().min(1) }),
+            body,
+            "remove workspace body",
+          );
           const ok = await this.deps.store.removeWorkspace(parsed.path);
           return json(res, ok ? 200 : 404, { ok });
         }
-        if (url === '/api/workspace/confirm' && method === 'POST') {
-          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, 'token').token;
+        if (url === "/api/workspace/confirm" && method === "POST") {
+          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, "token").token;
           const ok = await this.deps.store.confirmRiskyWorkspace(token);
           return json(res, ok ? 200 : 404, { ok });
         }
-        if (url === '/api/workspace/cancel' && method === 'POST') {
-          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, 'token').token;
+        if (url === "/api/workspace/cancel" && method === "POST") {
+          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, "token").token;
           this.deps.store.cancelRiskyWorkspace(token);
           return json(res, 200, { ok: true });
         }
         // ----- Trusted Publishing (OIDC) — Chapter 8.5 -----
-        if (url === '/api/oidc/trust' && method === 'GET') {
-          const query = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-          const pkg = query.get('package');
-          if (!pkg) throw new Error('Invalid or missing package.');
+        if (url === "/api/oidc/trust" && method === "GET") {
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const pkg = query.get("package");
+          if (!pkg) throw new Error("Invalid or missing package.");
           this.deps.log?.(`[oidc] GET trust: package=${pkg}`);
           const result = await this.listTrustCached(pkg);
-          this.deps.log?.(`[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`);
-          return json(res, result.ok ? 200 : result.status, result.ok ? { ok: true, configs: result.configs } : { ok: false, error: result.error, needsReauth: result.needsReauth });
+          this.deps.log?.(
+            `[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`,
+          );
+          return json(
+            res,
+            result.ok ? 200 : result.status,
+            result.ok
+              ? { ok: true, configs: result.configs }
+              : { ok: false, error: result.error, needsReauth: result.needsReauth },
+          );
         }
-        if (url === '/api/oidc/trust' && method === 'POST') {
-          const parsed = parseOrThrow(OidcTrustPostBodySchema, body, 'oidc trust body');
-          this.deps.log?.(`[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`);
+        if (url === "/api/oidc/trust" && method === "POST") {
+          const parsed = parseOrThrow(OidcTrustPostBodySchema, body, "oidc trust body");
+          this.deps.log?.(
+            `[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`,
+          );
           const auth = await this.resolveTrustAuth();
           if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
-          const result = await addTrustedPublisher(auth, parsed.package, parsed.config as import('safe-npm-sdk').TrustedPublisherConfigCreate);
-          this.deps.log?.(`[oidc] POST trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
+          const result = await addTrustedPublisher(
+            auth,
+            parsed.package,
+            parsed.config as import("safe-npm-sdk").TrustedPublisherConfigCreate,
+          );
+          this.deps.log?.(
+            `[oidc] POST trust: ${result.ok ? "ok" : `fail ${result.status} ${result.error}`}`,
+          );
           this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
-        if (url === '/api/oidc/trust' && method === 'DELETE') {
-          const parsed = parseOrThrow(OidcTrustDeleteBodySchema, body, 'oidc trust delete body');
+        if (url === "/api/oidc/trust" && method === "DELETE") {
+          const parsed = parseOrThrow(OidcTrustDeleteBodySchema, body, "oidc trust delete body");
           this.deps.log?.(`[oidc] DELETE trust: package=${parsed.package} uuid=${parsed.uuid}`);
           const auth = await this.resolveTrustAuth();
           if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
           const result = await removeTrustedPublisher(auth, parsed.package, parsed.uuid);
-          this.deps.log?.(`[oidc] DELETE trust: ${result.ok ? 'ok' : `fail ${result.status} ${result.error}`}`);
+          this.deps.log?.(
+            `[oidc] DELETE trust: ${result.ok ? "ok" : `fail ${result.status} ${result.error}`}`,
+          );
           this.invalidateTrust(parsed.package);
           return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
         }
-        return json(res, 404, { ok: false, error: 'not found' });
+        return json(res, 404, { ok: false, error: "not found" });
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error.';
-        const status = message.startsWith('Invalid ') || message === 'Invalid backup bundle.' ? 400 : 500;
+        const message = err instanceof Error ? err.message : "Unknown error.";
+        const status =
+          message.startsWith("Invalid ") || message === "Invalid backup bundle." ? 400 : 500;
         return json(res, status, { ok: false, error: message });
       }
     }
 
     // Token delivery endpoint (Chapter 3.2.2 — URL hash injection at opentray
     // load time; this endpoint lets the SPA read its token once at boot).
-    if (url === '/__token') {
+    if (url === "/__token") {
       const authed = this.checkAuth(req);
       if (!authed) {
         res.writeHead(401);
-        res.end('Unauthorized');
+        res.end("Unauthorized");
         return;
       }
-      res.writeHead(200, { 'content-type': 'application/json' });
+      res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ token: this.deps.webToken }));
       return;
     }
@@ -424,30 +543,30 @@ export class WebServer {
     const dir = this.deps.webuiDir;
     if (!existsSync(dir)) {
       res.writeHead(404);
-      res.end('WebUI not built. Run `pnpm build:webui`.');
+      res.end("WebUI not built. Run `pnpm build:webui`.");
       return;
     }
-    let file = path.join(dir, url === '/' ? 'index.html' : url);
+    let file = path.join(dir, url === "/" ? "index.html" : url);
     if (!existsSync(file)) {
       // SPA fallback (client-side routing).
-      file = path.join(dir, 'index.html');
+      file = path.join(dir, "index.html");
     }
     try {
       const data = await fsp.readFile(file);
-      res.writeHead(200, { 'content-type': contentTypeFor(file) });
+      res.writeHead(200, { "content-type": contentTypeFor(file) });
       res.end(data);
     } catch {
       res.writeHead(404);
-      res.end('Not found');
+      res.end("Not found");
     }
   }
 
   private checkAuth(req: http.IncomingMessage): boolean {
-    const header = req.headers['authorization'] ?? '';
-    if (header.startsWith('Bearer ') && header.slice(7) === this.deps.webToken) return true;
-    const url = (req.url ?? '').split('?')[0]!;
-    const q = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-    if (url === '/__token' && q.get('token') === this.deps.webToken) return true;
+    const header = req.headers["authorization"] ?? "";
+    if (header.startsWith("Bearer ") && header.slice(7) === this.deps.webToken) return true;
+    const url = (req.url ?? "").split("?")[0]!;
+    const q = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+    if (url === "/__token" && q.get("token") === this.deps.webToken) return true;
     return false;
   }
 
@@ -463,17 +582,17 @@ export class WebServer {
     // request (query string). Without it we refuse the handshake entirely — no
     // 101, no socket, no data. This is the transport-layer gate; the per-message
     // auth check in onMessage is the defense-in-depth backstop.
-    const q = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
-    const token = q.get('token') ?? '';
+    const q = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+    const token = q.get("token") ?? "";
     if (token !== this.deps.webToken) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
     socket.write(
-      'HTTP/1.1 101 Switching Protocols\r\n' +
-        'Upgrade: websocket\r\n' +
-        'Connection: Upgrade\r\n' +
+      "HTTP/1.1 101 Switching Protocols\r\n" +
+        "Upgrade: websocket\r\n" +
+        "Connection: Upgrade\r\n" +
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
     const ws = new WebSocketConnection(socket, {
@@ -482,20 +601,26 @@ export class WebServer {
         // the eager state snapshot (events/profiles/workspaces) is only ever
         // sent to an authenticated client (Chapter 3.1 — never leak to unauthed).
         this.authedSockets.add(ws);
-        send({ type: 'hello', webTokenRequired: true });
-        send({ type: 'events', events: this.deps.store.getEvents() });
+        send({ type: "hello", webTokenRequired: true });
+        send({ type: "events", events: this.deps.store.getEvents() });
         send({
-          type: 'profiles',
+          type: "profiles",
           default: this.deps.store.getDefault(),
           profiles: this.deps.store.getProfiles(),
         });
-        send({ type: 'workspaces', workspaces: this.deps.store.getWorkspaces() });
+        send({ type: "workspaces", workspaces: this.deps.store.getWorkspaces() });
+        // Project the current pin/countdown so the WebUI renders the right
+        // button state immediately (trayHost is null in dev/headless).
+        if (this.trayHost) {
+          const { pinned, countdown } = this.trayHost.getPinState();
+          send({ type: "pin", pinned, countdown });
+        }
       },
       onMessage: (msg, send) => {
         void this.handleClientMessage(msg, ws, send).catch((error: unknown) => {
           const message = errorToMessage(error);
           this.deps.log?.(`[ws] action failed: ${message}`);
-          send({ type: 'toast', level: 'error', message });
+          send({ type: "toast", level: "error", message });
         });
       },
       onClose: () => {
@@ -513,52 +638,52 @@ export class WebServer {
     send: (data: unknown) => void,
   ): Promise<void> {
     if (!isWsClientMessage(msg)) {
-      send({ type: 'toast', level: 'error', message: 'Invalid WebSocket message.' });
+      send({ type: "toast", level: "error", message: "Invalid WebSocket message." });
       return;
     }
     // Every action requires the WebToken (Chapter 3.2.2 强鉴权).
-    if (msg.type === 'auth') {
+    if (msg.type === "auth") {
       if (msg.webToken === this.deps.webToken) {
         this.authedSockets.add(ws);
-        send({ type: 'toast', level: 'success', message: 'Authenticated.' });
+        send({ type: "toast", level: "success", message: "Authenticated." });
       } else {
-        send({ type: 'toast', level: 'error', message: 'Invalid WebToken.' });
+        send({ type: "toast", level: "error", message: "Invalid WebToken." });
       }
       return;
     }
     if (!this.authedSockets.has(ws)) {
-      send({ type: 'toast', level: 'error', message: 'Unauthorized — send your WebToken first.' });
+      send({ type: "toast", level: "error", message: "Unauthorized — send your WebToken first." });
       return;
     }
     switch (msg.type) {
-      case 'select-profile': {
+      case "select-profile": {
         const selected = await this.deps.store.setDefault(msg.username);
         if (!selected) {
-          send({ type: 'toast', level: 'error', message: `Profile "${msg.username}" not found.` });
+          send({ type: "toast", level: "error", message: `Profile "${msg.username}" not found.` });
           return;
         }
-        this.broadcast({ type: 'workspaces', workspaces: this.deps.store.getWorkspaces() });
+        this.broadcast({ type: "workspaces", workspaces: this.deps.store.getWorkspaces() });
         break;
       }
-      case 'confirm-event': {
+      case "confirm-event": {
         const ok = await this.deps.scheduler.confirm(msg.id);
-        if (!ok) send({ type: 'toast', level: 'error', message: 'No such pending event.' });
+        if (!ok) send({ type: "toast", level: "error", message: "No such pending event." });
         break;
       }
-      case 'reject-event': {
+      case "reject-event": {
         const ok = this.deps.scheduler.reject(msg.id);
-        if (!ok) send({ type: 'toast', level: 'error', message: 'No such pending event.' });
+        if (!ok) send({ type: "toast", level: "error", message: "No such pending event." });
         break;
       }
-      case 'scan-workspace': {
+      case "scan-workspace": {
         await this.scanWorkspace(msg.root, send);
         break;
       }
-      case 'create-event': {
+      case "create-event": {
         this.createProactiveEvent(msg.kind, msg.payload, send, msg.groupId);
         break;
       }
-      case 'update-event': {
+      case "update-event": {
         // Edit a pending publish / recursive-publish event's args before
         // confirmation. The store mutates the SAME PubEvent instance the
         // scheduler holds, so the edit is picked up live at confirm time. We
@@ -566,15 +691,38 @@ export class WebServer {
         // the publish-branch hint stays fresh (the user may have switched
         // branches while reviewing).
         const existing = this.deps.store.getEvent(msg.id);
-        if (!existing || existing.status !== 'pending' || (existing.payload?.kind !== 'publish' && existing.payload?.kind !== 'recursive-publish')) {
-          send({ type: 'toast', level: 'error', message: 'Only pending publish events can be edited.' });
+        if (
+          !existing ||
+          existing.status !== "pending" ||
+          (existing.payload?.kind !== "publish" && existing.payload?.kind !== "recursive-publish")
+        ) {
+          send({
+            type: "toast",
+            level: "error",
+            message: "Only pending publish events can be edited.",
+          });
           break;
         }
-        const srcDir = existing.payload.data.source.kind === 'directory'
-          ? existing.payload.data.source.path
-          : path.dirname(existing.payload.data.source.path);
+        const srcDir =
+          existing.payload.data.source.kind === "directory"
+            ? existing.payload.data.source.path
+            : path.dirname(existing.payload.data.source.path);
         existing.payload.data.branch = await this.detectGitBranch(srcDir);
         this.deps.store.updateEventArgs(msg.id, msg.args);
+        break;
+      }
+      case "set-pin": {
+        // Toggle the tray window's keepOnTop pin. TrayHost persists it, applies
+        // the native style, and broadcasts the new frame via onPinFrame.
+        if (this.trayHost) {
+          await this.trayHost.setPin(msg.pinned);
+        }
+        break;
+      }
+      case "window-hidden": {
+        // The WebUI reports an out-of-band hide (OS close X / host hide that
+        // emitted no lifecycle event) so the next tray click re-shows in one go.
+        this.trayHost?.markHidden();
         break;
       }
     }
@@ -589,13 +737,15 @@ export class WebServer {
    */
   private async detectGitBranch(dir: string): Promise<string> {
     try {
-      const { execFile } = await import('node:child_process');
-      const { promisify } = await import('node:util');
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
       const execFileAsync = promisify(execFile);
-      const { stdout } = await execFileAsync('git', ['-C', dir, 'branch', '--show-current'], { maxBuffer: 1024 });
+      const { stdout } = await execFileAsync("git", ["-C", dir, "branch", "--show-current"], {
+        maxBuffer: 1024,
+      });
       return stdout.trim();
     } catch {
-      return '';
+      return "";
     }
   }
 
@@ -611,16 +761,16 @@ export class WebServer {
       const target = found.root ?? root;
       const token = store.stageRiskyWorkspace({ path: target, pinned: false, addedAt: Date.now() });
       send({
-        type: 'toast',
-        level: 'warning',
+        type: "toast",
+        level: "warning",
         message:
-          'No Git or NPM project markers found. Adding this directory may cause the OS to stall. ' +
-          'Confirm in the tray to add it anyway (token staged).',
+          "No Git or NPM project markers found. Adding this directory may cause the OS to stall. " +
+          "Confirm in the tray to add it anyway (token staged).",
       });
       // Push a packages frame carrying the staged confirmation token so the UI
       // can render an explicit confirm affordance (Chapter 5.3.2).
       send({
-        type: 'packages',
+        type: "packages",
         root: target,
         packages: [],
         riskyConfirmationToken: token,
@@ -630,13 +780,16 @@ export class WebServer {
 
     await store.addWorkspace({ path: found.root, pinned: false, addedAt: Date.now() });
     // Chapter 5.3.4: honor .gitignore so build/coverage outputs etc. are excluded.
-    const pkgs = await scanWorkspace(found.root, realFs, { root: found.root, respectGitignore: true });
+    const pkgs = await scanWorkspace(found.root, realFs, {
+      root: found.root,
+      respectGitignore: true,
+    });
     // Detect a pnpm workspace (pnpm-workspace.yaml present) so the UI can offer
     // a "Recursive Publish" action that runs `pnpm publish -r`.
     const workspaceGlobs = await readWorkspacePackages(found.root, realFs);
     const isPnpmWorkspace = workspaceGlobs !== null;
     send({
-      type: 'packages',
+      type: "packages",
       root: found.root,
       packages: pkgs.map((p) => ({
         name: p.name,
@@ -651,33 +804,43 @@ export class WebServer {
     });
   }
 
-  private async createProactiveEvent(kind: PubEvent['kind'], payload: unknown, send: (data: unknown) => void, groupId?: string): Promise<void> {
+  private async createProactiveEvent(
+    kind: PubEvent["kind"],
+    payload: unknown,
+    send: (data: unknown) => void,
+    groupId?: string,
+  ): Promise<void> {
     const profile = this.deps.store.getDefault();
     if (!profile) {
-      send({ type: 'toast', level: 'error', message: 'Select a profile first.' });
+      send({ type: "toast", level: "error", message: "Select a profile first." });
       return;
     }
     const result = await this.deps.scheduler.createProactiveEvent(kind, profile, payload, groupId);
     if (!result.ok) {
-      send({ type: 'toast', level: 'error', message: result.error });
+      send({ type: "toast", level: "error", message: result.error });
       return;
     }
     // For publish events, fill the current-branch hint from the source path so
     // the EventCard's publish-branch option can show it on first render (before
     // the user edits anything). Re-broadcast via updateEventArgs so the branch
     // is persisted alongside the args.
-    if (result.event.payload?.kind === 'publish') {
+    if (result.event.payload?.kind === "publish") {
       const src = result.event.payload.data.source;
-      const srcDir = src.kind === 'directory' ? src.path : path.dirname(src.path);
+      const srcDir = src.kind === "directory" ? src.path : path.dirname(src.path);
       result.event.payload.data.branch = await this.detectGitBranch(srcDir);
       this.deps.store.updateEventArgs(result.event.id, result.event.payload.data.args);
     }
-    send({ type: 'event', event: result.event });
-    send({ type: 'toast', level: 'info', message: 'Pending event created — review it under Events.' });
+    send({ type: "event", event: result.event });
+    send({
+      type: "toast",
+      level: "info",
+      message: "Pending event created — review it under Events.",
+    });
   }
 
   /** Broadcast a server message to every authed socket. */
-  private broadcast(msg: WsServerMessage): void {
+  /** Broadcast a server message to every authed WebUI client. */
+  broadcast(msg: WsServerMessage): void {
     for (const ws of this.sockets) {
       if (this.authedSockets.has(ws)) ws.write(msg);
     }
@@ -703,7 +866,7 @@ export class WebServer {
     registry?: string;
     manualToken?: string;
   }): Promise<{ ok: boolean; needsManualToken?: boolean; error?: string }> {
-    const registry = body.registry ?? 'https://registry.npmjs.org/';
+    const registry = body.registry ?? "https://registry.npmjs.org/";
     let token = body.manualToken;
     if (!token) {
       const res = await applyToken({
@@ -720,9 +883,13 @@ export class WebServer {
     // Side-effect-free credential check before persisting: confirms the token
     // is valid AND the TOTP secret produces an accepted OTP. A bad token or a
     // wrong totpSecret is caught here rather than surfacing on the first publish.
-    const verified = await verifyCredentials({ registry, token: token!, totpSecret: body.totpSecret });
+    const verified = await verifyCredentials({
+      registry,
+      token: token!,
+      totpSecret: body.totpSecret,
+    });
     if (!verified.ok || !verified.check?.authValid || verified.check.otpValid === false) {
-      const reason = verified.check?.message ?? verified.error ?? 'credential verification failed';
+      const reason = verified.check?.message ?? verified.error ?? "credential verification failed";
       return { ok: false, needsManualToken: verified.check?.authValid === false, error: reason };
     }
     // Chapter 4.1 / 8.1 consistency: persist keychain first, then profiles.json.
@@ -744,7 +911,7 @@ export class WebServer {
         username: body.username,
         registry,
         avatarUrl: identity.avatarUrl ?? undefined,
-        authStatus: 'authenticated',
+        authStatus: "authenticated",
         // New profiles opt into proactive token re-mint by default. NPM session
         // tokens expire within hours; without auto-renew the user would hit an
         // expired-token wall on their next publish. The user can opt out from the
@@ -753,12 +920,16 @@ export class WebServer {
         autoRenew: true,
       });
     } catch (error: unknown) {
-      const { deleteProfile } = await import('./keychain.js');
+      const { deleteProfile } = await import("./keychain.js");
       await deleteProfile(body.username).catch(() => {});
       return { ok: false, error: `Failed to persist profile: ${errorToMessage(error)}` };
     }
     // Populate the in-memory credential pool immediately (incl. password).
-    this.deps.store.setCredentials(body.username, { token: token!, totpSecret: body.totpSecret, npmPwd: body.password });
+    this.deps.store.setCredentials(body.username, {
+      token: token!,
+      totpSecret: body.totpSecret,
+      npmPwd: body.password,
+    });
     this.invalidateAuthProbe(body.username);
     return { ok: true };
   }
@@ -795,12 +966,12 @@ export class WebServer {
     // Resolve the password: explicit body first, then the stored npm_pwd.
     const storedSecrets = creds?.npmPwd ? null : await getProfileSecrets(body.username);
     const password = body.password ?? creds?.npmPwd ?? storedSecrets?.npm_pwd;
-    const registry = body.registry ?? profile.registry ?? 'https://registry.npmjs.org/';
+    const registry = body.registry ?? profile.registry ?? "https://registry.npmjs.org/";
     let token = body.manualToken;
     if (!token) {
       if (!password) {
         // No password available anywhere → cannot silently re-mint; force re-auth.
-        await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+        await this.deps.store.upsertProfile({ ...profile, authStatus: "unauthenticated" });
         return { ok: false, error: `No stored password for ${body.username}; re-authenticate.` };
       }
       const res = await applyToken({
@@ -813,7 +984,7 @@ export class WebServer {
         // Password rejected (not a rate-limit manual-token fallback) → it changed;
         // mark unauthenticated so the UI asks for the new password.
         if (!res.needsManualToken) {
-          await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+          await this.deps.store.upsertProfile({ ...profile, authStatus: "unauthenticated" });
         }
         return { ok: false, needsManualToken: res.needsManualToken, error: res.error };
       }
@@ -824,14 +995,17 @@ export class WebServer {
     // the first publish). Old keychain state is untouched on failure.
     const verified = await verifyCredentials({ registry, token: token!, totpSecret });
     if (!verified.ok || !verified.check?.authValid || verified.check.otpValid === false) {
-      const reason = verified.check?.message ?? verified.error ?? 'credential verification failed';
+      const reason = verified.check?.message ?? verified.error ?? "credential verification failed";
       return { ok: false, needsManualToken: verified.check?.authValid === false, error: reason };
     }
     try {
       // Re-write the merged auth item with the new token (keep password/totp).
       const secrets: ProfileSecrets = {
         npm_token: token!,
-        totp_secret: incomingTotpSecret && incomingTotpSecret !== previousTotpSecret ? incomingTotpSecret : totpSecret,
+        totp_secret:
+          incomingTotpSecret && incomingTotpSecret !== previousTotpSecret
+            ? incomingTotpSecret
+            : totpSecret,
         npm_pwd: password!,
       };
       await setProfileSecrets(body.username, secrets);
@@ -842,7 +1016,7 @@ export class WebServer {
         ...profile,
         registry,
         avatarUrl: identity.avatarUrl ?? profile.avatarUrl,
-        authStatus: 'authenticated',
+        authStatus: "authenticated",
       });
     } catch (error: unknown) {
       await this.restoreRenewCredentialState(body.username, previousToken, previousTotpSecret);
@@ -878,11 +1052,11 @@ export class WebServer {
   private async resolveTrustAuth(): Promise<ResolvedAuth> {
     const username = this.deps.store.getDefault();
     if (!username) {
-      this.deps.log?.('[auth] resolveTrustAuth: no default profile');
-      return { status: 'missing' };
+      this.deps.log?.("[auth] resolveTrustAuth: no default profile");
+      return { status: "missing" };
     }
     const profile = this.deps.store.getProfile(username);
-    const registry = profile?.registry ?? 'https://registry.npmjs.org/';
+    const registry = profile?.registry ?? "https://registry.npmjs.org/";
     const creds = this.deps.store.getCredentials(username);
     // Prefer the in-memory pool; otherwise read the MERGED keychain item once
     // (one auth prompt) and warm the pool for subsequent calls.
@@ -895,7 +1069,7 @@ export class WebServer {
       const secrets = await getProfileSecrets(username);
       if (!secrets) {
         this.deps.log?.(`[auth] resolveTrustAuth: no merged secrets for ${username}`);
-        return { status: 'missing' };
+        return { status: "missing" };
       }
       token = secrets.npm_token;
       totpSecret = secrets.totp_secret;
@@ -906,8 +1080,8 @@ export class WebServer {
     const cached = this.authProbeCache.get(username);
     if (cached && cached.expiresAt > Date.now()) {
       return cached.authValid
-        ? { status: 'ok', token, totpSecret, registry }
-        : { status: 'expired' };
+        ? { status: "ok", token, totpSecret, registry }
+        : { status: "expired" };
     }
     let authValid = true;
     try {
@@ -916,20 +1090,27 @@ export class WebServer {
       // surface as `!ok` and are treated conservatively as "still valid".
       authValid = verified.ok ? (verified.check?.authValid ?? true) : true;
     } catch (e) {
-      this.deps.log?.(`[auth] resolveTrustAuth: probe failed for ${username} (${errorToMessage(e)}); treating as valid`);
+      this.deps.log?.(
+        `[auth] resolveTrustAuth: probe failed for ${username} (${errorToMessage(e)}); treating as valid`,
+      );
       authValid = true;
     }
-    this.authProbeCache.set(username, { authValid, expiresAt: Date.now() + WebServer.AUTH_PROBE_TTL_MS });
+    this.authProbeCache.set(username, {
+      authValid,
+      expiresAt: Date.now() + WebServer.AUTH_PROBE_TTL_MS,
+    });
     if (!authValid) {
-      this.deps.log?.(`[auth] resolveTrustAuth: token for ${username} is no longer valid; flipping authStatus`);
+      this.deps.log?.(
+        `[auth] resolveTrustAuth: token for ${username} is no longer valid; flipping authStatus`,
+      );
       // Flip + broadcast so the WebUI offers re-auth. Only persist when the
       // profile actually changed to avoid spurious keychain/profiles writes.
-      if (profile && profile.authStatus !== 'unauthenticated') {
-        await this.deps.store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+      if (profile && profile.authStatus !== "unauthenticated") {
+        await this.deps.store.upsertProfile({ ...profile, authStatus: "unauthenticated" });
       }
-      return { status: 'expired' };
+      return { status: "expired" };
     }
-    return { status: 'ok', token, totpSecret, registry };
+    return { status: "ok", token, totpSecret, registry };
   }
 
   /** Clear the liveness-probe cache for a profile (call on credential change). */
@@ -942,7 +1123,12 @@ export class WebServer {
    * (same package → share one promise). Mutating routes (add/remove) invalidate
    * the cached entry so the next list reflects the change.
    */
-  private async listTrustCached(name: string): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string; needsReauth?: boolean }> {
+  private async listTrustCached(
+    name: string,
+  ): Promise<
+    | { ok: true; configs: TrustedPublisherConfig[] }
+    | { ok: false; status: number; error: string; needsReauth?: boolean }
+  > {
     const cached = this.trustCache.get(name);
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
@@ -950,12 +1136,14 @@ export class WebServer {
       return { ok: true, configs };
     }
     const auth = await this.resolveTrustAuth();
-    if (auth.status !== 'ok') {
-      return auth.status === 'expired'
-        ? { ok: false, status: 401, error: 'Token expired or no longer valid.', needsReauth: true }
-        : { ok: false, status: 401, error: 'No active profile credentials for this operation.' };
+    if (auth.status !== "ok") {
+      return auth.status === "expired"
+        ? { ok: false, status: 401, error: "Token expired or no longer valid.", needsReauth: true }
+        : { ok: false, status: 401, error: "No active profile credentials for this operation." };
     }
-    const promise = listTrustedPublishers(auth, name).then((r) => (r.ok ? r.configs : Promise.reject(r)));
+    const promise = listTrustedPublishers(auth, name).then((r) =>
+      r.ok ? r.configs : Promise.reject(r),
+    );
     this.trustCache.set(name, { promise, expiresAt: now + WebServer.TRUST_CACHE_TTL_MS });
     try {
       const configs = await promise;
@@ -980,7 +1168,7 @@ export class WebServer {
    */
   private async listPackages(
     query: string,
-    sort: 'date' | 'name',
+    sort: "date" | "name",
     page: number,
     pageSize: number,
   ): Promise<
@@ -988,9 +1176,9 @@ export class WebServer {
     | { ok: false; status: number; error: string }
   > {
     const username = this.deps.store.getDefault();
-    if (!username) return { ok: false, status: 401, error: 'No active profile.' };
+    if (!username) return { ok: false, status: 401, error: "No active profile." };
     const profile = this.deps.store.getProfile(username);
-    const registry = profile?.registry ?? 'https://registry.npmjs.org/';
+    const registry = profile?.registry ?? "https://registry.npmjs.org/";
 
     const cacheKey = `${username.toLowerCase()}@${registry}`;
     const now = Date.now();
@@ -1024,12 +1212,15 @@ export class WebServer {
 
     // Sort. `date` is newest-first (ISO-8601 sorts lexically); `name` ascends.
     const sorted =
-      sort === 'name'
+      sort === "name"
         ? [...filtered].sort((a, b) => a.name.localeCompare(b.name))
-        : [...filtered].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+        : [...filtered].sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
 
     const safePageSize = Math.max(1, Math.min(pageSize, 100));
-    const safePage = Math.max(0, Math.min(page, Math.floor(sorted.length / Math.max(1, safePageSize))));
+    const safePage = Math.max(
+      0,
+      Math.min(page, Math.floor(sorted.length / Math.max(1, safePageSize))),
+    );
     const start = safePage * safePageSize;
     const items = sorted.slice(start, start + safePageSize);
     return { ok: true, items, total: sorted.length, page: safePage, pageSize: safePageSize };
@@ -1051,12 +1242,13 @@ export class WebServer {
     const now = Date.now();
     let entry = this.detailCache.get(cacheKey);
     if (!entry || entry.expiresAt <= now) {
-      const promise = fetchPackageDetail(name, { token: auth.token, registry: auth.registry }).catch(
-        (err: unknown) => {
-          this.detailCache.delete(cacheKey);
-          throw err;
-        },
-      );
+      const promise = fetchPackageDetail(name, {
+        token: auth.token,
+        registry: auth.registry,
+      }).catch((err: unknown) => {
+        this.detailCache.delete(cacheKey);
+        throw err;
+      });
       entry = { promise, expiresAt: now + WebServer.DETAIL_CACHE_TTL_MS };
       this.detailCache.set(cacheKey, entry);
     }
@@ -1073,14 +1265,22 @@ export class WebServer {
     totpSecret: string | null,
   ): Promise<void> {
     if (token) {
-      await Promise.resolve().then(() => setToken(username, token)).catch(() => {});
+      await Promise.resolve()
+        .then(() => setToken(username, token))
+        .catch(() => {});
     } else {
-      await Promise.resolve().then(() => deleteToken(username)).catch(() => {});
+      await Promise.resolve()
+        .then(() => deleteToken(username))
+        .catch(() => {});
     }
     if (totpSecret) {
-      await Promise.resolve().then(() => setTotpSecret(username, totpSecret)).catch(() => {});
+      await Promise.resolve()
+        .then(() => setTotpSecret(username, totpSecret))
+        .catch(() => {});
     } else {
-      await Promise.resolve().then(() => deleteTotpSecret(username)).catch(() => {});
+      await Promise.resolve()
+        .then(() => deleteTotpSecret(username))
+        .catch(() => {});
     }
     if (token && totpSecret) {
       this.deps.store.setCredentials(username, { token, totpSecret });
@@ -1101,7 +1301,7 @@ export class WebServer {
       let totpSecret = creds?.totpSecret;
       // Fall back to the MERGED keychain item (one read) — not the legacy split
       // items, which would prompt twice and still lack the password.
-      if ((!token || !totpSecret)) {
+      if (!token || !totpSecret) {
         const s = await getProfileSecrets(profile.username);
         token = token ?? s?.npm_token;
         totpSecret = totpSecret ?? s?.totp_secret;
@@ -1119,7 +1319,7 @@ export class WebServer {
       skipped.push(profile.username);
     }
     if (Object.keys(secrets).length === 0) {
-      return { ok: false, error: 'No credentials loaded to export.' };
+      return { ok: false, error: "No credentials loaded to export." };
     }
     const bundle = exportBundle(secrets, password);
     return { ok: true, bundle, skipped: skipped.length ? skipped : undefined };
@@ -1132,7 +1332,8 @@ export class WebServer {
     usernames: string[],
   ): Promise<{ ok: boolean; imported?: string[]; error?: string }> {
     const decoded = importBundle(bundle, password);
-    if (!decoded) return { ok: false, error: 'Decryption failed — wrong password or tampered file.' };
+    if (!decoded)
+      return { ok: false, error: "Decryption failed — wrong password or tampered file." };
     const imported: string[] = [];
     for (const username of usernames) {
       const entry = decoded[username];
@@ -1142,12 +1343,15 @@ export class WebServer {
         await setTotpSecret(username, entry.totp);
         // Imported backups have no npm password → mark unauthenticated so the
         // user re-auths (which then writes the merged item with the password).
-        await this.deps.store.upsertProfile({ username, authStatus: 'unauthenticated' });
+        await this.deps.store.upsertProfile({ username, authStatus: "unauthenticated" });
         this.deps.store.setCredentials(username, { token: entry.token, totpSecret: entry.totp });
         imported.push(username);
       } catch (error: unknown) {
         await this.rollbackImportedProfiles([...imported, username]);
-        return { ok: false, error: `Failed to import profile ${username}: ${errorToMessage(error)}` };
+        return {
+          ok: false,
+          error: `Failed to import profile ${username}: ${errorToMessage(error)}`,
+        };
       }
     }
     return { ok: true, imported };
@@ -1155,8 +1359,12 @@ export class WebServer {
 
   private async rollbackImportedProfiles(usernames: string[]): Promise<void> {
     for (const username of usernames) {
-      await Promise.resolve().then(() => deleteToken(username)).catch(() => {});
-      await Promise.resolve().then(() => deleteTotpSecret(username)).catch(() => {});
+      await Promise.resolve()
+        .then(() => deleteToken(username))
+        .catch(() => {});
+      await Promise.resolve()
+        .then(() => deleteTotpSecret(username))
+        .catch(() => {});
       this.deps.store.deleteCredentials(username);
     }
   }
@@ -1165,7 +1373,7 @@ export class WebServer {
 // ----- module-level HTTP helpers -----
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
 
@@ -1174,7 +1382,7 @@ async function readJson(req: http.IncomingMessage): Promise<JsonObject> {
   let bodyBuf: Buffer | null = null;
   try {
     for await (const chunk of req) {
-      if (typeof chunk === 'string') {
+      if (typeof chunk === "string") {
         chunks.push(Buffer.from(chunk));
         continue;
       }
@@ -1182,7 +1390,7 @@ async function readJson(req: http.IncomingMessage): Promise<JsonObject> {
     }
     if (chunks.length === 0) return {};
     bodyBuf = Buffer.concat(chunks);
-    const parsed: unknown = JSON.parse(bodyBuf.toString('utf8'));
+    const parsed: unknown = JSON.parse(bodyBuf.toString("utf8"));
     return isJsonObject(parsed) ? parsed : {};
   } catch {
     return {};
@@ -1229,16 +1437,16 @@ const PinWorkspaceBodySchema = z.object({
 });
 
 const PackagesQuerySchema = z.object({
-  q: z.string().default(''),
-  sort: z.enum(['date', 'name']).default('date'),
+  q: z.string().default(""),
+  sort: z.enum(["date", "name"]).default("date"),
   page: z.coerce.number().int().nonnegative().default(0),
   pageSize: z.coerce.number().int().positive().default(25),
 });
 
 const EventsQuerySchema = z.object({
-  scope: z.enum(['pending', 'history']).default('history'),
+  scope: z.enum(["pending", "history"]).default("history"),
   name: z.string().optional(),
-  q: z.string().default(''),
+  q: z.string().default(""),
   group: z.string().optional(),
   page: z.coerce.number().int().nonnegative().default(0),
   limit: z.coerce.number().int().positive().max(100).default(20),
@@ -1256,11 +1464,11 @@ const OidcTrustDeleteBodySchema = z.object({
 });
 
 function parseAddProfileBody(body: unknown): z.infer<typeof AddProfileBodySchema> {
-  return parseOrThrow(AddProfileBodySchema, body, 'add-profile body');
+  return parseOrThrow(AddProfileBodySchema, body, "add-profile body");
 }
 
 function parseRenewProfileBody(body: unknown): z.infer<typeof RenewProfileBodySchema> {
-  return parseOrThrow(RenewProfileBodySchema, body, 'renew body');
+  return parseOrThrow(RenewProfileBodySchema, body, "renew body");
 }
 
 /** Validate with a Zod schema or throw an Error with a readable message. */
@@ -1268,18 +1476,18 @@ function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, label: string): T
   const result = schema.safeParse(value);
   if (!result.success) {
     const first = result.error.issues[0];
-    const path = first?.path.join('.') ?? '?';
-    throw new Error(`Invalid or missing ${label}: ${path} ${first?.message ?? ''}`);
+    const path = first?.path.join(".") ?? "?";
+    throw new Error(`Invalid or missing ${label}: ${path} ${first?.message ?? ""}`);
   }
   return result.data;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function contentTypeFor(filePath: string): string {
-  return MIME[path.extname(filePath)] ?? 'application/octet-stream';
+  return MIME[path.extname(filePath)] ?? "application/octet-stream";
 }
 
 function errorToMessage(error: unknown): string {
@@ -1298,8 +1506,8 @@ function errorToMessage(error: unknown): string {
  * // auth is now { status:'ok', token, totpSecret, registry }
  * ```
  */
-function authIsOk(auth: ResolvedAuth): auth is Extract<ResolvedAuth, { status: 'ok' }> {
-  return auth.status === 'ok';
+function authIsOk(auth: ResolvedAuth): auth is Extract<ResolvedAuth, { status: "ok" }> {
+  return auth.status === "ok";
 }
 
 /**
@@ -1307,8 +1515,9 @@ function authIsOk(auth: ResolvedAuth): auth is Extract<ResolvedAuth, { status: '
  * case carries `needsReauth: true` so the WebUI routes the user to re-auth.
  */
 function authDeniedBody(auth: ResolvedAuth): { ok: false; error: string; needsReauth?: boolean } {
-  if (auth.status === 'expired') return { ok: false, error: 'Token expired or no longer valid.', needsReauth: true };
-  return { ok: false, error: 'No active profile credentials for this operation.' };
+  if (auth.status === "expired")
+    return { ok: false, error: "Token expired or no longer valid.", needsReauth: true };
+  return { ok: false, error: "No active profile credentials for this operation." };
 }
 
 function isWsClientMessage(value: unknown): value is WsClientMessage {

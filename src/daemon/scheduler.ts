@@ -9,13 +9,13 @@
  * The scheduler owns the bridge between an IPC client (the CLI) waiting on a
  * Promise and the WebUI's WS confirm/reject messages.
  */
-import { Buffer } from 'node:buffer';
-import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import path from 'node:path';
-import os from 'node:os';
-import { promisify } from 'node:util';
-import type { DaemonStore } from './store.js';
+import { Buffer } from "node:buffer";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import path from "node:path";
+import os from "node:os";
+import { promisify } from "node:util";
+import type { DaemonStore } from "./store.js";
 import type {
   CreatePlaceholderContext,
   EventKind,
@@ -30,16 +30,28 @@ import type {
   RecursivePublishContext,
   RefreshTokenContext,
   UnpublishContext,
-} from '../shared/index.js';
-import type { PackageTarballFile, PackageTarballSummary } from './packer.js';
-import { publishPackage, configureOidc, unpublishVersion } from './npm-api.js';
-import { publishPackageViaCli, publishRecursiveViaCli, listRecursivePackages, hasPnpm, PnpmNotOnPathError } from './publisher.js';
-import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
-import { promises as fsp } from 'node:fs';
-import { realFs } from './real-fs.js';
-import { findProjectRoot, isRiskyRoot, scanWorkspace, parseRepository, readGitRemoteUrl } from './workspace.js';
-import { parsePackagePublishConfig } from './package-publish-config.js';
-import { checkPublishGitState } from './publish-git-checks.js';
+} from "../shared/index.js";
+import type { PackageTarballFile, PackageTarballSummary } from "./packer.js";
+import { publishPackage, configureOidc, unpublishVersion } from "./npm-api.js";
+import {
+  publishPackageViaCli,
+  publishRecursiveViaCli,
+  listRecursivePackages,
+  hasPnpm,
+  PnpmNotOnPathError,
+} from "./publisher.js";
+import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from "./oidc-template.js";
+import { promises as fsp } from "node:fs";
+import { realFs } from "./real-fs.js";
+import {
+  findProjectRoot,
+  isRiskyRoot,
+  scanWorkspace,
+  parseRepository,
+  readGitRemoteUrl,
+} from "./workspace.js";
+import { parsePackagePublishConfig } from "./package-publish-config.js";
+import { checkPublishGitState } from "./publish-git-checks.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,24 +62,24 @@ const execFileAsync = promisify(execFile);
  */
 async function detectGitBranchSafe(dir: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', dir, 'branch', '--show-current'], { maxBuffer: 1024 });
+    const { stdout } = await execFileAsync("git", ["-C", dir, "branch", "--show-current"], {
+      maxBuffer: 1024,
+    });
     return stdout.trim();
   } catch {
-    return '';
+    return "";
   }
 }
 
 /** Handle given to an IPC client so it can be resolved/rejected later. */
 export interface PendingClient {
   /** Send a stdout/stderr frame back to the CLI terminal. */
-  log(stream: 'stdout' | 'stderr', data: string): void;
+  log(stream: "stdout" | "stderr", data: string): void;
   /** Resolve the CLI with an exit code. */
   exit(code: number, message?: string): void;
 }
 
-export type ProactiveEventResult =
-  | { ok: true; event: PubEvent }
-  | { ok: false; error: string };
+export type ProactiveEventResult = { ok: true; event: PubEvent } | { ok: false; error: string };
 
 const DETACHED_CLIENT: PendingClient = {
   log: () => {},
@@ -75,31 +87,31 @@ const DETACHED_CLIENT: PendingClient = {
 };
 
 /** Resolved metadata about a publish target from a directory or tarball source. */
-async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTarget, 'path'>> {
+async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTarget, "path">> {
   try {
     let metadata: unknown;
-    if (source.kind === 'directory') {
-      metadata = JSON.parse(await fsp.readFile(path.join(source.path, 'package.json'), 'utf8'));
+    if (source.kind === "directory") {
+      metadata = JSON.parse(await fsp.readFile(path.join(source.path, "package.json"), "utf8"));
     } else {
-      const { readPackageTarball } = await import('./packer.js');
+      const { readPackageTarball } = await import("./packer.js");
       metadata = (await readPackageTarball(source.path)).metadata;
     }
     const pkg = parsePackageMetadata(metadata);
     // repository: prefer the package.json field; fall back to the git remote
     // origin URL (walks up from the source dir to find .git/config).
     let repository = pkg.repository;
-    if (!repository && source.kind === 'directory') {
+    if (!repository && source.kind === "directory") {
       repository = await readGitRemoteUrl(source.path, realFs);
     }
     return {
-      name: pkg.name ?? '(unknown)',
-      version: pkg.version ?? '0.0.0',
+      name: pkg.name ?? "(unknown)",
+      version: pkg.version ?? "0.0.0",
       description: pkg.description,
       ...(repository ? { repository } : {}),
       ...(pkg.publishConfig ? { publishConfig: pkg.publishConfig } : {}),
     };
   } catch {
-    return { name: '(unknown)', version: '0.0.0' };
+    return { name: "(unknown)", version: "0.0.0" };
   }
 }
 
@@ -111,10 +123,16 @@ function parsePackageMetadata(value: unknown): {
   publishConfig?: PublishConfig;
 } {
   if (!isRecord(value)) return {};
-  const metadata: { name?: string; version?: string; description?: string; repository?: string; publishConfig?: PublishConfig } = {};
-  if (typeof value.name === 'string') metadata.name = value.name;
-  if (typeof value.version === 'string') metadata.version = value.version;
-  if (typeof value.description === 'string') metadata.description = value.description;
+  const metadata: {
+    name?: string;
+    version?: string;
+    description?: string;
+    repository?: string;
+    publishConfig?: PublishConfig;
+  } = {};
+  if (typeof value.name === "string") metadata.name = value.name;
+  if (typeof value.version === "string") metadata.version = value.version;
+  if (typeof value.description === "string") metadata.description = value.description;
   const repository = parseRepository(value.repository);
   if (repository) metadata.repository = repository;
   const publishConfig = parsePackagePublishConfig(value.publishConfig);
@@ -128,32 +146,32 @@ function resolveProfile(store: DaemonStore, override: string | undefined): strin
   const def = store.getDefault();
   if (def) return def;
   const first = store.getProfiles()[0]?.username;
-  return first ?? '';
+  return first ?? "";
 }
 
 function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload | null {
   switch (kind) {
-    case 'publish': {
+    case "publish": {
       const data = parsePublishContext(payload);
       return data ? { kind, data } : null;
     }
-    case 'setup-oidc': {
+    case "setup-oidc": {
       const data = parseOidcContext(payload);
       return data ? { kind, data } : null;
     }
-    case 'create-placeholder': {
+    case "create-placeholder": {
       const data = parseCreatePlaceholderContext(payload);
       return data ? { kind, data } : null;
     }
-    case 'refresh-token': {
+    case "refresh-token": {
       const data = parseRefreshTokenContext(payload);
       return data ? { kind, data } : null;
     }
-    case 'unpublish': {
+    case "unpublish": {
       const data = parseUnpublishContext(payload);
       return data ? { kind, data } : null;
     }
-    case 'recursive-publish': {
+    case "recursive-publish": {
       const data = parseRecursivePublishContext(payload);
       return data ? { kind, data } : null;
     }
@@ -166,7 +184,8 @@ function parsePublishContext(value: unknown): PublishContext | null {
   const target = parsePublishTarget(value.target);
   if (!source || !target) return null;
   const rawArgs = value.args;
-  const args = Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === 'string') ? rawArgs : [];
+  const args =
+    Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === "string") ? rawArgs : [];
   return { source, args, target };
 }
 
@@ -175,7 +194,8 @@ function parseRecursivePublishContext(value: unknown): RecursivePublishContext |
   const source = parsePublishSource(value.source);
   if (!source) return null;
   const rawArgs = value.args;
-  const args = Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === 'string') ? rawArgs : [];
+  const args =
+    Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === "string") ? rawArgs : [];
   // targets may be empty when created from the WebUI button — they are
   // enumerated via `pnpm pack -r` immediately after creation.
   const rawTargets = Array.isArray(value.targets) ? value.targets : [];
@@ -186,20 +206,20 @@ function parseRecursivePublishContext(value: unknown): RecursivePublishContext |
 function parsePublishSource(value: unknown): PublishSource | null {
   if (!isRecord(value)) return null;
   const kind = value.kind;
-  const pathValue = readString(value, 'path');
-  if ((kind !== 'directory' && kind !== 'tarball') || !pathValue) return null;
+  const pathValue = readString(value, "path");
+  if ((kind !== "directory" && kind !== "tarball") || !pathValue) return null;
   return { kind, path: pathValue };
 }
 
 function parsePublishTarget(value: unknown): PublishTarget | null {
   if (!isRecord(value)) return null;
-  const name = readString(value, 'name');
-  const version = readString(value, 'version');
-  const pathValue = readString(value, 'path');
+  const name = readString(value, "name");
+  const version = readString(value, "version");
+  const pathValue = readString(value, "path");
   if (!name || !version || !pathValue) return null;
-  const previousVersion = readString(value, 'previousVersion');
-  const description = readString(value, 'description');
-  const repository = readString(value, 'repository');
+  const previousVersion = readString(value, "previousVersion");
+  const description = readString(value, "description");
+  const repository = readString(value, "repository");
   const publishConfig = parsePackagePublishConfig(value.publishConfig);
   return {
     name,
@@ -215,9 +235,9 @@ function parsePublishTarget(value: unknown): PublishTarget | null {
 function isDryRunPublish(args: string[]): boolean {
   let dryRun = false;
   for (const arg of args) {
-    if (arg === '--dry-run') dryRun = true;
-    if (arg === '--no-dry-run') dryRun = false;
-    if (arg.startsWith('--dry-run=')) dryRun = arg.slice('--dry-run='.length) !== 'false';
+    if (arg === "--dry-run") dryRun = true;
+    if (arg === "--no-dry-run") dryRun = false;
+    if (arg.startsWith("--dry-run=")) dryRun = arg.slice("--dry-run=".length) !== "false";
   }
   return dryRun;
 }
@@ -226,10 +246,11 @@ function isRecursivePublish(args: string[]): boolean {
   let recursive = false;
   for (const arg of args) {
     // pnpm accepts `-r`/`--recursive` and the legacy aliases `-m`/`--multi`.
-    if (arg === '-r' || arg === '--recursive' || arg === '-m' || arg === '--multi') recursive = true;
-    if (arg === '--no-recursive' || arg === '--no-multi') recursive = false;
-    if (arg.startsWith('--recursive=')) recursive = arg.slice('--recursive='.length) !== 'false';
-    if (arg.startsWith('--multi=')) recursive = arg.slice('--multi='.length) !== 'false';
+    if (arg === "-r" || arg === "--recursive" || arg === "-m" || arg === "--multi")
+      recursive = true;
+    if (arg === "--no-recursive" || arg === "--no-multi") recursive = false;
+    if (arg.startsWith("--recursive=")) recursive = arg.slice("--recursive=".length) !== "false";
+    if (arg.startsWith("--multi=")) recursive = arg.slice("--multi=".length) !== "false";
   }
   return recursive;
 }
@@ -237,9 +258,10 @@ function isRecursivePublish(args: string[]): boolean {
 function isReportSummaryPublish(args: string[]): boolean {
   let reportSummary = false;
   for (const arg of args) {
-    if (arg === '--report-summary') reportSummary = true;
-    if (arg === '--no-report-summary') reportSummary = false;
-    if (arg.startsWith('--report-summary=')) reportSummary = arg.slice('--report-summary='.length) !== 'false';
+    if (arg === "--report-summary") reportSummary = true;
+    if (arg === "--no-report-summary") reportSummary = false;
+    if (arg.startsWith("--report-summary="))
+      reportSummary = arg.slice("--report-summary=".length) !== "false";
   }
   return reportSummary;
 }
@@ -247,9 +269,10 @@ function isReportSummaryPublish(args: string[]): boolean {
 function isIgnoreScriptsPublish(args: string[]): boolean {
   let ignoreScripts = false;
   for (const arg of args) {
-    if (arg === '--ignore-scripts') ignoreScripts = true;
-    if (arg === '--no-ignore-scripts') ignoreScripts = false;
-    if (arg.startsWith('--ignore-scripts=')) ignoreScripts = arg.slice('--ignore-scripts='.length) !== 'false';
+    if (arg === "--ignore-scripts") ignoreScripts = true;
+    if (arg === "--no-ignore-scripts") ignoreScripts = false;
+    if (arg.startsWith("--ignore-scripts="))
+      ignoreScripts = arg.slice("--ignore-scripts=".length) !== "false";
   }
   return ignoreScripts;
 }
@@ -257,9 +280,9 @@ function isIgnoreScriptsPublish(args: string[]): boolean {
 function isJsonPublish(args: string[]): boolean {
   let json = false;
   for (const arg of args) {
-    if (arg === '--json') json = true;
-    if (arg === '--no-json') json = false;
-    if (arg.startsWith('--json=')) json = arg.slice('--json='.length) !== 'false';
+    if (arg === "--json") json = true;
+    if (arg === "--no-json") json = false;
+    if (arg.startsWith("--json=")) json = arg.slice("--json=".length) !== "false";
   }
   return json;
 }
@@ -267,9 +290,10 @@ function isJsonPublish(args: string[]): boolean {
 function isFailIfNoMatchPublish(args: string[]): boolean {
   let failIfNoMatch = false;
   for (const arg of args) {
-    if (arg === '--fail-if-no-match') failIfNoMatch = true;
-    if (arg === '--no-fail-if-no-match') failIfNoMatch = false;
-    if (arg.startsWith('--fail-if-no-match=')) failIfNoMatch = arg.slice('--fail-if-no-match='.length) !== 'false';
+    if (arg === "--fail-if-no-match") failIfNoMatch = true;
+    if (arg === "--no-fail-if-no-match") failIfNoMatch = false;
+    if (arg.startsWith("--fail-if-no-match="))
+      failIfNoMatch = arg.slice("--fail-if-no-match=".length) !== "false";
   }
   return failIfNoMatch;
 }
@@ -279,13 +303,13 @@ function resolvePublishRegistry(args: string[], defaultRegistry: string): string
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--registry') {
+    if (arg === "--registry") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) registry = next;
+      if (next && !next.startsWith("-")) registry = next;
       continue;
     }
-    if (arg.startsWith('--registry=')) {
-      const value = arg.slice('--registry='.length);
+    if (arg.startsWith("--registry=")) {
+      const value = arg.slice("--registry=".length);
       if (value.length > 0) registry = value;
     }
   }
@@ -297,13 +321,13 @@ function resolvePublishDistTag(args: string[], defaultDistTag?: string): string 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--tag') {
+    if (arg === "--tag") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) distTag = next;
+      if (next && !next.startsWith("-")) distTag = next;
       continue;
     }
-    if (arg.startsWith('--tag=')) {
-      const value = arg.slice('--tag='.length);
+    if (arg.startsWith("--tag=")) {
+      const value = arg.slice("--tag=".length);
       if (value.length > 0) distTag = value;
     }
   }
@@ -315,13 +339,13 @@ function resolvePublishAccess(args: string[], defaultAccess?: string): string | 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--access') {
+    if (arg === "--access") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) access = next;
+      if (next && !next.startsWith("-")) access = next;
       continue;
     }
-    if (arg.startsWith('--access=')) {
-      const value = arg.slice('--access='.length);
+    if (arg.startsWith("--access=")) {
+      const value = arg.slice("--access=".length);
       if (value.length > 0) access = value;
     }
   }
@@ -332,13 +356,13 @@ function resolvePublishOtp(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--otp') {
+    if (arg === "--otp") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) return next;
+      if (next && !next.startsWith("-")) return next;
       continue;
     }
-    if (arg.startsWith('--otp=')) {
-      const value = arg.slice('--otp='.length);
+    if (arg.startsWith("--otp=")) {
+      const value = arg.slice("--otp=".length);
       if (value.length > 0) return value;
     }
   }
@@ -352,18 +376,18 @@ function resolvePublishDir(args: string[], cwd: string): string {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '-C' || arg === '--dir') {
+    if (arg === "-C" || arg === "--dir") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) dir = next;
+      if (next && !next.startsWith("-")) dir = next;
       continue;
     }
-    if (arg.startsWith('--dir=')) {
-      const value = arg.slice('--dir='.length);
+    if (arg.startsWith("--dir=")) {
+      const value = arg.slice("--dir=".length);
       if (value.length > 0) dir = value;
       continue;
     }
-    if (arg.startsWith('-C=')) {
-      const value = arg.slice('-C='.length);
+    if (arg.startsWith("-C=")) {
+      const value = arg.slice("-C=".length);
       if (value.length > 0) dir = value;
     }
   }
@@ -373,8 +397,8 @@ function resolvePublishDir(args: string[], cwd: string): string {
 /** True when the argv requests SLSA provenance (`--provenance` or `--provenance=true`). */
 function isProvenancePublish(args: string[]): boolean {
   for (const arg of args) {
-    if (arg === '--provenance') return true;
-    if (arg.startsWith('--provenance=')) return arg.slice('--provenance='.length) !== 'false';
+    if (arg === "--provenance") return true;
+    if (arg.startsWith("--provenance=")) return arg.slice("--provenance=".length) !== "false";
   }
   return false;
 }
@@ -387,85 +411,88 @@ function stripDirOverride(args: string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '-C' || arg === '--dir') {
+    if (arg === "-C" || arg === "--dir") {
       const next = args[index + 1];
-      if (next !== undefined && !next.startsWith('-')) index += 1;
+      if (next !== undefined && !next.startsWith("-")) index += 1;
       continue;
     }
-    if (arg.startsWith('--dir=') || arg.startsWith('-C=')) continue;
+    if (arg.startsWith("--dir=") || arg.startsWith("-C=")) continue;
     out.push(arg);
   }
   return out;
 }
 
 const PUBLISH_OPTIONS_WITH_VALUE = new Set([
-  '--access',
-  '--changed-files-ignore-pattern',
-  '--dir',
-  '--filter',
-  '--filter-prod',
-  '--loglevel',
-  '--otp',
-  '--publish-branch',
-  '--registry',
-  '--reporter',
-  '--tag',
-  '--test-pattern',
+  "--access",
+  "--changed-files-ignore-pattern",
+  "--dir",
+  "--filter",
+  "--filter-prod",
+  "--loglevel",
+  "--otp",
+  "--publish-branch",
+  "--registry",
+  "--reporter",
+  "--tag",
+  "--test-pattern",
   // Short aliases of value-taking options.
-  '-C', // --dir
-  '-F', // --filter
+  "-C", // --dir
+  "-F", // --filter
 ]);
 
 function isNativeUnknownCliConfigOption(arg: string): boolean {
-  return arg.startsWith('--config.');
+  return arg.startsWith("--config.");
 }
 
 function formatNativeUnknownCliConfigWarning(arg: string): string {
-  const optionName = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+  const optionName = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
   return `npm warn Unknown cli config "${optionName}". This will stop working in the next major version of npm.\n`;
 }
 
 function formatNativeUnknownCliConfigWarnings(args: string[]): string {
-  return args.filter(isNativeUnknownCliConfigOption).map(formatNativeUnknownCliConfigWarning).join('');
+  return args
+    .filter(isNativeUnknownCliConfigOption)
+    .map(formatNativeUnknownCliConfigWarning)
+    .join("");
 }
 
 function findPublishPositionalArg(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--') {
+    if (arg === "--") {
       return args.slice(index + 1).find((value) => value.length > 0);
     }
     if (PUBLISH_OPTIONS_WITH_VALUE.has(arg)) {
       index += 1;
       continue;
     }
-    if (arg.startsWith('-')) continue;
+    if (arg.startsWith("-")) continue;
     return arg;
   }
   return undefined;
 }
 
 async function resolvePublishSource(cwd: string, args: string[]): Promise<PublishSource> {
-  if (isRecursivePublish(args)) return { kind: 'directory', path: cwd };
+  if (isRecursivePublish(args)) return { kind: "directory", path: cwd };
   const positional = findPublishPositionalArg(args);
-  if (!positional) return { kind: 'directory', path: cwd };
+  if (!positional) return { kind: "directory", path: cwd };
   const candidate = path.resolve(cwd, positional);
-  const stat = await fsp
-    .stat(candidate)
-    .catch(() => null);
+  const stat = await fsp.stat(candidate).catch(() => null);
   return stat?.isDirectory()
-    ? { kind: 'directory', path: candidate }
-    : { kind: 'tarball', path: candidate };
+    ? { kind: "directory", path: candidate }
+    : { kind: "tarball", path: candidate };
 }
 
 async function loadPublishSource(
   source: PublishSource,
   opts: { ignoreScripts?: boolean } = {},
 ): Promise<{ tarball: Buffer; metadata: Record<string, unknown> }> {
-  const { packPackage, readPackageTarball } = await import('./packer.js');
-  if (source.kind === 'tarball') return readPackageTarball(source.path);
-  return opts.ignoreScripts ? packPackage(source.path, { ignoreScripts: true }) : packPackage(source.path);
+  const { packPackage, readPackageTarball } = await import("./packer.js");
+  if (source.kind === "tarball") return readPackageTarball(source.path);
+  return opts.ignoreScripts
+    ? packPackage(source.path, { ignoreScripts: true })
+    : packPackage(source.path);
 }
 
 interface PublishedPackageSummary {
@@ -485,30 +512,37 @@ interface PublishResultLike {
   stderr: string;
 }
 
-async function writePublishSummaryFile(summaryDir: string, publishedPackages: readonly PublishedPackageSummary[]): Promise<void> {
+async function writePublishSummaryFile(
+  summaryDir: string,
+  publishedPackages: readonly PublishedPackageSummary[],
+): Promise<void> {
   await fsp.writeFile(
-    path.join(summaryDir, 'pnpm-publish-summary.json'),
-    JSON.stringify({ publishedPackages }, null, 2) + '\n',
-    'utf8',
+    path.join(summaryDir, "pnpm-publish-summary.json"),
+    JSON.stringify({ publishedPackages }, null, 2) + "\n",
+    "utf8",
   );
 }
 
-async function writePublishSummary(source: PublishSource, name: string, version: string): Promise<void> {
-  const summaryDir = source.kind === 'directory' ? source.path : path.dirname(source.path);
+async function writePublishSummary(
+  source: PublishSource,
+  name: string,
+  version: string,
+): Promise<void> {
+  const summaryDir = source.kind === "directory" ? source.path : path.dirname(source.path);
   await writePublishSummaryFile(summaryDir, [{ name, version }]);
 }
 
 function readMetadataString(metadata: Record<string, unknown>, key: string): string | undefined {
   const value = metadata[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function publishTarballFilename(name: string, version: string): string {
-  return `${name.replace(/^@/, '').replace('/', '-')}-${version}.tgz`;
+  return `${name.replace(/^@/, "").replace("/", "-")}-${version}.tgz`;
 }
 
 function formatNpmNoticeLine(text?: string): string {
-  return text ? `npm notice ${text}\n` : 'npm notice\n';
+  return text ? `npm notice ${text}\n` : "npm notice\n";
 }
 
 function formatNpmSize(bytes: number): string {
@@ -523,7 +557,7 @@ function shortenIntegrity(integrity: string): string {
 }
 
 function normalizeRegistryForNotice(registry: string): string {
-  return registry.endsWith('/') ? registry : `${registry}/`;
+  return registry.endsWith("/") ? registry : `${registry}/`;
 }
 
 function formatDryRunPublishDestinationNotice(params: {
@@ -531,9 +565,9 @@ function formatDryRunPublishDestinationNotice(params: {
   distTag?: string;
   access?: string;
 }): string {
-  const accessText = params.access ? `${params.access} access` : 'default access';
+  const accessText = params.access ? `${params.access} access` : "default access";
   return formatNpmNoticeLine(
-    `Publishing to ${normalizeRegistryForNotice(params.registry)} with tag ${params.distTag ?? 'latest'} and ${accessText} (dry-run)`,
+    `Publishing to ${normalizeRegistryForNotice(params.registry)} with tag ${params.distTag ?? "latest"} and ${accessText} (dry-run)`,
   );
 }
 
@@ -559,10 +593,12 @@ async function buildPublishJsonProjection(
   existingSummary?: PackageTarballSummary | null,
 ): Promise<PublishJsonProjection> {
   const summary =
-    existingSummary !== undefined ? existingSummary : await (async () => {
-      const { summarizePackageTarball } = await import('./packer.js');
-      return summarizePackageTarball(tarball).catch(() => null);
-    })();
+    existingSummary !== undefined
+      ? existingSummary
+      : await (async () => {
+          const { summarizePackageTarball } = await import("./packer.js");
+          return summarizePackageTarball(tarball).catch(() => null);
+        })();
   return {
     id: `${name}@${version}`,
     name,
@@ -573,8 +609,8 @@ async function buildPublishJsonProjection(
           unpackedSize: summary.unpackedSize,
         }
       : {}),
-    shasum: createHash('sha1').update(tarball).digest('hex'),
-    integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}`,
+    shasum: createHash("sha1").update(tarball).digest("hex"),
+    integrity: `sha512-${createHash("sha512").update(tarball).digest("base64")}`,
     filename: publishTarballFilename(name, version),
     ...(summary
       ? {
@@ -593,7 +629,7 @@ async function formatPublishJson(
   existingSummary?: PackageTarballSummary | null,
 ): Promise<string> {
   const projection = await buildPublishJsonProjection(name, version, tarball, existingSummary);
-  return JSON.stringify(projection, null, 2) + '\n';
+  return JSON.stringify(projection, null, 2) + "\n";
 }
 
 async function formatDryRunNpmNotice(params: {
@@ -606,15 +642,18 @@ async function formatDryRunNpmNotice(params: {
   /** Pre-computed summary (avoids a second packer pass when the caller already has one). */
   summary?: PackageTarballSummary | null;
 }): Promise<string> {
-  const { summarizePackageTarball } = await import('./packer.js');
-  const summary = params.summary !== undefined ? params.summary : await summarizePackageTarball(params.tarball).catch(() => null);
-  if (!summary) return '';
-  const shasum = createHash('sha1').update(params.tarball).digest('hex');
-  const integrity = `sha512-${createHash('sha512').update(params.tarball).digest('base64')}`;
+  const { summarizePackageTarball } = await import("./packer.js");
+  const summary =
+    params.summary !== undefined
+      ? params.summary
+      : await summarizePackageTarball(params.tarball).catch(() => null);
+  if (!summary) return "";
+  const shasum = createHash("sha1").update(params.tarball).digest("hex");
+  const integrity = `sha512-${createHash("sha512").update(params.tarball).digest("base64")}`;
   const bundledLines =
     summary.bundled.length > 0
       ? [
-          formatNpmNoticeLine('Bundled Dependencies'),
+          formatNpmNoticeLine("Bundled Dependencies"),
           ...summary.bundled.map((dependency) => formatNpmNoticeLine(dependency)),
         ]
       : [];
@@ -622,22 +661,26 @@ async function formatDryRunNpmNotice(params: {
     summary.bundled.length > 0
       ? [
           formatNpmNoticeLine(`bundled deps: ${summary.bundled.length}`),
-          formatNpmNoticeLine('bundled files: 0'),
+          formatNpmNoticeLine("bundled files: 0"),
           formatNpmNoticeLine(`own files: ${summary.entryCount}`),
         ]
       : [];
   const lines: string[] = [
     formatNpmNoticeLine(),
     formatNpmNoticeLine(`\u{1F4E6}  ${params.name}@${params.version}`),
-    formatNpmNoticeLine('Tarball Contents'),
+    formatNpmNoticeLine("Tarball Contents"),
     ...summary.files.map((file) => formatNpmNoticeLine(`${formatNpmSize(file.size)} ${file.path}`)),
     ...bundledLines,
-    formatNpmNoticeLine('Tarball Details'),
+    formatNpmNoticeLine("Tarball Details"),
     formatNpmNoticeLine(`name: ${params.name}`),
     formatNpmNoticeLine(`version: ${params.version}`),
     formatNpmNoticeLine(`filename: ${publishTarballFilename(params.name, params.version)}`),
-    formatNpmNoticeLine(`package size: ${formatNpmSize(params.tarball.length).replace(/([A-Za-z]+)$/, ' $1')}`),
-    formatNpmNoticeLine(`unpacked size: ${formatNpmSize(summary.unpackedSize).replace(/([A-Za-z]+)$/, ' $1')}`),
+    formatNpmNoticeLine(
+      `package size: ${formatNpmSize(params.tarball.length).replace(/([A-Za-z]+)$/, " $1")}`,
+    ),
+    formatNpmNoticeLine(
+      `unpacked size: ${formatNpmSize(summary.unpackedSize).replace(/([A-Za-z]+)$/, " $1")}`,
+    ),
     formatNpmNoticeLine(`shasum: ${shasum}`),
     formatNpmNoticeLine(`integrity: ${shortenIntegrity(integrity)}`),
     ...bundledDetailLines,
@@ -645,10 +688,10 @@ async function formatDryRunNpmNotice(params: {
     formatNpmNoticeLine(),
     formatDryRunPublishDestinationNotice(params),
   ];
-  return lines.join('');
+  return lines.join("");
 }
 
-type RecursiveFilterEdgeKind = 'all' | 'production';
+type RecursiveFilterEdgeKind = "all" | "production";
 
 interface RecursiveFilter {
   value: string;
@@ -660,35 +703,35 @@ function readRecursiveFilters(args: string[]): RecursiveFilter[] {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--filter' || arg === '-F') {
+    if (arg === "--filter" || arg === "-F") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) {
-        filters.push({ value: next, edgeKind: 'all' });
+      if (next && !next.startsWith("-")) {
+        filters.push({ value: next, edgeKind: "all" });
         index += 1;
       }
       continue;
     }
-    if (arg.startsWith('--filter=')) {
-      const value = arg.slice('--filter='.length);
-      if (value.length > 0) filters.push({ value, edgeKind: 'all' });
+    if (arg.startsWith("--filter=")) {
+      const value = arg.slice("--filter=".length);
+      if (value.length > 0) filters.push({ value, edgeKind: "all" });
       continue;
     }
-    if (arg.startsWith('-F=')) {
-      const value = arg.slice('-F='.length);
-      if (value.length > 0) filters.push({ value, edgeKind: 'all' });
+    if (arg.startsWith("-F=")) {
+      const value = arg.slice("-F=".length);
+      if (value.length > 0) filters.push({ value, edgeKind: "all" });
       continue;
     }
-    if (arg === '--filter-prod') {
+    if (arg === "--filter-prod") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) {
-        filters.push({ value: next, edgeKind: 'production' });
+      if (next && !next.startsWith("-")) {
+        filters.push({ value: next, edgeKind: "production" });
         index += 1;
       }
       continue;
     }
-    if (arg.startsWith('--filter-prod=')) {
-      const value = arg.slice('--filter-prod='.length);
-      if (value.length > 0) filters.push({ value, edgeKind: 'production' });
+    if (arg.startsWith("--filter-prod=")) {
+      const value = arg.slice("--filter-prod=".length);
+      if (value.length > 0) filters.push({ value, edgeKind: "production" });
     }
   }
   return filters;
@@ -699,16 +742,16 @@ function readChangedFilesIgnorePatterns(args: string[]): string[] {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--changed-files-ignore-pattern') {
+    if (arg === "--changed-files-ignore-pattern") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) {
+      if (next && !next.startsWith("-")) {
         patterns.push(next);
         index += 1;
       }
       continue;
     }
-    if (arg.startsWith('--changed-files-ignore-pattern=')) {
-      const value = arg.slice('--changed-files-ignore-pattern='.length);
+    if (arg.startsWith("--changed-files-ignore-pattern=")) {
+      const value = arg.slice("--changed-files-ignore-pattern=".length);
       if (value.length > 0) patterns.push(value);
     }
   }
@@ -733,8 +776,8 @@ function parseRecursiveSelector(value: string): RecursiveSelectorParts {
   const trimmed = value.trim();
   const changedSince = parseChangedSinceSuffix(trimmed);
   const selectorText = changedSince.selector;
-  const openIndex = selectorText.lastIndexOf('{');
-  if (openIndex >= 0 && selectorText.endsWith('}') && openIndex < selectorText.length - 2) {
+  const openIndex = selectorText.lastIndexOf("{");
+  if (openIndex >= 0 && selectorText.endsWith("}") && openIndex < selectorText.length - 2) {
     const packageSelector = selectorText.slice(0, openIndex);
     const directorySelector = selectorText.slice(openIndex + 1, -1);
     return {
@@ -750,8 +793,8 @@ function parseRecursiveSelector(value: string): RecursiveSelectorParts {
 }
 
 function parseChangedSinceSuffix(value: string): { selector: string; ref?: string } {
-  const openIndex = value.lastIndexOf('[');
-  if (openIndex >= 0 && value.endsWith(']') && openIndex < value.length - 2) {
+  const openIndex = value.lastIndexOf("[");
+  if (openIndex >= 0 && value.endsWith("]") && openIndex < value.length - 2) {
     return {
       selector: value.slice(0, openIndex),
       ref: value.slice(openIndex + 1, -1),
@@ -761,15 +804,15 @@ function parseChangedSinceSuffix(value: string): { selector: string; ref?: strin
 }
 
 function normalizeRelativeFilter(value: string): string {
-  return value.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 function filterToRegExp(value: string): RegExp {
   const escaped = normalizeRelativeFilter(value)
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '{{GLOBSTAR}}')
-    .replace(/\*/g, '[^/]*')
-    .replace(/{{GLOBSTAR}}/g, '.*');
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "{{GLOBSTAR}}")
+    .replace(/\*/g, "[^/]*")
+    .replace(/{{GLOBSTAR}}/g, ".*");
   return new RegExp(`^${escaped}$`);
 }
 
@@ -777,23 +820,33 @@ function selectorTextMatches(selector: string, value: string): boolean {
   const normalized = normalizeRelativeFilter(selector);
   if (!normalized) return false;
   if (value === selector || value === normalized) return true;
-  if (!normalized.includes('*')) return false;
+  if (!normalized.includes("*")) return false;
   return filterToRegExp(normalized).test(value);
 }
 
 function packageContainsRelativeFile(root: string, pkgPath: string, file: string): boolean {
-  const relativePackagePath = path.relative(root, pkgPath).replace(/\\/g, '/');
-  return relativePackagePath.length === 0 || file === relativePackagePath || file.startsWith(`${relativePackagePath}/`);
+  const relativePackagePath = path.relative(root, pkgPath).replace(/\\/g, "/");
+  return (
+    relativePackagePath.length === 0 ||
+    file === relativePackagePath ||
+    file.startsWith(`${relativePackagePath}/`)
+  );
 }
 
-function findCurrentPackagePath<T extends { path: string }>(root: string, packages: T[], currentPath: string): string | undefined {
-  const relativeCurrentPath = path.relative(root, currentPath).replace(/\\/g, '/');
+function findCurrentPackagePath<T extends { path: string }>(
+  root: string,
+  packages: T[],
+  currentPath: string,
+): string | undefined {
+  const relativeCurrentPath = path.relative(root, currentPath).replace(/\\/g, "/");
   const packageOrder = [...packages].sort((left, right) => {
     const leftRelative = path.relative(root, left.path);
     const rightRelative = path.relative(root, right.path);
     return rightRelative.length - leftRelative.length;
   });
-  return packageOrder.find((pkg) => packageContainsRelativeFile(root, pkg.path, relativeCurrentPath))?.path;
+  return packageOrder.find((pkg) =>
+    packageContainsRelativeFile(root, pkg.path, relativeCurrentPath),
+  )?.path;
 }
 
 function changedFileIsIgnored(file: string, patterns: readonly string[]): boolean {
@@ -806,9 +859,9 @@ async function readChangedPackagePaths<T extends { path: string }>(
   ref: string,
   ignorePatterns: readonly string[],
 ): Promise<Set<string>> {
-  let stdout = '';
+  let stdout = "";
   try {
-    const result = await execFileAsync('git', ['-C', root, 'diff', '--name-only', ref, '--'], {
+    const result = await execFileAsync("git", ["-C", root, "diff", "--name-only", ref, "--"], {
       maxBuffer: 1024 * 1024,
     });
     stdout = result.stdout;
@@ -831,10 +884,18 @@ async function readChangedPackagePaths<T extends { path: string }>(
   return changed;
 }
 
-async function getChangedPackagePaths<T extends { path: string }>(context: RecursiveFilterContext<T>, ref: string): Promise<Set<string>> {
+async function getChangedPackagePaths<T extends { path: string }>(
+  context: RecursiveFilterContext<T>,
+  ref: string,
+): Promise<Set<string>> {
   const existing = context.changedPathsByRef.get(ref);
   if (existing) return existing;
-  const pending = readChangedPackagePaths(context.root, context.packages, ref, context.changedFilesIgnorePatterns);
+  const pending = readChangedPackagePaths(
+    context.root,
+    context.packages,
+    ref,
+    context.changedFilesIgnorePatterns,
+  );
   context.changedPathsByRef.set(ref, pending);
   return pending;
 }
@@ -844,10 +905,13 @@ function selectorMatchesPackage<T extends { path: string }>(
   pkg: T,
   context: RecursiveFilterContext<T>,
 ): boolean {
-  if (selector.trim() === '.' || selector.trim() === './') {
+  if (selector.trim() === "." || selector.trim() === "./") {
     return context.currentPackagePath === pkg.path;
   }
-  return selectorTextMatches(selector, 'name' in pkg && typeof pkg.name === 'string' ? pkg.name : '');
+  return selectorTextMatches(
+    selector,
+    "name" in pkg && typeof pkg.name === "string" ? pkg.name : "",
+  );
 }
 
 async function recursiveFilterMatches<T extends { name: string; path: string }>(
@@ -860,18 +924,25 @@ async function recursiveFilterMatches<T extends { name: string; path: string }>(
     ? (await getChangedPackagePaths(context, selector.changedSinceRef)).has(pkg.path)
     : true;
   if (!changedMatches) return false;
-  const relativePath = path.relative(context.root, pkg.path).replace(/\\/g, '/');
+  const relativePath = path.relative(context.root, pkg.path).replace(/\\/g, "/");
   if (selector.directorySelector) {
     const directoryMatches = selectorTextMatches(selector.directorySelector, relativePath);
     if (!directoryMatches) return false;
-    return selector.packageSelector ? selectorMatchesPackage(selector.packageSelector, pkg, context) : true;
+    return selector.packageSelector
+      ? selectorMatchesPackage(selector.packageSelector, pkg, context)
+      : true;
   }
   return selector.packageSelector
-    ? selectorMatchesPackage(selector.packageSelector, pkg, context) || selectorTextMatches(selector.packageSelector, relativePath)
+    ? selectorMatchesPackage(selector.packageSelector, pkg, context) ||
+        selectorTextMatches(selector.packageSelector, relativePath)
     : Boolean(selector.changedSinceRef);
 }
 
-function appendUniquePackage<T extends { name: string }>(out: T[], seen: Set<string>, pkg: T): void {
+function appendUniquePackage<T extends { name: string }>(
+  out: T[],
+  seen: Set<string>,
+  pkg: T,
+): void {
   if (seen.has(pkg.name)) return;
   seen.add(pkg.name);
   out.push(pkg);
@@ -884,8 +955,13 @@ interface RecursiveGraphPackage {
   productionDependencyNames?: string[];
 }
 
-function readGraphDependencyNames(pkg: RecursiveGraphPackage, edgeKind: RecursiveFilterEdgeKind): readonly string[] {
-  return edgeKind === 'production' ? pkg.productionDependencyNames ?? [] : pkg.dependencyNames ?? [];
+function readGraphDependencyNames(
+  pkg: RecursiveGraphPackage,
+  edgeKind: RecursiveFilterEdgeKind,
+): readonly string[] {
+  return edgeKind === "production"
+    ? (pkg.productionDependencyNames ?? [])
+    : (pkg.dependencyNames ?? []);
 }
 
 function appendDependencyClosure<T extends RecursiveGraphPackage>(
@@ -901,7 +977,8 @@ function appendDependencyClosure<T extends RecursiveGraphPackage>(
   visiting.add(pkg.name);
   for (const dependencyName of readGraphDependencyNames(pkg, edgeKind)) {
     const dependency = byName.get(dependencyName);
-    if (dependency) appendDependencyClosure(out, seen, dependency, byName, true, visiting, edgeKind);
+    if (dependency)
+      appendDependencyClosure(out, seen, dependency, byName, true, visiting, edgeKind);
   }
   visiting.delete(pkg.name);
   if (includeSelf) appendUniquePackage(out, seen, pkg);
@@ -940,18 +1017,21 @@ async function matchingPackages<T extends RecursiveGraphPackage>(
 
 class RecursiveSelectorError extends Error {}
 
-function unsupportedBareGraphSelectorDescriptor(value: string, edgeKind: RecursiveFilterEdgeKind): string | undefined {
-  const followProdDepsOnly = edgeKind === 'production' ? 'true' : 'false';
+function unsupportedBareGraphSelectorDescriptor(
+  value: string,
+  edgeKind: RecursiveFilterEdgeKind,
+): string | undefined {
+  const followProdDepsOnly = edgeKind === "production" ? "true" : "false";
   switch (value) {
-    case '...':
+    case "...":
       return `{"exclude":false,"excludeSelf":false,"includeDependencies":true,"includeDependents":false,"followProdDepsOnly":${followProdDepsOnly}}`;
-    case '^...':
+    case "^...":
       return `{"exclude":false,"excludeSelf":true,"includeDependencies":true,"includeDependents":false,"followProdDepsOnly":${followProdDepsOnly}}`;
-    case '...^':
+    case "...^":
       return `{"exclude":false,"excludeSelf":true,"includeDependencies":false,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
-    case '......':
+    case "......":
       return `{"exclude":false,"excludeSelf":false,"includeDependencies":true,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
-    case '...^...':
+    case "...^...":
       return `{"exclude":false,"excludeSelf":true,"includeDependencies":true,"includeDependents":true,"followProdDepsOnly":${followProdDepsOnly}}`;
     default:
       return undefined;
@@ -966,13 +1046,20 @@ function assertSupportedRecursiveSelector(filter: RecursiveFilter): void {
 
 function normalizeCombinedGraphSeedFilter(value: string): string {
   let seed = value;
-  if (seed.startsWith('^')) seed = seed.slice(1);
-  if (seed.endsWith('^')) seed = seed.slice(0, -1);
+  if (seed.startsWith("^")) seed = seed.slice(1);
+  if (seed.endsWith("^")) seed = seed.slice(0, -1);
   return seed;
 }
 
 function isCurrentProjectGraphSelector(value: string): boolean {
-  return value === './...' || value === '....' || value === '.^...' || value === './^...' || value === '...^.' || value === '...^./';
+  return (
+    value === "./..." ||
+    value === "...." ||
+    value === ".^..." ||
+    value === "./^..." ||
+    value === "...^." ||
+    value === "...^./"
+  );
 }
 
 async function expandRecursiveFilter<T extends RecursiveGraphPackage>(
@@ -985,39 +1072,45 @@ async function expandRecursiveFilter<T extends RecursiveGraphPackage>(
   const seen = new Set<string>();
   assertSupportedRecursiveSelector(filter);
   if (isCurrentProjectGraphSelector(filter.value)) {
-    return matchingPackages(packages, '.', context);
+    return matchingPackages(packages, ".", context);
   }
-  if (filter.value.startsWith('...') && filter.value.endsWith('...') && filter.value.length > '......'.length) {
-    const seedFilter = normalizeCombinedGraphSeedFilter(filter.value.slice('...'.length, filter.value.length - '...'.length));
+  if (
+    filter.value.startsWith("...") &&
+    filter.value.endsWith("...") &&
+    filter.value.length > "......".length
+  ) {
+    const seedFilter = normalizeCombinedGraphSeedFilter(
+      filter.value.slice("...".length, filter.value.length - "...".length),
+    );
     for (const seed of await matchingPackages(packages, seedFilter, context)) {
       appendDependencyClosure(out, seen, seed, byName, true, new Set(), filter.edgeKind);
       appendDependentClosure(out, seen, seed, packages, false, new Set(), filter.edgeKind);
     }
     return out;
   }
-  if (filter.value.startsWith('...^')) {
-    const seedFilter = filter.value.slice('...^'.length);
+  if (filter.value.startsWith("...^")) {
+    const seedFilter = filter.value.slice("...^".length);
     for (const seed of await matchingPackages(packages, seedFilter, context)) {
       appendDependentClosure(out, seen, seed, packages, false, new Set(), filter.edgeKind);
     }
     return out;
   }
-  if (filter.value.startsWith('...')) {
-    const seedFilter = filter.value.slice('...'.length);
+  if (filter.value.startsWith("...")) {
+    const seedFilter = filter.value.slice("...".length);
     for (const seed of await matchingPackages(packages, seedFilter, context)) {
       appendDependentClosure(out, seen, seed, packages, true, new Set(), filter.edgeKind);
     }
     return out;
   }
-  if (filter.value.endsWith('^...')) {
-    const seedFilter = filter.value.slice(0, filter.value.length - '^...'.length);
+  if (filter.value.endsWith("^...")) {
+    const seedFilter = filter.value.slice(0, filter.value.length - "^...".length);
     for (const seed of await matchingPackages(packages, seedFilter, context)) {
       appendDependencyClosure(out, seen, seed, byName, false, new Set(), filter.edgeKind);
     }
     return out;
   }
-  if (filter.value.endsWith('...')) {
-    const seedFilter = filter.value.slice(0, filter.value.length - '...'.length);
+  if (filter.value.endsWith("...")) {
+    const seedFilter = filter.value.slice(0, filter.value.length - "...".length);
     for (const seed of await matchingPackages(packages, seedFilter, context)) {
       appendDependencyClosure(out, seen, seed, byName, true, new Set(), filter.edgeKind);
     }
@@ -1026,11 +1119,14 @@ async function expandRecursiveFilter<T extends RecursiveGraphPackage>(
   return matchingPackages(packages, filter.value, context);
 }
 
-function splitRecursiveFilters(filters: RecursiveFilter[]): { include: RecursiveFilter[]; exclude: RecursiveFilter[] } {
+function splitRecursiveFilters(filters: RecursiveFilter[]): {
+  include: RecursiveFilter[];
+  exclude: RecursiveFilter[];
+} {
   const include: RecursiveFilter[] = [];
   const exclude: RecursiveFilter[] = [];
   for (const filter of filters) {
-    if (filter.value.startsWith('!')) {
+    if (filter.value.startsWith("!")) {
       const value = filter.value.slice(1);
       if (value.length > 0) exclude.push({ value, edgeKind: filter.edgeKind });
       continue;
@@ -1054,7 +1150,9 @@ async function applyRecursiveFilters<T extends RecursiveGraphPackage>(
     packages,
     changedPathsByRef: new Map(),
     changedFilesIgnorePatterns,
-    ...(currentPath ? { currentPackagePath: findCurrentPackagePath(root, packages, currentPath) } : {}),
+    ...(currentPath
+      ? { currentPackagePath: findCurrentPackagePath(root, packages, currentPath) }
+      : {}),
   };
   const included: T[] = [];
   const includedSeen = new Set<string>();
@@ -1062,32 +1160,32 @@ async function applyRecursiveFilters<T extends RecursiveGraphPackage>(
     for (const pkg of packages) appendUniquePackage(included, includedSeen, pkg);
   } else {
     for (const filter of include) {
-      for (const pkg of await expandRecursiveFilter(packages, filter, context)) appendUniquePackage(included, includedSeen, pkg);
+      for (const pkg of await expandRecursiveFilter(packages, filter, context))
+        appendUniquePackage(included, includedSeen, pkg);
     }
   }
   const excluded = new Set<string>();
   for (const filter of exclude) {
-    for (const pkg of await expandRecursiveFilter(packages, filter, context)) excluded.add(pkg.name);
+    for (const pkg of await expandRecursiveFilter(packages, filter, context))
+      excluded.add(pkg.name);
   }
-  return exclude.length === 0
-    ? included
-    : included.filter((pkg) => !excluded.has(pkg.name));
+  return exclude.length === 0 ? included : included.filter((pkg) => !excluded.has(pkg.name));
 }
 
 async function resolveRecursivePublishRoot(source: PublishSource): Promise<string> {
-  const start = source.kind === 'directory' ? source.path : path.dirname(source.path);
+  const start = source.kind === "directory" ? source.path : path.dirname(source.path);
   const found = await findProjectRoot(start, realFs);
   return found.root ?? start;
 }
 
 function parseOidcContext(value: unknown): OidcContext | null {
   if (!isRecord(value)) return null;
-  const repo = readString(value, 'repo');
-  const name = readString(value, 'name');
-  const pathValue = readString(value, 'path');
+  const repo = readString(value, "repo");
+  const name = readString(value, "name");
+  const pathValue = readString(value, "path");
   if (!repo || !name || !pathValue) return null;
-  const branch = readString(value, 'branch');
-  const force = typeof value.force === 'boolean' ? value.force : undefined;
+  const branch = readString(value, "branch");
+  const force = typeof value.force === "boolean" ? value.force : undefined;
   return {
     repo,
     name,
@@ -1099,32 +1197,32 @@ function parseOidcContext(value: unknown): OidcContext | null {
 
 function parseCreatePlaceholderContext(value: unknown): CreatePlaceholderContext | null {
   if (!isRecord(value)) return null;
-  const name = readString(value, 'name');
+  const name = readString(value, "name");
   if (!name) return null;
   return { name };
 }
 
 function parseRefreshTokenContext(value: unknown): RefreshTokenContext | null {
   if (!isRecord(value)) return null;
-  const username = readString(value, 'username');
+  const username = readString(value, "username");
   return username ? { username } : null;
 }
 
 function parseUnpublishContext(value: unknown): UnpublishContext | null {
   if (!isRecord(value)) return null;
-  const name = readString(value, 'name');
-  const version = readString(value, 'version');
+  const name = readString(value, "name");
+  const version = readString(value, "version");
   if (!name || !version) return null;
   return { name, version };
 }
 
 function readString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorToMessage(error: unknown): string {
@@ -1141,13 +1239,16 @@ export class PublishScheduler {
     try {
       const found = await findProjectRoot(cwd, realFs);
       if (!found.root || isRiskyRoot(found.root, realFs)) {
-        client.log('stderr', `[workspace] skipped auto-collect for risky path: ${found.root ?? cwd}\n`);
+        client.log(
+          "stderr",
+          `[workspace] skipped auto-collect for risky path: ${found.root ?? cwd}\n`,
+        );
         return;
       }
       await this.store.addWorkspace({ path: found.root, pinned: false, addedAt: Date.now() });
     } catch (error: unknown) {
       const message = errorToMessage(error);
-      client.log('stderr', `[workspace] failed to auto-collect ${cwd}: ${message}\n`);
+      client.log("stderr", `[workspace] failed to auto-collect ${cwd}: ${message}\n`);
     }
   }
 
@@ -1163,15 +1264,15 @@ export class PublishScheduler {
     if (req.profileOverride && req.profileOverride.length > 0) {
       if (!this.store.getProfile(req.profileOverride)) {
         const msg = `Profile "${req.profileOverride}" not found. Add it via the tray GUI first.`;
-        client.log('stderr', msg + '\n');
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
         return;
       }
     }
     const profile = resolveProfile(this.store, req.profileOverride);
     if (!profile) {
-      client.log('stderr', 'No profile configured. Add a profile via the tray GUI first.\n');
-      client.exit(1, 'No profile');
+      client.log("stderr", "No profile configured. Add a profile via the tray GUI first.\n");
+      client.exit(1, "No profile");
       return;
     }
     // Chapter 7.1.2 — drop-in parity: unknown flags are forwarded verbatim to
@@ -1185,8 +1286,8 @@ export class PublishScheduler {
     const publishArgs = effectiveCwd === req.cwd ? req.args : stripDirOverride(req.args);
     if (isProvenancePublish(publishArgs)) {
       client.log(
-        'stderr',
-        '> note: --provenance passed through to pnpm. SLSA provenance normally requires a supported CI (GitHub Actions) with OIDC. For trusted publishing from CI, use pnpm-pub\'s OIDC Trusted-Publish flow.\n',
+        "stderr",
+        "> note: --provenance passed through to pnpm. SLSA provenance normally requires a supported CI (GitHub Actions) with OIDC. For trusted publishing from CI, use pnpm-pub's OIDC Trusted-Publish flow.\n",
       );
     }
     await this.collectWorkspaceFromCwd(effectiveCwd, client);
@@ -1201,8 +1302,8 @@ export class PublishScheduler {
     if (isRecursive && !isDryRun) {
       // Recursive publish REQUIRES pnpm — refuse early (no event, no fallback).
       if (!(await hasPnpm(source.path))) {
-        const msg = 'Recursive publish requires pnpm on PATH; no fallback is available.';
-        client.log('stderr', msg + '\n');
+        const msg = "Recursive publish requires pnpm on PATH; no fallback is available.";
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
         return;
       }
@@ -1211,23 +1312,23 @@ export class PublishScheduler {
         targets = await this.enumerateRecursiveTargets(source.path, publishArgs, client);
       } catch (error: unknown) {
         const msg = errorToMessage(error);
-        client.log('stderr', msg + '\n');
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
         return;
       }
       if (targets.length === 0) {
-        const msg = 'No publishable packages matched in the workspace.';
-        client.log('stderr', msg + '\n');
+        const msg = "No publishable packages matched in the workspace.";
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
         return;
       }
       const branch = await detectGitBranchSafe(source.path);
       const event = this.store.createEvent({
-        kind: 'recursive-publish',
+        kind: "recursive-publish",
         profile,
         profileOverride: req.profileOverride,
         payload: {
-          kind: 'recursive-publish',
+          kind: "recursive-publish",
           data: {
             source,
             args: publishArgs,
@@ -1246,11 +1347,11 @@ export class PublishScheduler {
     // (checkPublishGitState) is authoritative; this is display-only.
     const branch = await detectGitBranchSafe(source.path);
     const event = this.store.createEvent({
-      kind: 'publish',
+      kind: "publish",
       profile,
       profileOverride: req.profileOverride,
       payload: {
-        kind: 'publish',
+        kind: "publish",
         data: {
           source,
           args: publishArgs,
@@ -1273,23 +1374,29 @@ export class PublishScheduler {
     args: string[],
     client: PendingClient,
   ): Promise<PublishTarget[]> {
-    client.log('stdout', 'enumerating workspace packages...\n');
+    client.log("stdout", "enumerating workspace packages...\n");
     const all = await listRecursivePackages(cwd);
     // Apply --filter selectors if present; otherwise take all non-private.
     const filters = readRecursiveFilters(args);
     const publicPkgs = all.filter((p) => !p.private);
     let selected = publicPkgs;
     if (filters.length > 0) {
-      const root = await resolveRecursivePublishRoot({ kind: 'directory', path: cwd });
+      const root = await resolveRecursivePublishRoot({ kind: "directory", path: cwd });
       const scanned = await scanWorkspace(root, realFs, { root, respectGitignore: true });
-      const matched = await applyRecursiveFilters(scanned, root, filters, readChangedFilesIgnorePatterns(args), cwd);
+      const matched = await applyRecursiveFilters(
+        scanned,
+        root,
+        filters,
+        readChangedFilesIgnorePatterns(args),
+        cwd,
+      );
       const matchedNames = new Set(matched.map((m) => m.name));
       selected = publicPkgs.filter((p) => matchedNames.has(p.name));
     }
     // Resolve full targets (incl. repository, for the corner github-opener).
     const targets: PublishTarget[] = [];
     for (const p of selected) {
-      const meta = await readPublishTarget({ kind: 'directory', path: p.path });
+      const meta = await readPublishTarget({ kind: "directory", path: p.path });
       targets.push({ ...meta, name: p.name, version: p.version, path: p.path });
     }
     return targets;
@@ -1300,7 +1407,12 @@ export class PublishScheduler {
    * create the Event through the store, then register it in the executable
    * pending map before any confirm action can reach NPM or the filesystem.
    */
-  async createProactiveEvent(kind: EventKind, profile: string, payload: unknown, groupId?: string): Promise<ProactiveEventResult> {
+  async createProactiveEvent(
+    kind: EventKind,
+    profile: string,
+    payload: unknown,
+    groupId?: string,
+  ): Promise<ProactiveEventResult> {
     if (!this.store.getProfile(profile)) {
       return { ok: false, error: `Profile "${profile}" not found. Add it via the tray GUI first.` };
     }
@@ -1312,9 +1424,9 @@ export class PublishScheduler {
     // version/description reflect the CURRENT package.json (not a stale copy
     // carried over from a retry of an older event). The args are kept as-is
     // (they carry the user's advanced-option edits).
-    if (parsed.kind === 'publish') {
+    if (parsed.kind === "publish") {
       await this.refreshPublishTarget(parsed);
-    } else if (parsed.kind === 'recursive-publish') {
+    } else if (parsed.kind === "recursive-publish") {
       // WebUI button may create the event with empty targets — enumerate them
       // now via `pnpm list -r` so the card shows what will be published.
       await this.refreshRecursiveTargets(parsed);
@@ -1328,7 +1440,10 @@ export class PublishScheduler {
    * Re-read package.json from the publish source dir and refresh the payload's
    * target (version/description/repository/…) in place.
    */
-  private async refreshPublishTarget(payload: { kind: 'publish'; data: PublishContext }): Promise<void> {
+  private async refreshPublishTarget(payload: {
+    kind: "publish";
+    data: PublishContext;
+  }): Promise<void> {
     try {
       const target = await readPublishTarget(payload.data.source);
       payload.data.target = {
@@ -1350,7 +1465,10 @@ export class PublishScheduler {
    * event so the card reflects the current set of publishable packages.
    * Requires pnpm; on failure the original targets are preserved.
    */
-  private async refreshRecursiveTargets(payload: { kind: 'recursive-publish'; data: RecursivePublishContext }): Promise<void> {
+  private async refreshRecursiveTargets(payload: {
+    kind: "recursive-publish";
+    data: RecursivePublishContext;
+  }): Promise<void> {
     try {
       if (!(await hasPnpm(payload.data.source.path))) return;
       // Reuse enumerateRecursiveTargets so targets carry repository (for the
@@ -1370,27 +1488,27 @@ export class PublishScheduler {
     const entry = this.pending.get(taskId);
     if (!entry) return false;
     const { event, client } = entry;
-    if (event.payload?.kind === 'refresh-token') {
+    if (event.payload?.kind === "refresh-token") {
       const msg = `Token refresh for ${event.payload.data.username} requires credential re-apply.`;
-      this.store.resolveEvent(taskId, 'action-required', msg);
-      client.log('stdout', msg + '\n');
+      this.store.resolveEvent(taskId, "action-required", msg);
+      client.log("stdout", msg + "\n");
       client.exit(0);
       this.pending.delete(taskId);
       return true;
     }
 
-    if (event.payload?.kind === 'publish') {
+    if (event.payload?.kind === "publish") {
       const recursive = isRecursivePublish(event.payload.data.args);
       const dryRun = isDryRunPublish(event.payload.data.args);
       const gitCheckPath = recursive
         ? await resolveRecursivePublishRoot(event.payload.data.source)
-        : event.payload.data.source.kind === 'directory'
+        : event.payload.data.source.kind === "directory"
           ? event.payload.data.source.path
           : path.dirname(event.payload.data.source.path);
       const gitCheck = await checkPublishGitState(gitCheckPath, event.payload.data.args);
       if (!gitCheck.ok) {
-        this.store.resolveEvent(taskId, 'failed', gitCheck.error);
-        client.log('stderr', gitCheck.error + '\n');
+        this.store.resolveEvent(taskId, "failed", gitCheck.error);
+        client.log("stderr", gitCheck.error + "\n");
         client.exit(1, gitCheck.error);
         this.pending.delete(taskId);
         return true;
@@ -1402,20 +1520,20 @@ export class PublishScheduler {
       }
     }
 
-    if (event.payload?.kind === 'recursive-publish') {
+    if (event.payload?.kind === "recursive-publish") {
       // Recursive publish: git-check at the workspace root, then run.
       const gitCheckPath = await resolveRecursivePublishRoot(event.payload.data.source);
       const gitCheck = await checkPublishGitState(gitCheckPath, event.payload.data.args);
       if (!gitCheck.ok) {
-        this.store.resolveEvent(taskId, 'failed', gitCheck.error);
-        client.log('stderr', gitCheck.error + '\n');
+        this.store.resolveEvent(taskId, "failed", gitCheck.error);
+        client.log("stderr", gitCheck.error + "\n");
         client.exit(1, gitCheck.error);
         this.pending.delete(taskId);
         return true;
       }
     }
 
-    if (event.payload?.kind === 'publish' && isDryRunPublish(event.payload.data.args)) {
+    if (event.payload?.kind === "publish" && isDryRunPublish(event.payload.data.args)) {
       await this.runPublishDryRun(event, client);
       this.pending.delete(taskId);
       return true;
@@ -1424,38 +1542,61 @@ export class PublishScheduler {
     const creds = this.store.getCredentials(event.profile);
     if (!creds) {
       const msg = `Credentials for ${event.profile} are missing. Re-apply them in the tray.`;
-      this.store.resolveEvent(taskId, 'action-required', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(taskId, "action-required", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
       this.pending.delete(taskId);
       return true;
     }
 
     const profile = this.store.getProfile(event.profile);
-    const profileRegistry = profile?.registry ?? 'https://registry.npmjs.org/';
+    const profileRegistry = profile?.registry ?? "https://registry.npmjs.org/";
 
     // Resolve the publish payload.
-    if (event.payload?.kind === 'publish') {
+    if (event.payload?.kind === "publish") {
       const packagePublishConfig = event.payload.data.target.publishConfig;
-      const registry = resolvePublishRegistry(event.payload.data.args, packagePublishConfig?.registry ?? profileRegistry);
+      const registry = resolvePublishRegistry(
+        event.payload.data.args,
+        packagePublishConfig?.registry ?? profileRegistry,
+      );
       const distTag = resolvePublishDistTag(event.payload.data.args, packagePublishConfig?.tag);
       const access = resolvePublishAccess(event.payload.data.args, packagePublishConfig?.access);
       const otp = resolvePublishOtp(event.payload.data.args);
       const reportSummary = isReportSummaryPublish(event.payload.data.args);
       const ignoreScripts = isIgnoreScriptsPublish(event.payload.data.args);
       const json = isJsonPublish(event.payload.data.args);
-      await this.runPublish(event, client, creds.token, creds.totpSecret, registry, distTag, access, otp, reportSummary, ignoreScripts, json);
-    } else if (event.payload?.kind === 'setup-oidc') {
+      await this.runPublish(
+        event,
+        client,
+        creds.token,
+        creds.totpSecret,
+        registry,
+        distTag,
+        access,
+        otp,
+        reportSummary,
+        ignoreScripts,
+        json,
+      );
+    } else if (event.payload?.kind === "setup-oidc") {
       await this.runOidc(event, client, creds.token, creds.totpSecret, profileRegistry);
-    } else if (event.payload?.kind === 'create-placeholder') {
+    } else if (event.payload?.kind === "create-placeholder") {
       await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
-    } else if (event.payload?.kind === 'unpublish') {
+    } else if (event.payload?.kind === "unpublish") {
       await this.runUnpublish(event, client, creds.token, creds.totpSecret, profileRegistry);
-    } else if (event.payload?.kind === 'recursive-publish') {
+    } else if (event.payload?.kind === "recursive-publish") {
       const registry = resolvePublishRegistry(event.payload.data.args, profileRegistry);
       const otp = resolvePublishOtp(event.payload.data.args);
       const json = isJsonPublish(event.payload.data.args);
-      await this.runRecursivePublish(event, client, creds.token, creds.totpSecret, registry, otp, json);
+      await this.runRecursivePublish(
+        event,
+        client,
+        creds.token,
+        creds.totpSecret,
+        registry,
+        otp,
+        json,
+      );
     }
     this.pending.delete(taskId);
     return true;
@@ -1466,9 +1607,9 @@ export class PublishScheduler {
     const entry = this.pending.get(taskId);
     if (!entry) return false;
     const { client } = entry;
-    this.store.resolveEvent(taskId, 'rejected', 'Publish canceled by user.');
-    client.log('stderr', 'Publish canceled by user.\n');
-    client.exit(1, 'Publish canceled by user.');
+    this.store.resolveEvent(taskId, "rejected", "Publish canceled by user.");
+    client.log("stderr", "Publish canceled by user.\n");
+    client.exit(1, "Publish canceled by user.");
     this.pending.delete(taskId);
     return true;
   }
@@ -1486,15 +1627,15 @@ export class PublishScheduler {
   ): void {
     if (result.ok) {
       const message = opts.successMessage ?? result.stdout;
-      this.store.resolveEvent(event.id, 'success', message, {
+      this.store.resolveEvent(event.id, "success", message, {
         clockDriftRecovered: result.clockDriftRecovered,
         ...opts.extra,
       });
       client.exit(0);
     } else if (result.expired) {
       const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
-      this.store.resolveEvent(event.id, 'expired', msg, opts.extra);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "expired", msg, opts.extra);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     } else {
       // Persist the FULL subprocess log (result.stderr carries the complete
@@ -1502,7 +1643,7 @@ export class PublishScheduler {
       // which package failed, the registry error body, etc. Fall back to the
       // single-line extracted error only when no stderr was captured.
       const fullLog = result.stderr?.trim() || result.error;
-      this.store.resolveEvent(event.id, 'failed', fullLog, opts.extra);
+      this.store.resolveEvent(event.id, "failed", fullLog, opts.extra);
       client.exit(1, result.error);
     }
   }
@@ -1520,7 +1661,7 @@ export class PublishScheduler {
     ignoreScripts: boolean,
     json: boolean,
   ): Promise<void> {
-    if (event.payload?.kind !== 'publish') return;
+    if (event.payload?.kind !== "publish") return;
     const ctx = event.payload.data;
     const name = ctx.target.name;
     const version = ctx.target.version;
@@ -1533,19 +1674,25 @@ export class PublishScheduler {
       let packed: { tarball: Buffer; metadata: Record<string, unknown> } | undefined;
       try {
         if (!json) {
-          client.log('stdout', `${source.kind === 'directory' ? 'packing' : 'reading tarball'} ${name}...\n`);
+          client.log(
+            "stdout",
+            `${source.kind === "directory" ? "packing" : "reading tarball"} ${name}...\n`,
+          );
         }
         packed = await loadPublishSource(source, { ignoreScripts });
-        if (!json) client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+        if (!json) client.log("stdout", `packed ${packed.tarball.length} bytes\n`);
       } catch (previewError) {
         // Only fatal for the API fallback path (which needs the tarball). The
         // CLI path will attempt its own pack via `pnpm publish`.
-        if (source.kind === 'tarball') throw previewError;
+        if (source.kind === "tarball") throw previewError;
       }
-      const { summarizePackageTarball } = await import('./packer.js');
-      const tarballSummary = packed ? await summarizePackageTarball(packed.tarball).catch(() => undefined) : undefined;
-      const publishedName = (packed && readMetadataString(packed.metadata, 'name')) ?? name;
-      const publishedVersion = (packed && readMetadataString(packed.metadata, 'version')) ?? version;
+      const { summarizePackageTarball } = await import("./packer.js");
+      const tarballSummary = packed
+        ? await summarizePackageTarball(packed.tarball).catch(() => undefined)
+        : undefined;
+      const publishedName = (packed && readMetadataString(packed.metadata, "name")) ?? name;
+      const publishedVersion =
+        (packed && readMetadataString(packed.metadata, "version")) ?? version;
 
       // Assemble the argv forwarded to `pnpm publish`: the user's original args
       // (whitelist-validated) carry --access/--tag/--no-git-checks/etc. The
@@ -1557,9 +1704,10 @@ export class PublishScheduler {
       // Falls back to the registry-API path ONLY when pnpm is absent from PATH
       // (and only for directory sources — tarball sources always use the API).
       let result: PublishResultLike | undefined;
-      if (source.kind === 'directory') {
+      if (source.kind === "directory") {
         try {
-          if (!json) client.log('stdout', `publishing ${publishedName}@${publishedVersion} via pnpm...\n`);
+          if (!json)
+            client.log("stdout", `publishing ${publishedName}@${publishedVersion} via pnpm...\n`);
           result = await publishPackageViaCli({
             cwd: source.path,
             args: ctx.args,
@@ -1571,7 +1719,11 @@ export class PublishScheduler {
           });
         } catch (error: unknown) {
           if (error instanceof PnpmNotOnPathError) {
-            if (!json) client.log('stderr', 'pnpm not found on PATH; falling back to registry API publish.\n');
+            if (!json)
+              client.log(
+                "stderr",
+                "pnpm not found on PATH; falling back to registry API publish.\n",
+              );
           } else {
             throw error;
           }
@@ -1592,8 +1744,8 @@ export class PublishScheduler {
           ...(access ? { access } : {}),
           ...(otp ? { otp } : {}),
         });
-        if (fallbackResult.stdout && !json) client.log('stdout', fallbackResult.stdout + '\n');
-        if (fallbackResult.stderr) client.log('stderr', fallbackResult.stderr + '\n');
+        if (fallbackResult.stdout && !json) client.log("stdout", fallbackResult.stdout + "\n");
+        if (fallbackResult.stderr) client.log("stderr", fallbackResult.stderr + "\n");
         result = fallbackResult;
       }
       const publishResult: PublishResultLike = result;
@@ -1602,31 +1754,54 @@ export class PublishScheduler {
         if (reportSummary) {
           await writePublishSummary(source, publishedName, publishedVersion);
         }
-        const successOutput = json && packed ? await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null) : publishResult.stdout;
-        if (json && packed) client.log('stdout', successOutput);
-        this.store.resolveEvent(event.id, 'success', publishResult.stdout || `+ ${publishedName}@${publishedVersion}`, {
-          clockDriftRecovered: publishResult.clockDriftRecovered,
-          ...(tarballSummary ? { tarballSummary } : {}),
-        });
+        const successOutput =
+          json && packed
+            ? await formatPublishJson(
+                publishedName,
+                publishedVersion,
+                packed.tarball,
+                tarballSummary ?? null,
+              )
+            : publishResult.stdout;
+        if (json && packed) client.log("stdout", successOutput);
+        this.store.resolveEvent(
+          event.id,
+          "success",
+          publishResult.stdout || `+ ${publishedName}@${publishedVersion}`,
+          {
+            clockDriftRecovered: publishResult.clockDriftRecovered,
+            ...(tarballSummary ? { tarballSummary } : {}),
+          },
+        );
         client.exit(0);
       } else if (publishResult.expired) {
         // Chapter 6.2.4: token expired/revoked → special Expired event so the
         // UI can prompt for renewal instead of showing a generic failure.
         const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
-        this.store.resolveEvent(event.id, 'expired', msg, tarballSummary ? { tarballSummary } : undefined);
-        client.log('stderr', msg + '\n');
+        this.store.resolveEvent(
+          event.id,
+          "expired",
+          msg,
+          tarballSummary ? { tarballSummary } : undefined,
+        );
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
       } else {
         // Persist the FULL subprocess log so the WebUI's expandable log shows
         // every line; fall back to the single-line error only when empty.
         const fullLog = publishResult.stderr?.trim() || publishResult.error;
-        this.store.resolveEvent(event.id, 'failed', fullLog, tarballSummary ? { tarballSummary } : undefined);
+        this.store.resolveEvent(
+          event.id,
+          "failed",
+          fullLog,
+          tarballSummary ? { tarballSummary } : undefined,
+        );
         client.exit(1, publishResult.error);
       }
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     }
   }
@@ -1640,12 +1815,15 @@ export class PublishScheduler {
     otp: string | undefined,
     json: boolean,
   ): Promise<void> {
-    if (event.payload?.kind !== 'recursive-publish') return;
+    if (event.payload?.kind !== "recursive-publish") return;
     const ctx = event.payload.data;
     const source = ctx.source;
     try {
       if (!json) {
-        client.log('stdout', `recursively publishing ${ctx.targets.length} package${ctx.targets.length === 1 ? '' : 's'} via pnpm...\n`);
+        client.log(
+          "stdout",
+          `recursively publishing ${ctx.targets.length} package${ctx.targets.length === 1 ? "" : "s"} via pnpm...\n`,
+        );
       }
       const result = await publishRecursiveViaCli({
         cwd: source.path,
@@ -1657,44 +1835,64 @@ export class PublishScheduler {
         sink: { log: (stream, data) => client.log(stream, data) },
       });
       this.resolvePublishOutcome(event, client, result, {
-        successMessage: `+ recursively published ${ctx.targets.length} package${ctx.targets.length === 1 ? '' : 's'}`,
+        successMessage: `+ recursively published ${ctx.targets.length} package${ctx.targets.length === 1 ? "" : "s"}`,
       });
     } catch (error: unknown) {
       if (error instanceof PnpmNotOnPathError) {
-        this.resolvePublishOutcome(event, client, { ok: false, status: 1, error: 'Recursive publish requires pnpm on PATH; no fallback is available.', stdout: '', stderr: '' });
+        this.resolvePublishOutcome(event, client, {
+          ok: false,
+          status: 1,
+          error: "Recursive publish requires pnpm on PATH; no fallback is available.",
+          stdout: "",
+          stderr: "",
+        });
         return;
       }
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     }
   }
 
   private async runPublishDryRun(event: PubEvent, client: PendingClient): Promise<void> {
-    if (event.payload?.kind !== 'publish') return;
+    if (event.payload?.kind !== "publish") return;
     const ctx = event.payload.data;
     const name = ctx.target.name;
     const source = ctx.source;
     const json = isJsonPublish(ctx.args);
     const configWarnings = formatNativeUnknownCliConfigWarnings(ctx.args);
     try {
-      const packed = await loadPublishSource(source, { ignoreScripts: isIgnoreScriptsPublish(ctx.args) });
-      const msg = 'Dry run complete; no registry write performed.';
-      const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
-      const publishedVersion = readMetadataString(packed.metadata, 'version') ?? ctx.target.version;
+      const packed = await loadPublishSource(source, {
+        ignoreScripts: isIgnoreScriptsPublish(ctx.args),
+      });
+      const msg = "Dry run complete; no registry write performed.";
+      const publishedName = readMetadataString(packed.metadata, "name") ?? name;
+      const publishedVersion = readMetadataString(packed.metadata, "version") ?? ctx.target.version;
       // Cache the packed file-tree preview for the WebUI.
-      const { summarizePackageTarball } = await import('./packer.js');
+      const { summarizePackageTarball } = await import("./packer.js");
       const tarballSummary = await summarizePackageTarball(packed.tarball).catch(() => undefined);
-      const profileRegistry = this.store.getProfile(event.profile)?.registry ?? 'https://registry.npmjs.org/';
+      const profileRegistry =
+        this.store.getProfile(event.profile)?.registry ?? "https://registry.npmjs.org/";
       const noticeTarget = {
-        registry: resolvePublishRegistry(ctx.args, ctx.target.publishConfig?.registry ?? profileRegistry),
+        registry: resolvePublishRegistry(
+          ctx.args,
+          ctx.target.publishConfig?.registry ?? profileRegistry,
+        ),
         distTag: resolvePublishDistTag(ctx.args, ctx.target.publishConfig?.tag),
         access: resolvePublishAccess(ctx.args, ctx.target.publishConfig?.access),
       };
       if (json) {
-        client.log('stdout', await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null));
-        client.log('stderr', configWarnings + formatDryRunPublishDestinationNotice(noticeTarget));
+        client.log(
+          "stdout",
+          await formatPublishJson(
+            publishedName,
+            publishedVersion,
+            packed.tarball,
+            tarballSummary ?? null,
+          ),
+        );
+        client.log("stderr", configWarnings + formatDryRunPublishDestinationNotice(noticeTarget));
       } else {
         const notice = await formatDryRunNpmNotice({
           name: publishedName,
@@ -1703,36 +1901,49 @@ export class PublishScheduler {
           summary: tarballSummary ?? null,
           ...noticeTarget,
         });
-        if (notice || configWarnings) client.log('stderr', configWarnings + notice);
-        client.log('stdout', `+ ${publishedName}@${publishedVersion}\n`);
+        if (notice || configWarnings) client.log("stderr", configWarnings + notice);
+        client.log("stdout", `+ ${publishedName}@${publishedVersion}\n`);
       }
-      this.store.resolveEvent(event.id, 'success', msg, tarballSummary ? { tarballSummary } : undefined);
+      this.store.resolveEvent(
+        event.id,
+        "success",
+        msg,
+        tarballSummary ? { tarballSummary } : undefined,
+      );
       client.exit(0);
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     }
   }
 
   private async runRecursivePublishDryRun(event: PubEvent, client: PendingClient): Promise<void> {
-    if (event.payload?.kind !== 'publish') return;
+    if (event.payload?.kind !== "publish") return;
     const ctx = event.payload.data;
     const ignoreScripts = isIgnoreScriptsPublish(ctx.args);
     const filters = readRecursiveFilters(ctx.args);
     const changedFilesIgnorePatterns = readChangedFilesIgnorePatterns(ctx.args);
     const failIfNoMatch = isFailIfNoMatchPublish(ctx.args);
     try {
-      const profileRegistry = this.store.getProfile(event.profile)?.registry ?? 'https://registry.npmjs.org/';
+      const profileRegistry =
+        this.store.getProfile(event.profile)?.registry ?? "https://registry.npmjs.org/";
       const root = await resolveRecursivePublishRoot(ctx.source);
       const packages = await scanWorkspace(root, realFs, { root, respectGitignore: true });
-      const currentPath = ctx.source.kind === 'directory' ? ctx.source.path : path.dirname(ctx.source.path);
-      const selected = await applyRecursiveFilters(packages, root, filters, changedFilesIgnorePatterns, currentPath);
+      const currentPath =
+        ctx.source.kind === "directory" ? ctx.source.path : path.dirname(ctx.source.path);
+      const selected = await applyRecursiveFilters(
+        packages,
+        root,
+        filters,
+        changedFilesIgnorePatterns,
+        currentPath,
+      );
       if (selected.length === 0) {
         const msg = `No projects matched the filters in "${root}"`;
-        this.store.resolveEvent(event.id, failIfNoMatch ? 'failed' : 'success', msg);
-        client.log('stdout', msg + '\n');
+        this.store.resolveEvent(event.id, failIfNoMatch ? "failed" : "success", msg);
+        client.log("stdout", msg + "\n");
         if (failIfNoMatch) {
           client.exit(1, msg);
         } else {
@@ -1743,32 +1954,38 @@ export class PublishScheduler {
 
       const publishedPackages: PublishedPackageSummary[] = [];
       for (const pkg of selected) {
-        const packed = await loadPublishSource({ kind: 'directory', path: pkg.path }, { ignoreScripts });
-        const publishedName = readMetadataString(packed.metadata, 'name') ?? pkg.name;
-        const publishedVersion = readMetadataString(packed.metadata, 'version') ?? pkg.version;
+        const packed = await loadPublishSource(
+          { kind: "directory", path: pkg.path },
+          { ignoreScripts },
+        );
+        const publishedName = readMetadataString(packed.metadata, "name") ?? pkg.name;
+        const publishedVersion = readMetadataString(packed.metadata, "version") ?? pkg.version;
         publishedPackages.push({ name: publishedName, version: publishedVersion });
         const notice = await formatDryRunNpmNotice({
           name: publishedName,
           version: publishedVersion,
           tarball: packed.tarball,
-          registry: resolvePublishRegistry(ctx.args, pkg.publishConfig?.registry ?? profileRegistry),
+          registry: resolvePublishRegistry(
+            ctx.args,
+            pkg.publishConfig?.registry ?? profileRegistry,
+          ),
           distTag: resolvePublishDistTag(ctx.args, pkg.publishConfig?.tag),
           access: resolvePublishAccess(ctx.args, pkg.publishConfig?.access),
         });
-        if (notice) client.log('stderr', notice);
-        client.log('stdout', `+ ${publishedName}@${publishedVersion}\n`);
+        if (notice) client.log("stderr", notice);
+        client.log("stdout", `+ ${publishedName}@${publishedVersion}\n`);
       }
 
       if (isReportSummaryPublish(ctx.args)) {
         await writePublishSummaryFile(root, publishedPackages);
       }
-      const msg = `Recursive dry run complete; ${selected.length} package${selected.length === 1 ? '' : 's'} packed; no registry write performed.`;
-      this.store.resolveEvent(event.id, 'success', msg);
+      const msg = `Recursive dry run complete; ${selected.length} package${selected.length === 1 ? "" : "s"} packed; no registry write performed.`;
+      this.store.resolveEvent(event.id, "success", msg);
       client.exit(0);
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log(error instanceof RecursiveSelectorError ? 'stdout' : 'stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log(error instanceof RecursiveSelectorError ? "stdout" : "stderr", msg + "\n");
       client.exit(1, msg);
     }
   }
@@ -1780,33 +1997,33 @@ export class PublishScheduler {
     totpSecret: string,
     registry: string,
   ): Promise<void> {
-    if (event.payload?.kind !== 'create-placeholder') return;
+    if (event.payload?.kind !== "create-placeholder") return;
     const ctx = event.payload.data;
-    const version = '0.0.0';
+    const version = "0.0.0";
     let tempDir: string | null = null;
     try {
-      tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'pnpm-pub-placeholder-'));
+      tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "pnpm-pub-placeholder-"));
       await fsp.writeFile(
-        path.join(tempDir, 'package.json'),
+        path.join(tempDir, "package.json"),
         JSON.stringify(
           {
             name: ctx.name,
             version,
-            description: 'Generated placeholder package reserved by pnpm-pub.',
-            main: 'index.js',
-            files: ['index.js'],
+            description: "Generated placeholder package reserved by pnpm-pub.",
+            main: "index.js",
+            files: ["index.js"],
           },
           null,
           2,
         ),
-        'utf8',
+        "utf8",
       );
-      await fsp.writeFile(path.join(tempDir, 'index.js'), 'module.exports = {};\n', 'utf8');
+      await fsp.writeFile(path.join(tempDir, "index.js"), "module.exports = {};\n", "utf8");
 
-      client.log('stdout', `packing placeholder ${ctx.name}@${version}...\n`);
-      const { packPackage } = await import('./packer.js');
+      client.log("stdout", `packing placeholder ${ctx.name}@${version}...\n`);
+      const { packPackage } = await import("./packer.js");
       const packed = await packPackage(tempDir);
-      client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+      client.log("stdout", `packed ${packed.tarball.length} bytes\n`);
 
       const result = await publishPackage({
         registry,
@@ -1817,26 +2034,26 @@ export class PublishScheduler {
         tarball: packed.tarball,
         metadata: packed.metadata,
       });
-      if (result.stdout) client.log('stdout', result.stdout + '\n');
-      if (result.stderr) client.log('stderr', result.stderr + '\n');
+      if (result.stdout) client.log("stdout", result.stdout + "\n");
+      if (result.stderr) client.log("stderr", result.stderr + "\n");
       if (result.ok) {
-        this.store.resolveEvent(event.id, 'success', result.stdout, {
+        this.store.resolveEvent(event.id, "success", result.stdout, {
           clockDriftRecovered: result.clockDriftRecovered,
         });
         client.exit(0);
       } else if (result.expired) {
         const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
-        this.store.resolveEvent(event.id, 'expired', msg);
-        client.log('stderr', msg + '\n');
+        this.store.resolveEvent(event.id, "expired", msg);
+        client.log("stderr", msg + "\n");
         client.exit(1, msg);
       } else {
-        this.store.resolveEvent(event.id, 'failed', result.error);
+        this.store.resolveEvent(event.id, "failed", result.error);
         client.exit(1, result.error);
       }
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     } finally {
       if (tempDir) {
@@ -1852,9 +2069,9 @@ export class PublishScheduler {
     totpSecret: string,
     registry: string,
   ): Promise<void> {
-    if (event.payload?.kind !== 'unpublish') return;
+    if (event.payload?.kind !== "unpublish") return;
     const ctx = event.payload.data;
-    client.log('stdout', `unpublishing ${ctx.name}@${ctx.version}...\n`);
+    client.log("stdout", `unpublishing ${ctx.name}@${ctx.version}...\n`);
     try {
       const result = await unpublishVersion({
         registry,
@@ -1867,18 +2084,18 @@ export class PublishScheduler {
         const msg = result.wholePackageRemoved
           ? `Removed ${ctx.name} entirely (last version).`
           : `Removed ${ctx.name}@${ctx.version}.`;
-        this.store.resolveEvent(event.id, 'success', msg);
-        client.log('stdout', msg + '\n');
+        this.store.resolveEvent(event.id, "success", msg);
+        client.log("stdout", msg + "\n");
         client.exit(0);
       } else {
-        this.store.resolveEvent(event.id, 'failed', result.error);
-        client.log('stderr', result.error + '\n');
+        this.store.resolveEvent(event.id, "failed", result.error);
+        client.log("stderr", result.error + "\n");
         client.exit(1, result.error);
       }
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     }
   }
@@ -1890,7 +2107,7 @@ export class PublishScheduler {
     totpSecret: string,
     registry: string,
   ): Promise<void> {
-    if (event.payload?.kind !== 'setup-oidc') return;
+    if (event.payload?.kind !== "setup-oidc") return;
     const ctx = event.payload.data;
     try {
       // Chapter 8.5 step 10 / 1.2.3: write the reference workflow INTO THE
@@ -1904,8 +2121,8 @@ export class PublishScheduler {
         .catch(() => false);
       const blockReason = canWriteWorkflow(exists, !!ctx.force);
       if (blockReason) {
-        client.log('stderr', `[oidc] ${blockReason}\n`);
-        this.store.resolveEvent(event.id, 'failed', blockReason);
+        client.log("stderr", `[oidc] ${blockReason}\n`);
+        this.store.resolveEvent(event.id, "failed", blockReason);
         client.exit(1, blockReason);
         return;
       }
@@ -1915,28 +2132,28 @@ export class PublishScheduler {
 
       try {
         await fsp.mkdir(path.dirname(workflowFile), { recursive: true });
-        await fsp.writeFile(workflowFile, renderPublishWorkflow(ctx), 'utf8');
-        client.log('stdout', `[oidc] wrote ${OIDC_WORKFLOW_PATH}\n`);
+        await fsp.writeFile(workflowFile, renderPublishWorkflow(ctx), "utf8");
+        client.log("stdout", `[oidc] wrote ${OIDC_WORKFLOW_PATH}\n`);
       } catch (error: unknown) {
         const msg = `[oidc] could not write workflow: ${errorToMessage(error)}`;
-        client.log('stderr', msg + '\n');
-        this.store.resolveEvent(event.id, 'failed', msg);
+        client.log("stderr", msg + "\n");
+        this.store.resolveEvent(event.id, "failed", msg);
         client.exit(1, msg);
         return;
       }
-      if (result.stdout) client.log('stdout', result.stdout + '\n');
-      if (result.stderr) client.log('stderr', result.stderr + '\n');
+      if (result.stdout) client.log("stdout", result.stdout + "\n");
+      if (result.stderr) client.log("stderr", result.stderr + "\n");
       if (result.ok) {
-        this.store.resolveEvent(event.id, 'success', result.stdout);
+        this.store.resolveEvent(event.id, "success", result.stdout);
         client.exit(0);
       } else {
-        this.store.resolveEvent(event.id, 'failed', result.error);
+        this.store.resolveEvent(event.id, "failed", result.error);
         client.exit(1, result.error);
       }
     } catch (error: unknown) {
       const msg = errorToMessage(error);
-      this.store.resolveEvent(event.id, 'failed', msg);
-      client.log('stderr', msg + '\n');
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
       client.exit(1, msg);
     }
   }

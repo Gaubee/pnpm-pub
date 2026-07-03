@@ -14,10 +14,10 @@
  * fixed TOTP secret, so timing must be controlled by using a constant secret
  * and asserting only the wrapper's structural mapping, not the exact OTP.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { verifyCredentials } from '../../src/daemon/npm-api.js';
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { verifyCredentials } from "../../src/daemon/npm-api.js";
 
-const fetchSpy = vi.spyOn(globalThis, 'fetch');
+const fetchSpy = vi.spyOn(globalThis, "fetch");
 
 afterEach(() => {
   fetchSpy.mockReset();
@@ -27,7 +27,7 @@ afterEach(() => {
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { "content-type": "application/json" },
   });
 }
 
@@ -44,8 +44,8 @@ function mockFetchSequence(...factories: Array<() => Response>): void {
 /** A valid (non-empty) token-list body the SDK's schema accepts. */
 const TOKEN_LIST_BODY = { objects: [] };
 
-describe('verifyCredentials wrapper', () => {
-  it('Scenario: Given a valid token, When verifying, Then authValid is true and no code', async () => {
+describe("verifyCredentials wrapper", () => {
+  it("Scenario: Given a valid token, When verifying, Then authValid is true and no code", async () => {
     // listTokens succeeds → auth valid, then the phantom deleteToken runs and
     // also succeeds (404 "not found" still means OTP passed; 200 is fine too).
     mockFetchSequence(
@@ -54,9 +54,9 @@ describe('verifyCredentials wrapper', () => {
     );
 
     const result = await verifyCredentials({
-      registry: 'https://registry.example.test/',
-      token: 'valid-token',
-      totpSecret: 'JBSWY3DPEHPK3PXP',
+      registry: "https://registry.example.test/",
+      token: "valid-token",
+      totpSecret: "JBSWY3DPEHPK3PXP",
     });
 
     expect(result.ok).toBe(true);
@@ -64,17 +64,17 @@ describe('verifyCredentials wrapper', () => {
     expect(result.check?.code).toBeUndefined();
   });
 
-  it('Scenario: Given an expired token (401), When verifying, Then authValid is false and code is E401', async () => {
+  it("Scenario: Given an expired token (401), When verifying, Then authValid is false and code is E401", async () => {
     // listTokens returns 401 → the SDK maps it to authValid:false and short-
     // circuits (no phantom deleteToken), so only one response is consumed.
     mockFetchSequence(() =>
-      jsonResponse(401, { error: 'Unable to authenticate', reason: 'bad token' }),
+      jsonResponse(401, { error: "Unable to authenticate", reason: "bad token" }),
     );
 
     const result = await verifyCredentials({
-      registry: 'https://registry.example.test/',
-      token: 'expired-token',
-      totpSecret: 'JBSWY3DPEHPK3PXP',
+      registry: "https://registry.example.test/",
+      token: "expired-token",
+      totpSecret: "JBSWY3DPEHPK3PXP",
     });
 
     // The SDK never returns `err` for credential checks (it folds them into a
@@ -83,6 +83,6 @@ describe('verifyCredentials wrapper', () => {
     expect(result.check?.authValid).toBe(false);
     // The wrapper surfaces a conventional E401 so callers can branch without
     // parsing the message — this is the fix for the lost `code`.
-    expect(result.check?.code).toBe('E401');
+    expect(result.check?.code).toBe("E401");
   });
 });

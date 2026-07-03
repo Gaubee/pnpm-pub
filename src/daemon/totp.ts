@@ -5,8 +5,8 @@
  * Per Chapter 8.4, when NPM rejects an OTP because of clock skew we extract the
  * server time from the response `Date` header, compute the offset, and re-issue.
  */
-import { Buffer } from 'node:buffer';
-import { authenticator, totp } from 'otplib';
+import { Buffer } from "node:buffer";
+import { authenticator, totp } from "otplib";
 
 authenticator.options = {
   // RFC 6238 defaults: 6 digits, 30s step, SHA-1.

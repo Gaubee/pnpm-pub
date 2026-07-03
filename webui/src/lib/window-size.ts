@@ -25,18 +25,12 @@ const bridge = (): Navigator["opentrayWindow"] =>
  * bridge is absent, and only re-issues when the size actually changes (so
  * revisiting a route of the same size doesn't flicker).
  */
-export async function resizeWindow(size: {
-  width: number;
-  height: number;
-}): Promise<void> {
+export async function resizeWindow(size: { width: number; height: number }): Promise<void> {
   const ot = bridge();
   if (!ot?.resizeTo) return;
   // Avoid redundant resizes: the host preserves the last-set size, so only
   // call when the target differs from what we last requested this session.
-  if (
-    lastRequested?.width === size.width &&
-    lastRequested?.height === size.height
-  ) {
+  if (lastRequested?.width === size.width && lastRequested?.height === size.height) {
     return;
   }
   try {

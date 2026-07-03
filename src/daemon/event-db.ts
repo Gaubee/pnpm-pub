@@ -10,22 +10,22 @@
  * flat fields map to native columns for indexing/querying. WAL mode keeps
  * reads non-blocking while writes land.
  */
-import Database from 'better-sqlite3';
-import type { Database as DatabaseType } from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import Database from "better-sqlite3";
+import type { Database as DatabaseType } from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import type {
   EventKind,
   EventStatus,
   EventPayload,
   PubEvent,
   TarballSummary,
-} from '../shared/index.js';
+} from "../shared/index.js";
 
 /** Query dimensions for the paginated history endpoint. */
 export interface EventQuery {
   /** 'pending' = only pending; 'history' = everything except pending. */
-  status?: 'pending' | 'history';
+  status?: "pending" | "history";
   /** Package-name substring filter (matches the payload's target.name / name). */
   name?: string;
   /** Free-text keywords, AND-matched against kind|status|result|name. */
@@ -47,9 +47,18 @@ export interface EventQueryResult {
 
 // Column order matches the INSERT below.
 const COLUMNS = [
-  'id', 'kind', 'status', 'profile', 'profile_override', 'created_at',
-  'resolved_at', 'payload', 'result', 'clock_drift_recovered', 'group_id',
-  'tarball_summary',
+  "id",
+  "kind",
+  "status",
+  "profile",
+  "profile_override",
+  "created_at",
+  "resolved_at",
+  "payload",
+  "result",
+  "clock_drift_recovered",
+  "group_id",
+  "tarball_summary",
 ] as const;
 
 /** Open (or create) the events database, set up schema, sweep orphan pendings. */
@@ -57,7 +66,7 @@ export function openEventDb(dbPath: string): DatabaseType {
   // better-sqlite3 does not create the parent directory; ensure it exists.
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+  db.pragma("journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
@@ -88,9 +97,11 @@ export function openEventDb(dbPath: string): DatabaseType {
   `);
   // On restart, any event still 'pending' has no live scheduler client handle —
   // mark it failed so the UI doesn't show a forever-pending ghost.
-  const swept = db.prepare(
-    `UPDATE events SET status = 'failed', result = 'Daemon restarted before completion.', resolved_at = ? WHERE status = 'pending'`,
-  ).run(Date.now());
+  const swept = db
+    .prepare(
+      `UPDATE events SET status = 'failed', result = 'Daemon restarted before completion.', resolved_at = ? WHERE status = 'pending'`,
+    )
+    .run(Date.now());
   void swept; // informational only
   // Sweep expired cache rows on startup.
   kvSweepExpired(db);
@@ -120,9 +131,11 @@ export function kvGet(db: DatabaseType, key: string): unknown | undefined {
 /** Store a value with a TTL (ms from now). Upserts by key. */
 export function kvSet(db: DatabaseType, key: string, value: unknown, ttlMs: number): void {
   const expiresAt = Date.now() + ttlMs;
-  db.prepare(
-    `INSERT OR REPLACE INTO key_value (key, value, expires_at) VALUES (?, ?, ?)`,
-  ).run(key, JSON.stringify(value), expiresAt);
+  db.prepare(`INSERT OR REPLACE INTO key_value (key, value, expires_at) VALUES (?, ?, ?)`).run(
+    key,
+    JSON.stringify(value),
+    expiresAt,
+  );
 }
 
 /** Delete all rows past their expiry. Called at startup and opportunistically. */
@@ -134,7 +147,7 @@ export function kvSweepExpired(db: DatabaseType): number {
 /** Insert or fully replace an event row (upsert by id). */
 export function insertEvent(db: DatabaseType, evt: PubEvent): void {
   db.prepare(
-    `INSERT OR REPLACE INTO events (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
+    `INSERT OR REPLACE INTO events (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(() => "?").join(", ")})`,
   ).run(...serializeRow(evt));
 }
 
@@ -145,15 +158,19 @@ export function updateEvent(db: DatabaseType, evt: PubEvent): void {
 
 /** The N most recent events (newest-first). For preview / initial snapshots. */
 export function recentEvents(db: DatabaseType, limit: number): PubEvent[] {
-  const rows = db.prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`).all(limit) as RawRow[];
+  const rows = db
+    .prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`)
+    .all(limit) as RawRow[];
   return rows.map(deserializeRow);
 }
 
 /** Count events matching a status scope. */
-export function countByScope(db: DatabaseType, scope: 'pending' | 'history'): number {
-  const row = (scope === 'pending'
-    ? db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status = 'pending'`).get()
-    : db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status != 'pending'`).get()) as { n: number };
+export function countByScope(db: DatabaseType, scope: "pending" | "history"): number {
+  const row = (
+    scope === "pending"
+      ? db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status = 'pending'`).get()
+      : db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status != 'pending'`).get()
+  ) as { n: number };
   return row.n;
 }
 
@@ -162,9 +179,9 @@ export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
   const where: string[] = [];
   const params: unknown[] = [];
 
-  if (q.status === 'pending') {
+  if (q.status === "pending") {
     where.push(`status = 'pending'`);
-  } else if (q.status === 'history') {
+  } else if (q.status === "history") {
     where.push(`status != 'pending'`);
   }
   if (q.groupId) {
@@ -188,14 +205,16 @@ export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
     }
   }
 
-  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  const total = (db.prepare(`SELECT COUNT(*) AS n FROM events ${whereClause}`).get(...params) as { n: number }).n;
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS n FROM events ${whereClause}`).get(...params) as { n: number }
+  ).n;
   const page = Math.max(0, q.page);
   const limit = Math.max(1, q.limit);
   const offset = page * limit;
-  const rows = db.prepare(
-    `SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-  ).all(...params, limit, offset) as RawRow[];
+  const rows = db
+    .prepare(`SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as RawRow[];
   return { rows: rows.map(deserializeRow), total, page, limit };
 }
 
@@ -227,7 +246,7 @@ function serializeRow(evt: PubEvent): unknown[] {
     evt.resolvedAt ?? null,
     evt.payload ? JSON.stringify(evt.payload) : null,
     evt.result ?? null,
-    evt.clockDriftRecovered === undefined ? null : (evt.clockDriftRecovered ? 1 : 0),
+    evt.clockDriftRecovered === undefined ? null : evt.clockDriftRecovered ? 1 : 0,
     evt.groupId ?? null,
     evt.tarballSummary ? JSON.stringify(evt.tarballSummary) : null,
   ];
@@ -235,7 +254,9 @@ function serializeRow(evt: PubEvent): unknown[] {
 
 function deserializeRow(r: RawRow): PubEvent {
   const payload = r.payload ? (JSON.parse(r.payload) as EventPayload) : undefined;
-  const tarballSummary = r.tarball_summary ? (JSON.parse(r.tarball_summary) as TarballSummary) : undefined;
+  const tarballSummary = r.tarball_summary
+    ? (JSON.parse(r.tarball_summary) as TarballSummary)
+    : undefined;
   return {
     id: r.id,
     kind: r.kind as EventKind,
@@ -246,7 +267,8 @@ function deserializeRow(r: RawRow): PubEvent {
     resolvedAt: r.resolved_at ?? undefined,
     payload,
     result: r.result ?? undefined,
-    clockDriftRecovered: r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
+    clockDriftRecovered:
+      r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
     groupId: r.group_id ?? undefined,
     tarballSummary,
   };

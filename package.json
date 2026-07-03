@@ -3,48 +3,48 @@
   "version": "0.1.0",
   "private": true,
   "description": "Desktop-level local daemon proxy and productivity tool for high-frequency NPM package authors.",
-  "type": "module",
-  "packageManager": "pnpm@10.22.0",
+  "keywords": [
+    "2fa",
+    "daemon",
+    "npm",
+    "oidc",
+    "publish",
+    "totp",
+    "tray",
+    "trusted-publish"
+  ],
+  "license": "ISC",
+  "author": "",
   "bin": {
     "pnpm-pub": "./dist/cli.js"
   },
+  "type": "module",
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
     "build": "pnpm run build:webui && pnpm run build:core && pnpm run copy:webui",
     "build:webui": "pnpm --filter ./webui run build",
     "copy:webui": "rm -rf dist/webui && mkdir -p dist && cp -r webui/build dist/webui",
-    "build:core": "tsdown",
+    "build:core": "vp pack",
     "dev:webui": "pnpm --dir webui exec vite dev --host 127.0.0.1 --port 0 --strictPort",
     "dev:webui:build": "pnpm run gen:icons && pnpm run build:webui && pnpm run copy:webui",
     "dev": "tsx src/dev.ts",
     "dev:core": "tsx src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
     "dev:publish": "bun run src/cli/cli.ts",
-    "pnpm-pub": "bun run src/cli/cli.ts",
+    "pub": "node dist/cli.js",
     "release:start": "node dist/cli.js start",
     "release:status": "node dist/cli.js status",
     "release:stop": "node dist/cli.js stop",
     "release:publish": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && pnpm test:browser",
-    "test:watch": "vitest",
-    "test:browser": "vitest run --config vitest.browser.config.ts",
-    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test": "vp test run && pnpm test:browser",
+    "test:watch": "vp test",
+    "test:browser": "vp test run --config vitest.browser.config.ts",
+    "test:e2e": "vp test run --config vitest.e2e.config.ts",
     "test:e2e:docker": "tsx scripts/run-e2e-docker.ts",
-    "clean": "rm -rf dist packages/*/dist webui/build webui/.svelte-kit node_modules/.cache/pnpm-pub-icons"
+    "clean": "rm -rf dist packages/*/dist webui/build webui/.svelte-kit node_modules/.cache/pnpm-pub-icons",
+    "prepare": "vp config"
   },
-  "keywords": [
-    "npm",
-    "publish",
-    "2fa",
-    "totp",
-    "tray",
-    "daemon",
-    "oidc",
-    "trusted-publish"
-  ],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "@github/keytar": "^7.0.0",
     "@opentray/ext-webview": "link:../jixoai-labs/opentray/packages/ext-webview",
@@ -67,10 +67,11 @@
     "fast-glob": "^3.3.3",
     "http-proxy": "^1.18.1",
     "memfs": "^4.17.0",
-    "tsdown": "^0.22.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^5.4.21",
-    "vitest": "^2.1.8"
-  }
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "packageManager": "pnpm@10.22.0"
 }

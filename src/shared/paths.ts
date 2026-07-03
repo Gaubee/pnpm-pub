@@ -1,10 +1,16 @@
 /**
  * Application paths — the canonical `~/.pnpm-pub` layout (Chapter 4.3 / 5.1).
  */
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
-import { APP_DIR_NAME, PROFILES_FILE, WORKSPACES_FILE, EVENTS_DB_FILE } from './index.js';
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import {
+  APP_DIR_NAME,
+  PROFILES_FILE,
+  WORKSPACES_FILE,
+  PREFERENCES_FILE,
+  EVENTS_DB_FILE,
+} from "./index.js";
 
 let homeOverride: string | null = null;
 
@@ -42,6 +48,11 @@ export function workspacesPath(): string {
   return path.join(appDir(), WORKSPACES_FILE);
 }
 
+/** ~/.pnpm-pub/preferences.json — app-wide UI preferences (keepOnTop pin). */
+export function preferencesPath(): string {
+  return path.join(appDir(), PREFERENCES_FILE);
+}
+
 /** ~/.pnpm-pub/events.db — the persisted event log (SQLite). */
 export function eventsDbPath(): string {
   return path.join(appDir(), EVENTS_DB_FILE);
@@ -49,7 +60,7 @@ export function eventsDbPath(): string {
 
 /** Directory containing the Unix socket on macOS / Linux — see socketPath(). */
 export function runDir(): string {
-  return path.join(appDir(), 'run');
+  return path.join(appDir(), "run");
 }
 
 /**
@@ -58,25 +69,25 @@ export function runDir(): string {
  *  - Windows: Named Pipe at \\.\pipe\pnpm-pub-sock
  */
 export function socketPath(): string {
-  if (process.platform === 'win32') {
-    return '\\\\.\\pipe\\pnpm-pub-sock';
+  if (process.platform === "win32") {
+    return "\\\\.\\pipe\\pnpm-pub-sock";
   }
-  return path.join(runDir(), 'pnpm-pub.sock');
+  return path.join(runDir(), "pnpm-pub.sock");
 }
 
 /** ~/.pnpm-pub/.cache/avatars */
 export function avatarCacheDir(): string {
-  return path.join(appDir(), '.cache', 'avatars');
+  return path.join(appDir(), ".cache", "avatars");
 }
 
 /** ~/.pnpm-pub/logs */
 export function logsDir(): string {
-  return path.join(appDir(), 'logs');
+  return path.join(appDir(), "logs");
 }
 
 /** ~/.pnpm-pub/logs/daemon.log */
 export function daemonLogPath(): string {
-  return path.join(logsDir(), 'daemon.log');
+  return path.join(logsDir(), "daemon.log");
 }
 
 /** Ensure the application directory tree exists. */

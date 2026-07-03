@@ -1,10 +1,10 @@
 /**
  * Real-filesystem adapter for the workspace engine.
  */
-import path from 'node:path';
-import os from 'node:os';
-import { promises as fsp, statSync } from 'node:fs';
-import type { fs as FsAPI } from './fs-types.js';
+import path from "node:path";
+import os from "node:os";
+import { promises as fsp, statSync } from "node:fs";
+import type { fs as FsAPI } from "./fs-types.js";
 
 export const realFs: FsAPI = {
   join: (...parts: string[]) => path.join(...parts),
@@ -29,6 +29,6 @@ export const realFs: FsAPI = {
     return fsp.readdir(p);
   },
   async readFile(p: string): Promise<string> {
-    return fsp.readFile(p, 'utf8');
+    return fsp.readFile(p, "utf8");
   },
 };

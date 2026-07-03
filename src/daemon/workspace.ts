@@ -10,13 +10,13 @@
  * Pure-logic functions are exported so the vitest suite (Chapter 10.1) can run
  * them against an in-memory `memfs` volume.
  */
-import path from 'node:path';
-import type { PublishConfig } from '../shared/index.js';
-import type { fs as FsAPI } from './fs-types.js';
-import { parsePackagePublishConfig } from './package-publish-config.js';
+import path from "node:path";
+import type { PublishConfig } from "../shared/index.js";
+import type { fs as FsAPI } from "./fs-types.js";
+import { parsePackagePublishConfig } from "./package-publish-config.js";
 
 /** Markers that identify a project root, in priority order (Chapter 5.3.1). */
-const ROOT_MARKERS = ['pnpm-workspace.yaml', '.git', 'package.json'] as const;
+const ROOT_MARKERS = ["pnpm-workspace.yaml", ".git", "package.json"] as const;
 
 export interface FindRootResult {
   /** Resolved absolute root path, or null when no marker is found (risk case). */
@@ -73,7 +73,7 @@ export function isRiskyRoot(dir: string, fs: FsAPI): boolean {
   // The user home directory itself is almost always too broad.
   if (resolved === fs.home()) return true;
   const base = path.basename(resolved).toLowerCase();
-  const risky = ['downloads', 'desktop', 'documents', 'tmp', 'temp', 'library', 'applications'];
+  const risky = ["downloads", "desktop", "documents", "tmp", "temp", "library", "applications"];
   return risky.includes(base);
 }
 
@@ -82,18 +82,18 @@ export function isRiskyRoot(dir: string, fs: FsAPI): boolean {
 // ---------------------------------------------------------------------------
 
 const EXCLUDE_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.svn',
-  '.hg',
-  'dist',
-  'build',
-  '.next',
-  '.nuxt',
-  '.svelte-kit',
-  '.turbo',
-  '.cache',
-  'coverage',
+  "node_modules",
+  ".git",
+  ".svn",
+  ".hg",
+  "dist",
+  "build",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".cache",
+  "coverage",
 ]);
 
 export interface ScannedPackage {
@@ -126,14 +126,14 @@ export interface ScanOptions {
  * `packages:` list of glob strings, so we avoid a full yaml dependency.
  */
 export async function readWorkspacePackages(root: string, fs: FsAPI): Promise<string[] | null> {
-  const file = fs.join(root, 'pnpm-workspace.yaml');
+  const file = fs.join(root, "pnpm-workspace.yaml");
   if (!(await fs.exists(file))) return null;
   const text = await fs.readFile(file);
   const lines = text.split(/\r?\n/);
   const globs: string[] = [];
   let inPackages = false;
   for (const raw of lines) {
-    const line = raw.replace(/\s+$/, '');
+    const line = raw.replace(/\s+$/, "");
     if (!inPackages) {
       if (/^packages\s*:/.test(line)) inPackages = true;
       continue;
@@ -157,29 +157,26 @@ function workspaceGlobToDirPrefix(glob: string): { base: string; tail: string } 
   // falls back to recursive scanning.
   const m = glob.match(/^([^*]+)\*+$/);
   if (!m) return null;
-  return { base: m[1]!.replace(/\/$/, ''), tail: '*' };
+  return { base: m[1]!.replace(/\/$/, ""), tail: "*" };
 }
 
 /** Minimal glob -> RegExp for `*` (single segment) and `**` (any depth). */
 function globToRegExp(glob: string): RegExp {
   const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '{{GLOBSTAR}}')
-    .replace(/\*/g, '[^/]*')
-    .replace(/{{GLOBSTAR}}/g, '.*');
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "{{GLOBSTAR}}")
+    .replace(/\*/g, "[^/]*")
+    .replace(/{{GLOBSTAR}}/g, ".*");
   return new RegExp(`^${escaped}$`);
 }
 
 /** Read & parse a package.json; returns null if invalid / unreadable. */
-async function readPackageJson(
-  file: string,
-  fs: FsAPI,
-): Promise<ScannedPackage | null> {
+async function readPackageJson(file: string, fs: FsAPI): Promise<ScannedPackage | null> {
   try {
     const text = await fs.readFile(file);
     const pkg: unknown = JSON.parse(text);
     if (!isRecord(pkg)) return null;
-    if (typeof pkg.name !== 'string') return null;
+    if (typeof pkg.name !== "string") return null;
     let repository = parseRepository(pkg.repository);
     // package.json without a repository field → fall back to the git remote
     // origin URL (walks up from the package dir to find .git/config). Stored as
@@ -189,8 +186,8 @@ async function readPackageJson(
     }
     return {
       name: pkg.name,
-      version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
-      description: typeof pkg.description === 'string' ? pkg.description : undefined,
+      version: typeof pkg.version === "string" ? pkg.version : "0.0.0",
+      description: typeof pkg.description === "string" ? pkg.description : undefined,
       repository,
       publishConfig: parsePackagePublishConfig(pkg.publishConfig),
       dependencyNames: readDependencyNames(pkg),
@@ -204,14 +201,14 @@ async function readPackageJson(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function parseRepository(value: unknown): string | undefined {
-  if (typeof value === 'string') {
+  if (typeof value === "string") {
     return normalizeRepository(value);
   }
-  if (isRecord(value) && typeof value.url === 'string') {
+  if (isRecord(value) && typeof value.url === "string") {
     return normalizeRepository(value.url);
   }
   return undefined;
@@ -227,7 +224,7 @@ export function parseRepository(value: unknown): string | undefined {
 export async function readGitRemoteUrl(pkgDir: string, fs: FsAPI): Promise<string | undefined> {
   let dir = pkgDir;
   for (let depth = 0; depth < 8; depth += 1) {
-    const configPath = fs.join(dir, '.git', 'config');
+    const configPath = fs.join(dir, ".git", "config");
     if (await fs.exists(configPath)) {
       try {
         const text = await fs.readFile(configPath);
@@ -252,7 +249,7 @@ function parseGitConfigOrigin(configText: string): string | undefined {
     const line = rawLine.trim();
     const header = line.match(/^\[(.+)\]$/);
     if (header) {
-      inOrigin = /^remote\s+"origin"\s*$/i.test(header[1]!.trim().replace(/\s+/g, ' '));
+      inOrigin = /^remote\s+"origin"\s*$/i.test(header[1]!.trim().replace(/\s+/g, " "));
       continue;
     }
     if (inOrigin) {
@@ -264,14 +261,26 @@ function parseGitConfigOrigin(configText: string): string | undefined {
 }
 
 function readDependencyNames(pkg: Record<string, unknown>): string[] | undefined {
-  return readDependencyNamesFromFields(pkg, ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']);
+  return readDependencyNamesFromFields(pkg, [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]);
 }
 
 function readProductionDependencyNames(pkg: Record<string, unknown>): string[] | undefined {
-  return readDependencyNamesFromFields(pkg, ['dependencies', 'optionalDependencies', 'peerDependencies']);
+  return readDependencyNamesFromFields(pkg, [
+    "dependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]);
 }
 
-function readDependencyNamesFromFields(pkg: Record<string, unknown>, fields: readonly string[]): string[] | undefined {
+function readDependencyNamesFromFields(
+  pkg: Record<string, unknown>,
+  fields: readonly string[],
+): string[] | undefined {
   const names = new Set<string>();
   for (const field of fields) {
     const value = pkg[field];
@@ -284,14 +293,14 @@ function readDependencyNamesFromFields(pkg: Record<string, unknown>, fields: rea
 }
 
 export function normalizeRepository(value: string): string | undefined {
-  const cleaned = value.trim().replace(/^git\+/, '');
+  const cleaned = value.trim().replace(/^git\+/, "");
   if (!cleaned) return undefined;
   // GitHub: github.com:owner/name or github.com/owner/name
   const githubMatch = cleaned.match(/github\.com[:/](.+?)(?:\.git)?$/i);
-  if (githubMatch?.[1]) return githubMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
+  if (githubMatch?.[1]) return githubMatch[1].replace(/^\/+/, "").replace(/\/+$/, "");
   // GitLab: gitlab.com:group/project or gitlab.com/group/project
   const gitlabMatch = cleaned.match(/gitlab\.com[:/](.+?)(?:\.git)?$/i);
-  if (gitlabMatch?.[1]) return gitlabMatch[1].replace(/^\/+/, '').replace(/\/+$/, '');
+  if (gitlabMatch?.[1]) return gitlabMatch[1].replace(/^\/+/, "").replace(/\/+$/, "");
   // Plain owner/name slug (already normalized)
   if (/^[\w.@-]+\/[\w.@-]+$/.test(cleaned)) return cleaned;
   return undefined;
@@ -326,7 +335,7 @@ async function scanRecursive(
         depth: opts.depth + 1,
         gitignore: opts.gitignore,
       });
-    } else if (entry === 'package.json') {
+    } else if (entry === "package.json") {
       const pkg = await readPackageJson(full, fs);
       if (pkg) onPackage(pkg);
     }
@@ -339,9 +348,9 @@ interface GitignoreRules {
 }
 
 type GitignoreRule =
-  | { negated: boolean; kind: 'exact'; path: string }
-  | { negated: boolean; kind: 'name'; name: string }
-  | { negated: boolean; kind: 'pattern'; pattern: RegExp };
+  | { negated: boolean; kind: "exact"; path: string }
+  | { negated: boolean; kind: "name"; name: string }
+  | { negated: boolean; kind: "pattern"; pattern: RegExp };
 
 function emptyGitignoreRules(root: string): GitignoreRules {
   return { root, rules: [] };
@@ -349,50 +358,50 @@ function emptyGitignoreRules(root: string): GitignoreRules {
 
 /** Parse a .gitignore at root into ordered directory rules. */
 async function readGitignoreRules(root: string, fs: FsAPI): Promise<GitignoreRules> {
-  const file = fs.join(root, '.gitignore');
+  const file = fs.join(root, ".gitignore");
   const rules = emptyGitignoreRules(root);
   if (!(await fs.exists(file))) return rules;
   const text = await fs.readFile(file);
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const negated = line.startsWith('!');
+    if (!line || line.startsWith("#")) continue;
+    const negated = line.startsWith("!");
     const patternText = negated ? line.slice(1).trim() : line;
-    const rawPattern = patternText.replace(/\\/g, '/').replace(/\/+$/, '');
-    const cleaned = rawPattern.replace(/^\/+/, '');
+    const rawPattern = patternText.replace(/\\/g, "/").replace(/\/+$/, "");
+    const cleaned = rawPattern.replace(/^\/+/, "");
     if (!cleaned) continue;
-    if (cleaned.includes('*')) {
-      rules.rules.push({ negated, kind: 'pattern', pattern: gitignorePatternToRegExp(cleaned) });
+    if (cleaned.includes("*")) {
+      rules.rules.push({ negated, kind: "pattern", pattern: gitignorePatternToRegExp(cleaned) });
       continue;
     }
-    if (!rawPattern.startsWith('/') && !cleaned.includes('/')) {
-      rules.rules.push({ negated, kind: 'name', name: cleaned });
+    if (!rawPattern.startsWith("/") && !cleaned.includes("/")) {
+      rules.rules.push({ negated, kind: "name", name: cleaned });
       continue;
     }
-    rules.rules.push({ negated, kind: 'exact', path: fs.join(root, cleaned) });
+    rules.rules.push({ negated, kind: "exact", path: fs.join(root, cleaned) });
   }
   return rules;
 }
 
 function gitignorePatternToRegExp(pattern: string): RegExp {
   const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '{{GLOBSTAR}}')
-    .replace(/\*/g, '[^/]*')
-    .replace(/{{GLOBSTAR}}/g, '.*');
-  const prefix = pattern.includes('/') ? '^' : '(^|.*/)';
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "{{GLOBSTAR}}")
+    .replace(/\*/g, "[^/]*")
+    .replace(/{{GLOBSTAR}}/g, ".*");
+  const prefix = pattern.includes("/") ? "^" : "(^|.*/)";
   return new RegExp(`${prefix}${escaped}($|/.*$)`);
 }
 
 function isGitignoredPath(target: string, ignored: GitignoreRules): boolean {
   let isIgnored = false;
-  const rel = path.relative(ignored.root, target).replace(/\\/g, '/');
-  const parts = rel.split('/');
+  const rel = path.relative(ignored.root, target).replace(/\\/g, "/");
+  const parts = rel.split("/");
   for (const rule of ignored.rules) {
     const matches =
-      rule.kind === 'exact'
+      rule.kind === "exact"
         ? target === rule.path || target.startsWith(`${rule.path}${path.sep}`)
-        : rule.kind === 'name'
+        : rule.kind === "name"
           ? parts.some((part) => part === rule.name)
           : rule.pattern.test(rel);
     if (matches) isIgnored = !rule.negated;
@@ -405,7 +414,11 @@ function isGitignoredPath(target: string, ignored: GitignoreRules): boolean {
  * unparseable we fall back to a bounded heuristic recursive walk (Chapter 5.3.4
  * / 6.3.1).
  */
-export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions = { root }): Promise<ScannedPackage[]> {
+export async function scanWorkspace(
+  root: string,
+  fs: FsAPI,
+  opts: ScanOptions = { root },
+): Promise<ScannedPackage[]> {
   const results: ScannedPackage[] = [];
   const seen = new Set<string>();
   const add = (pkg: ScannedPackage): void => {
@@ -416,7 +429,9 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
     results.push(pkg);
   };
 
-  const gitignore = opts.respectGitignore ? await readGitignoreRules(root, fs) : emptyGitignoreRules(root);
+  const gitignore = opts.respectGitignore
+    ? await readGitignoreRules(root, fs)
+    : emptyGitignoreRules(root);
 
   // 1. pnpm-workspace.yaml-driven scan (priority).
   const globs = await readWorkspacePackages(root, fs);
@@ -437,7 +452,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
           if (!(await fs.isDirectory(full))) continue;
           if (EXCLUDE_DIRS.has(entry)) continue;
           if (isGitignoredPath(full, gitignore)) continue;
-          const pkgJson = fs.join(full, 'package.json');
+          const pkgJson = fs.join(full, "package.json");
           if (await fs.exists(pkgJson)) {
             const pkg = await readPackageJson(pkgJson, fs);
             if (pkg) add(pkg);
@@ -445,7 +460,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
           }
           // Scoped layout: packages/@scope/name — descend one level when the
           // entry is a scope dir (starts with '@') with no package.json.
-          if (entry.startsWith('@')) {
+          if (entry.startsWith("@")) {
             let scoped: string[];
             try {
               scoped = await fs.readdir(full);
@@ -457,7 +472,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
               const subFull = fs.join(full, sub);
               if (!(await fs.isDirectory(subFull))) continue;
               if (isGitignoredPath(subFull, gitignore)) continue;
-              const subPkgJson = fs.join(subFull, 'package.json');
+              const subPkgJson = fs.join(subFull, "package.json");
               if (await fs.exists(subPkgJson)) {
                 const pkg = await readPackageJson(subPkgJson, fs);
                 if (pkg) add(pkg);
@@ -475,7 +490,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
           gitignore,
         });
         for (const pkg of collected) {
-          const rel = pkg.path.slice(root.length).replace(/^[\\/]/, '');
+          const rel = pkg.path.slice(root.length).replace(/^[\\/]/, "");
           if (re.test(rel)) add(pkg);
         }
       }
@@ -483,7 +498,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
   }
 
   // 2. Always include the root package.json itself.
-  const rootPkg = await readPackageJson(fs.join(root, 'package.json'), fs);
+  const rootPkg = await readPackageJson(fs.join(root, "package.json"), fs);
   if (rootPkg) add(rootPkg);
 
   // 3. Heuristic fallback: when there is no pnpm-workspace.yaml, walk the tree
@@ -509,10 +524,7 @@ export async function scanWorkspace(root: string, fs: FsAPI, opts: ScanOptions =
  *    configured alias) equals that scope.
  *  - Unscoped packages belong to everyone (they are returned).
  */
-export function filterByProfile(
-  packages: ScannedPackage[],
-  username: string,
-): ScannedPackage[] {
+export function filterByProfile(packages: ScannedPackage[], username: string): ScannedPackage[] {
   return packages.filter((pkg) => isPublishableByProfile(pkg, username));
 }
 

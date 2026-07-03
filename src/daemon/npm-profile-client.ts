@@ -28,7 +28,7 @@ import {
   type Profile,
   type Result,
   type Tfa,
-} from 'safe-npm-sdk';
+} from "safe-npm-sdk";
 
 export { NpmApiError, NpmApiErrorAuthOTP, NpmApiErrorAuthIPAddress };
 
@@ -119,7 +119,7 @@ export async function loginWithPassword(
   const data: CouchLoginResult = unwrapResult(result);
   const token = readString(data.token);
   if (!token) {
-    throw new Error('npm registry login returned no token.');
+    throw new Error("npm registry login returned no token.");
   }
   return {
     token,
@@ -149,7 +149,7 @@ export async function readProfileDetail(
     name: readString(profile.name),
     fullname: readString(profile.fullname),
     email: readString(profile.email),
-    emailVerified: typeof profile.email_verified === 'boolean' ? profile.email_verified : null,
+    emailVerified: typeof profile.email_verified === "boolean" ? profile.email_verified : null,
     github: readString(profile.github),
     twitter: readString(profile.twitter),
     homepage: readString(profile.homepage),
@@ -172,11 +172,11 @@ async function fetchProfile(token: string, registry: string): Promise<Profile> {
 function tfaEnabled(tfa: Tfa | undefined): boolean | null {
   if (tfa === undefined || tfa === null || tfa === false) return false;
   if (tfaIsOtpauth(tfa) || tfaIsRecoveryCodes(tfa)) return true;
-  if (typeof tfa === 'object' && 'mode' in tfa) return true;
+  if (typeof tfa === "object" && "mode" in tfa) return true;
   return null;
 }
 
 function readString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value.trim() : null;
 }

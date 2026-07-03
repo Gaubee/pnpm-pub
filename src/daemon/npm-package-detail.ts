@@ -12,14 +12,14 @@
  * Everything is projected into a stable, UI-facing `PackageDetail` shape; raw
  * registry fields never leak across the boundary.
  */
-import { z } from 'zod';
+import { z } from "zod";
 import {
   createClient,
   escapePackageName,
   getPackageCollaborators,
   type NpmClient,
-} from 'safe-npm-sdk';
-import type { PackageCollaborator, PackageDetail } from '../shared/index.js';
+} from "safe-npm-sdk";
+import type { PackageCollaborator, PackageDetail } from "../shared/index.js";
 
 /** Credentials needed to construct a one-shot SDK client (mirrors oidc-trust). */
 export interface PackageDetailAuth {
@@ -32,7 +32,7 @@ export type PackageDetailResult =
   | { ok: false; status: number; error: string };
 
 /** npm downloads API host (fixed; not the profile registry). */
-const DOWNLOADS_HOST = 'https://api.npmjs.org';
+const DOWNLOADS_HOST = "https://api.npmjs.org";
 const DOWNLOADS_TTL_MS = 5 * 60_000;
 
 // In-flight + short-TTL memo for weekly-download counts (per package name).
@@ -47,11 +47,13 @@ const downloadsCache = new Map<string, { promise: Promise<number>; expiresAt: nu
 const PackumentSchema = z
   .object({
     name: z.string(),
-    'dist-tags': z.record(z.string(), z.string()).optional(),
+    "dist-tags": z.record(z.string(), z.string()).optional(),
     time: z.record(z.string(), z.string()).optional(),
     description: z.string().nullable().optional(),
     readme: z.string().nullable().optional(),
-    license: z.union([z.string(), z.object({ type: z.string().optional() }).passthrough()]).optional(),
+    license: z
+      .union([z.string(), z.object({ type: z.string().optional() }).passthrough()])
+      .optional(),
     homepage: z.string().nullable().optional(),
     keywords: z.array(z.string()).optional(),
     repository: z
@@ -68,25 +70,25 @@ const PackumentSchema = z
   .passthrough();
 
 function normalizeRegistry(registry: string): string {
-  return registry.trim().replace(/\/$/, '') || 'https://registry.npmjs.org';
+  return registry.trim().replace(/\/$/, "") || "https://registry.npmjs.org";
 }
 
 function readString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value.trim() : null;
 }
 
 /** Pick a clean displayable URL out of the registry's repository field. */
-function repositoryUrl(repo: z.infer<typeof PackumentSchema>['repository']): string | null {
+function repositoryUrl(repo: z.infer<typeof PackumentSchema>["repository"]): string | null {
   if (!repo) return null;
-  if (typeof repo === 'string') return readString(repo);
+  if (typeof repo === "string") return readString(repo);
   return readString(repo.url);
 }
 
 /** Best-effort license label (the field is either a string or {type}). */
-function licenseLabel(license: z.infer<typeof PackumentSchema>['license']): string | null {
-  if (typeof license === 'string') return readString(license);
-  if (license && typeof license === 'object') return readString(license.type);
+function licenseLabel(license: z.infer<typeof PackumentSchema>["license"]): string | null {
+  if (typeof license === "string") return readString(license);
+  if (license && typeof license === "object") return readString(license.type);
   return null;
 }
 
@@ -108,11 +110,13 @@ async function fetchWeeklyDownloads(name: string, signal?: AbortSignal): Promise
     }
   }
   const url = `${DOWNLOADS_HOST}/downloads/point/last-week/${encodeURIComponent(name)}`;
-  const promise = fetch(url, { headers: { accept: 'application/json' }, signal })
+  const promise = fetch(url, { headers: { accept: "application/json" }, signal })
     .then(async (res) => {
       if (!res.ok) return 0;
       const json = (await res.json()) as { downloads?: unknown };
-      return typeof json.downloads === 'number' && Number.isFinite(json.downloads) ? json.downloads : 0;
+      return typeof json.downloads === "number" && Number.isFinite(json.downloads)
+        ? json.downloads
+        : 0;
     })
     .catch(() => 0);
   downloadsCache.set(name, { promise, expiresAt: now + DOWNLOADS_TTL_MS });
@@ -134,14 +138,14 @@ export async function fetchPackageDetail(
   signal?: AbortSignal,
 ): Promise<PackageDetailResult> {
   const cleanName = name.trim();
-  if (!cleanName) return { ok: false, status: 400, error: 'Invalid package name.' };
+  if (!cleanName) return { ok: false, status: 400, error: "Invalid package name." };
 
   const registry = normalizeRegistry(auth.registry);
   const client: NpmClient = createClient({ auth: { token: auth.token }, registry });
 
   // 1. Packument (the rich metadata + readme).
   const packRes = await client.request({
-    method: 'GET',
+    method: "GET",
     path: `/${escapePackageName(cleanName)}`,
     schema: PackumentSchema,
   });
@@ -150,7 +154,7 @@ export async function fetchPackageDetail(
     return { ok: false, status: status === 404 ? 404 : status, error: packRes.error.message };
   }
   const p = packRes.data;
-  const latest = p['dist-tags']?.latest;
+  const latest = p["dist-tags"]?.latest;
   const time = p.time ?? {};
   const lastPublish = latest ? readString(time[latest]) : null;
   const modified = readString(time.modified) ?? readString(time._nv ?? undefined) ?? lastPublish;
@@ -177,9 +181,9 @@ export async function fetchPackageDetail(
 
   const detail: PackageDetail = {
     name: p.name ?? cleanName,
-    version: latest ?? '0.0.0',
+    version: latest ?? "0.0.0",
     description: readString(p.description),
-    readme: readString(p.readme) ?? '',
+    readme: readString(p.readme) ?? "",
     license: licenseLabel(p.license),
     repository: repositoryUrl(p.repository),
     homepage: readString(p.homepage),

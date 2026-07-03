@@ -32,6 +32,7 @@ The `WebviewWindowHandle` (`panel`) is what backs the `TrayHost` surface:
 → the pending-event pin, and `panel.listen('blur', ...)` → the auto-hide hook.
 
 The window uses opentray's tray-panel glass-shell style:
+
 - **macOS:** `frameless`, `keepOnTop`, `background: { kind: "platformMaterial", material: "hudWindow", state: "active" }`
 - **Windows:** `frameless`, `keepOnTop`, `background: "mica"`, `cornerPreference: "round"`
 
@@ -62,7 +63,6 @@ opentray webview window mounted
 WebUI available at http://127.0.0.1:<port>/#token=<webtoken>
 [tray] pin (keepOnTop + flash)   ← TrayHost reacts to a pending publish event
 ```
-
 
 ## Prerequisites
 
@@ -160,40 +160,40 @@ No `dist/` build step for the daemon, CLI, or WebUI. `pnpm dev` serves WebUI
 from Vite and runs the daemon source through `tsx` so Node HTTP/WebSocket
 upgrade semantics match the tested daemon server.
 
-| Command            | Description                                                  |
-| ------------------ | ------------------------------------------------------------ |
+| Command            | Description                                                        |
+| ------------------ | ------------------------------------------------------------------ |
 | `pnpm dev`         | Start live Vite WebUI + source daemon, both on random local ports. |
-| `pnpm dev:webui`   | Start only the live Vite WebUI on a random local port.       |
-| `pnpm dev:core`    | Boot only the daemon via `tsx src/daemon/dev.ts`.            |
-| `pnpm dev:publish` | Run the CLI from source (`bun run src/cli/cli.ts publish …`). |
+| `pnpm dev:webui`   | Start only the live Vite WebUI on a random local port.             |
+| `pnpm dev:core`    | Boot only the daemon via `tsx src/daemon/dev.ts`.                  |
+| `pnpm dev:publish` | Run the CLI from source (`bun run src/cli/cli.ts publish …`).      |
 
 ### Release — run the compiled `dist/` bundle via Node
 
 After `pnpm build`, the CLI/daemon live in `dist/` as compiled `.js`. These run
 them directly (no bun, no source transpilation).
 
-| Command              | Description                                                  |
-| -------------------- | ------------------------------------------------------------ |
-| `pnpm build`         | Full production build → `dist/{cli.js,daemon.js,prebuilds/,webui/}`. |
-| `pnpm release:start` | Boot the daemon + tray from the built bundle (`node dist/cli.js start`). |
-| `pnpm release:status`| Query the running daemon (`node dist/cli.js status`).        |
-| `pnpm release:stop`  | Graceful shutdown (`node dist/cli.js stop`).                 |
-| `pnpm release:publish`| Run the built CLI (`node dist/cli.js …`).                   |
+| Command                | Description                                                              |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `pnpm build`           | Full production build → `dist/{cli.js,daemon.js,prebuilds/,webui/}`.     |
+| `pnpm release:start`   | Boot the daemon + tray from the built bundle (`node dist/cli.js start`). |
+| `pnpm release:status`  | Query the running daemon (`node dist/cli.js status`).                    |
+| `pnpm release:stop`    | Graceful shutdown (`node dist/cli.js stop`).                             |
+| `pnpm release:publish` | Run the built CLI (`node dist/cli.js …`).                                |
 
 ### Testing
 
-| Command             | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| `pnpm test`         | Unit tests (`vitest`).                                       |
-| `pnpm test:e2e`     | E2E interception test (mock registry; set `PNPM_PUB_E2E_REGISTRY` for Verdaccio). |
-| `pnpm test:e2e:docker` | Boot a Dockerized Verdaccio, run E2E, tear down.          |
-| `pnpm typecheck`    | `tsc --noEmit`.                                              |
+| Command                | Description                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `pnpm test`            | Unit tests (`vitest`).                                                            |
+| `pnpm test:e2e`        | E2E interception test (mock registry; set `PNPM_PUB_E2E_REGISTRY` for Verdaccio). |
+| `pnpm test:e2e:docker` | Boot a Dockerized Verdaccio, run E2E, tear down.                                  |
+| `pnpm typecheck`       | `tsc --noEmit`.                                                                   |
 
 ## Environment variables
 
-| Var                       | Purpose                                                       |
-| ------------------------- | ------------------------------------------------------------ |
-| `PNPM_PUB_HOME`           | Override the app home (`~/.pnpm-pub`). Used by `pnpm dev` so a spawned CLI agrees with the daemon on the IPC socket path. |
-| `PNPM_PUB_DEV_NO_TRAY`    | `1` to skip the opentray host (headless).                    |
-| `PNPM_PUB_DAEMON_ENTRY`   | Daemon entry the CLI spawns (dev: `src/daemon/main.ts`).     |
-| `PNPM_PUB_E2E_REGISTRY`   | Real registry URL for the E2E test (e.g. a local Verdaccio). |
+| Var                     | Purpose                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `PNPM_PUB_HOME`         | Override the app home (`~/.pnpm-pub`). Used by `pnpm dev` so a spawned CLI agrees with the daemon on the IPC socket path. |
+| `PNPM_PUB_DEV_NO_TRAY`  | `1` to skip the opentray host (headless).                                                                                 |
+| `PNPM_PUB_DAEMON_ENTRY` | Daemon entry the CLI spawns (dev: `src/daemon/main.ts`).                                                                  |
+| `PNPM_PUB_E2E_REGISTRY` | Real registry URL for the E2E test (e.g. a local Verdaccio).                                                              |

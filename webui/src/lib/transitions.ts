@@ -15,14 +15,15 @@
  *   import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
  *   <div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>...
  */
-const REDUCED = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const REDUCED =
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 /** flip duration for list reordering. 0 under reduced-motion (instant reorder). */
 export const flipParams = { duration: REDUCED ? 0 : 200 };
 
 /** Enter fade params. Pass the each index for an optional stagger delay. */
 export function enterParams(index = 0): { duration: number; delay: number } {
-	return { duration: REDUCED ? 0 : 150, delay: REDUCED ? 0 : Math.min(index, 8) * 30 };
+  return { duration: REDUCED ? 0 : 150, delay: REDUCED ? 0 : Math.min(index, 8) * 30 };
 }
 
 /** Leave fade params. */

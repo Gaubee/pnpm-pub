@@ -1,12 +1,12 @@
 {
   "name": "pnpm-pub-webui",
-  "private": true,
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
@@ -35,6 +35,7 @@
     "tailwind-variants": "^3.2.2",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
-    "vite": "^8.0.0"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

@@ -17,12 +17,27 @@
 // 'function'`) keeps behavior correct even where the type exists but the
 // method does not (older webview).
 interface ElementWithSetHTML extends Element {
-	setHTML?(input: string, options?: { sanitizer?: { allowElements?: string[]; blockElements?: string[]; dropElements?: string[]; allowAttributes?: Record<string, string[]>; blockAttributes?: Record<string, string[]>; dropAttributes?: Record<string, string[]>; allowCustomElements?: boolean; allowComments?: boolean } }): void;
+  setHTML?(
+    input: string,
+    options?: {
+      sanitizer?: {
+        allowElements?: string[];
+        blockElements?: string[];
+        dropElements?: string[];
+        allowAttributes?: Record<string, string[]>;
+        blockAttributes?: Record<string, string[]>;
+        dropAttributes?: Record<string, string[]>;
+        allowCustomElements?: boolean;
+        allowComments?: boolean;
+      };
+    },
+  ): void;
 }
 
 /** True when the host supports the native Sanitizer API (`Element.setHTML`). */
 const supportsSetHtml =
-	typeof Element !== 'undefined' && typeof (Element.prototype as unknown as ElementWithSetHTML).setHTML === 'function';
+  typeof Element !== "undefined" &&
+  typeof (Element.prototype as unknown as ElementWithSetHTML).setHTML === "function";
 
 /**
  * Drop nodes whose tag is in `tags` (case-insensitive), plus any element
@@ -30,24 +45,27 @@ const supportsSetHtml =
  * a known sink attribute. Mutates + returns the same root.
  */
 function scrubNode(root: ParentNode): ParentNode {
-	for (const tag of ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'base']) {
-		root.querySelectorAll(tag).forEach((el) => el.remove());
-	}
-	const sinkAttrs = ['href', 'src', 'xlink:href', 'action', 'formAction', 'background'];
-	root.querySelectorAll('*').forEach((el) => {
-		for (const attr of Array.from(el.attributes)) {
-			const name = attr.name.toLowerCase();
-			const value = attr.value.trim().toLowerCase();
-			if (name.startsWith('on')) {
-				el.removeAttribute(attr.name);
-				continue;
-			}
-			if (sinkAttrs.includes(name) && (value.startsWith('javascript:') || value.startsWith('data:text/html'))) {
-				el.removeAttribute(attr.name);
-			}
-		}
-	});
-	return root;
+  for (const tag of ["script", "style", "iframe", "object", "embed", "link", "meta", "base"]) {
+    root.querySelectorAll(tag).forEach((el) => el.remove());
+  }
+  const sinkAttrs = ["href", "src", "xlink:href", "action", "formAction", "background"];
+  root.querySelectorAll("*").forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (
+        sinkAttrs.includes(name) &&
+        (value.startsWith("javascript:") || value.startsWith("data:text/html"))
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return root;
 }
 
 /**
@@ -55,15 +73,14 @@ function scrubNode(root: ParentNode): ParentNode {
  * with a sanitized DOM; the fallback assigns scrubbed `innerHTML`.
  */
 export function safeSetHtml(el: Element, html: string): void {
-	const target = el as ElementWithSetHTML;
-	if (supportsSetHtml && typeof target.setHTML === 'function') {
-		target.setHTML(html);
-		return;
-	}
-	// Fallback: parse into a detached template, scrub, then adopt.
-	const template = document.createElement('template');
-	template.innerHTML = html;
-	scrubNode(template.content);
-	el.replaceChildren(template.content.cloneNode(true));
+  const target = el as ElementWithSetHTML;
+  if (supportsSetHtml && typeof target.setHTML === "function") {
+    target.setHTML(html);
+    return;
+  }
+  // Fallback: parse into a detached template, scrub, then adopt.
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  scrubNode(template.content);
+  el.replaceChildren(template.content.cloneNode(true));
 }
-

@@ -1,12 +1,13 @@
 /**
  * Daemon store tests — config persistence, events, credential pool isolation.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import os from 'node:os';
-import path from 'node:path';
-import { DaemonStore } from '../../src/daemon/store.js';
-import { appDir, profilesPath, setHomeOverride, workspacesPath } from '../../src/shared/paths.js';
-import { promises as fsp } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import os from "node:os";
+import path from "node:path";
+import { DaemonStore } from "../../src/daemon/store.js";
+import { appDir, profilesPath, setHomeOverride, workspacesPath } from "../../src/shared/paths.js";
+import type { Preferences } from "../../src/shared/index.js";
+import { promises as fsp } from "node:fs";
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-test-${process.pid}-${Date.now()}`);
 
@@ -21,292 +22,350 @@ afterEach(async () => {
   await fsp.rm(sandbox, { recursive: true, force: true });
 });
 
-describe('DaemonStore profiles (Chapter 4.1)', () => {
-  it('starts empty and persists upserts', async () => {
+describe("DaemonStore profiles (Chapter 4.1)", () => {
+  it("starts empty and persists upserts", async () => {
     const store = new DaemonStore();
     await store.load();
     expect(store.getProfiles()).toEqual([]);
-    await store.upsertProfile({ username: 'alice' });
+    await store.upsertProfile({ username: "alice" });
     const reloaded = new DaemonStore();
     await reloaded.load();
-    expect(reloaded.getProfiles().map((p) => p.username)).toEqual(['alice']);
-    expect(reloaded.getDefault()).toBe('alice');
+    expect(reloaded.getProfiles().map((p) => p.username)).toEqual(["alice"]);
+    expect(reloaded.getDefault()).toBe("alice");
   });
 
-  it('emits a profiles event on change', async () => {
+  it("emits a profiles event on change", async () => {
     const store = new DaemonStore();
     await store.load();
     const seen: string[] = [];
-    store.on('profiles', (msg) => seen.push(msg.type));
-    await store.upsertProfile({ username: 'bob' });
-    expect(seen).toContain('profiles');
+    store.on("profiles", (msg) => seen.push(msg.type));
+    await store.upsertProfile({ username: "bob" });
+    expect(seen).toContain("profiles");
   });
 
-  it('removes a profile and clears its credentials', async () => {
+  it("removes a profile and clears its credentials", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
-    store.setCredentials('alice', { token: 't', totpSecret: 's' });
-    await expect(store.removeProfile('alice')).resolves.toBe(true);
+    await store.upsertProfile({ username: "alice" });
+    store.setCredentials("alice", { token: "t", totpSecret: "s" });
+    await expect(store.removeProfile("alice")).resolves.toBe(true);
     expect(store.getProfiles()).toEqual([]);
-    expect(store.getCredentials('alice')).toBeUndefined();
+    expect(store.getCredentials("alice")).toBeUndefined();
   });
 
-  it('Scenario: Given multiple profiles, When deleting the default profile, Then default moves to the next profile source', async () => {
+  it("Scenario: Given multiple profiles, When deleting the default profile, Then default moves to the next profile source", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
-    await store.upsertProfile({ username: 'work' });
+    await store.upsertProfile({ username: "alice" });
+    await store.upsertProfile({ username: "work" });
 
-    await expect(store.removeProfile('alice')).resolves.toBe(true);
+    await expect(store.removeProfile("alice")).resolves.toBe(true);
 
-    expect(store.getProfiles().map((profile) => profile.username)).toEqual(['work']);
-    expect(store.getDefault()).toBe('work');
+    expect(store.getProfiles().map((profile) => profile.username)).toEqual(["work"]);
+    expect(store.getDefault()).toBe("work");
   });
 
-  it('Scenario: Given an unknown profile, When removing it, Then profile truth is unchanged', async () => {
+  it("Scenario: Given an unknown profile, When removing it, Then profile truth is unchanged", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
+    await store.upsertProfile({ username: "alice" });
     const seen: string[] = [];
-    store.on('profiles', (msg) => seen.push(msg.type));
+    store.on("profiles", (msg) => seen.push(msg.type));
 
-    await expect(store.removeProfile('ghost')).resolves.toBe(false);
+    await expect(store.removeProfile("ghost")).resolves.toBe(false);
 
-    expect(store.getProfiles().map((profile) => profile.username)).toEqual(['alice']);
-    expect(store.getDefault()).toBe('alice');
+    expect(store.getProfiles().map((profile) => profile.username)).toEqual(["alice"]);
+    expect(store.getDefault()).toBe("alice");
     expect(seen).toEqual([]);
   });
 
-  it('Scenario: Given an unknown profile, When selecting default, Then profile truth is unchanged', async () => {
+  it("Scenario: Given an unknown profile, When selecting default, Then profile truth is unchanged", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
+    await store.upsertProfile({ username: "alice" });
 
-    await expect(store.setDefault('ghost')).resolves.toBe(false);
+    await expect(store.setDefault("ghost")).resolves.toBe(false);
 
-    expect(store.getDefault()).toBe('alice');
+    expect(store.getDefault()).toBe("alice");
     const reloaded = new DaemonStore();
     await reloaded.load();
-    expect(reloaded.getDefault()).toBe('alice');
+    expect(reloaded.getDefault()).toBe("alice");
   });
 
-  it('Scenario: Given malformed profiles.json, When loading, Then profile truth falls back to empty config', async () => {
+  it("Scenario: Given malformed profiles.json, When loading, Then profile truth falls back to empty config", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       profilesPath(),
-      JSON.stringify({ default: 'ghost', profiles: [{ username: 42 }] }),
-      'utf8',
+      JSON.stringify({ default: "ghost", profiles: [{ username: 42 }] }),
+      "utf8",
     );
     const store = new DaemonStore();
 
     await store.load();
 
     expect(store.getProfiles()).toEqual([]);
-    expect(store.getDefault()).toBe('');
+    expect(store.getDefault()).toBe("");
   });
 
-  it('Scenario: Given profiles.json with an orphan default, When loading, Then default points at a profile source', async () => {
+  it("Scenario: Given profiles.json with an orphan default, When loading, Then default points at a profile source", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       profilesPath(),
       JSON.stringify({
-        default: 'ghost',
-        profiles: [{ username: 'alice' }, { username: 'work' }],
+        default: "ghost",
+        profiles: [{ username: "alice" }, { username: "work" }],
       }),
-      'utf8',
+      "utf8",
     );
     const store = new DaemonStore();
 
     await store.load();
 
-    expect(store.getProfiles().map((profile) => profile.username)).toEqual(['alice', 'work']);
-    expect(store.getDefault()).toBe('alice');
+    expect(store.getProfiles().map((profile) => profile.username)).toEqual(["alice", "work"]);
+    expect(store.getDefault()).toBe("alice");
   });
 
-  it('Scenario: Given profiles.json with an empty username, When loading, Then profile truth falls back to empty config', async () => {
+  it("Scenario: Given profiles.json with an empty username, When loading, Then profile truth falls back to empty config", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       profilesPath(),
-      JSON.stringify({ default: '', profiles: [{ username: '' }] }),
-      'utf8',
+      JSON.stringify({ default: "", profiles: [{ username: "" }] }),
+      "utf8",
     );
     const store = new DaemonStore();
 
     await store.load();
 
     expect(store.getProfiles()).toEqual([]);
-    expect(store.getDefault()).toBe('');
+    expect(store.getDefault()).toBe("");
   });
 
-  it('Scenario: Given profiles.json with duplicate usernames, When loading, Then profile truth falls back to empty config', async () => {
+  it("Scenario: Given profiles.json with duplicate usernames, When loading, Then profile truth falls back to empty config", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       profilesPath(),
       JSON.stringify({
-        default: 'alice',
-        profiles: [{ username: 'alice' }, { username: 'alice', registry: 'https://registry.example/' }],
+        default: "alice",
+        profiles: [
+          { username: "alice" },
+          { username: "alice", registry: "https://registry.example/" },
+        ],
       }),
-      'utf8',
+      "utf8",
     );
     const store = new DaemonStore();
 
     await store.load();
 
     expect(store.getProfiles()).toEqual([]);
-    expect(store.getDefault()).toBe('');
+    expect(store.getDefault()).toBe("");
   });
 });
 
-describe('DaemonStore events (Chapter 6.2)', () => {
-  it('creates pending events in newest-first order', async () => {
+describe("DaemonStore events (Chapter 6.2)", () => {
+  it("creates pending events in newest-first order", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: 'alice' });
-    const a = store.createEvent({ kind: 'publish', profile: 'alice' });
-    const b = store.createEvent({ kind: 'publish', profile: 'alice' });
+    await store.upsertProfile({ username: "alice" });
+    const a = store.createEvent({ kind: "publish", profile: "alice" });
+    const b = store.createEvent({ kind: "publish", profile: "alice" });
     const list = store.getEvents();
     expect(list[0]!.id).toBe(b.id);
     expect(list[1]!.id).toBe(a.id);
-    expect(list.every((e) => e.status === 'pending')).toBe(true);
+    expect(list.every((e) => e.status === "pending")).toBe(true);
   });
 
-  it('resolves events and records the result', async () => {
+  it("resolves events and records the result", async () => {
     const store = new DaemonStore();
     await store.load();
-    const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
-    store.resolveEvent(evt.id, 'success', 'published @scope/x@1.0.0');
+    const evt = store.createEvent({ kind: "publish", profile: "alice" });
+    store.resolveEvent(evt.id, "success", "published @scope/x@1.0.0");
     const resolved = store.getEvent(evt.id);
-    expect(resolved?.status).toBe('success');
-    expect(resolved?.result).toBe('published @scope/x@1.0.0');
-    expect(resolved?.resolvedAt).toBeTypeOf('number');
+    expect(resolved?.status).toBe("success");
+    expect(resolved?.result).toBe("published @scope/x@1.0.0");
+    expect(resolved?.resolvedAt).toBeTypeOf("number");
   });
 
-  it('Scenario: Given clock drift recovery metadata, When resolving, Then only the named resolution fact is recorded', async () => {
+  it("Scenario: Given clock drift recovery metadata, When resolving, Then only the named resolution fact is recorded", async () => {
     const store = new DaemonStore();
     await store.load();
-    const evt = store.createEvent({ kind: 'publish', profile: 'alice' });
+    const evt = store.createEvent({ kind: "publish", profile: "alice" });
 
-    store.resolveEvent(evt.id, 'success', 'published @scope/x@1.0.0', { clockDriftRecovered: true });
+    store.resolveEvent(evt.id, "success", "published @scope/x@1.0.0", {
+      clockDriftRecovered: true,
+    });
 
     const resolved = store.getEvent(evt.id);
-    expect(resolved?.status).toBe('success');
+    expect(resolved?.status).toBe("success");
     expect(resolved?.clockDriftRecovered).toBe(true);
     expect(resolved?.createdAt).toBe(evt.createdAt);
   });
 
-  it('Scenario: Given a pending publish event, When updating args, Then the args are mutated on the live event', async () => {
+  it("Scenario: Given a pending publish event, When updating args, Then the args are mutated on the live event", async () => {
     const store = new DaemonStore();
     await store.load();
     const evt = store.createEvent({
-      kind: 'publish',
-      profile: 'alice',
-      payload: { kind: 'publish', data: { source: { kind: 'directory', path: '/p' }, args: ['--access', 'public'], target: { name: 'pkg', version: '1.0.0', path: '/p' } } },
+      kind: "publish",
+      profile: "alice",
+      payload: {
+        kind: "publish",
+        data: {
+          source: { kind: "directory", path: "/p" },
+          args: ["--access", "public"],
+          target: { name: "pkg", version: "1.0.0", path: "/p" },
+        },
+      },
     });
-    const updated = store.updateEventArgs(evt.id, ['--access', 'restricted', '--no-git-checks']);
-    expect(updated?.payload?.kind).toBe('publish');
-    if (updated?.payload?.kind === 'publish') {
-      expect(updated.payload.data.args).toEqual(['--access', 'restricted', '--no-git-checks']);
+    const updated = store.updateEventArgs(evt.id, ["--access", "restricted", "--no-git-checks"]);
+    expect(updated?.payload?.kind).toBe("publish");
+    if (updated?.payload?.kind === "publish") {
+      expect(updated.payload.data.args).toEqual(["--access", "restricted", "--no-git-checks"]);
     }
     // The SAME event object in the store reflects the mutation.
-    expect(store.getEvent(evt.id)?.payload?.kind).toBe('publish');
+    expect(store.getEvent(evt.id)?.payload?.kind).toBe("publish");
   });
 
-  it('Scenario: Given a pending recursive-publish event, When updating args, Then the args are mutated (parity with publish)', async () => {
+  it("Scenario: Given a pending recursive-publish event, When updating args, Then the args are mutated (parity with publish)", async () => {
     const store = new DaemonStore();
     await store.load();
     const evt = store.createEvent({
-      kind: 'recursive-publish',
-      profile: 'alice',
-      payload: { kind: 'recursive-publish', data: { source: { kind: 'directory', path: '/ws' }, args: ['-r', '--no-git-checks'], targets: [{ name: 'pkg', version: '1.0.0', path: '/ws/pkg' }] } },
+      kind: "recursive-publish",
+      profile: "alice",
+      payload: {
+        kind: "recursive-publish",
+        data: {
+          source: { kind: "directory", path: "/ws" },
+          args: ["-r", "--no-git-checks"],
+          targets: [{ name: "pkg", version: "1.0.0", path: "/ws/pkg" }],
+        },
+      },
     });
-    const updated = store.updateEventArgs(evt.id, ['-r', '--access', 'restricted']);
+    const updated = store.updateEventArgs(evt.id, ["-r", "--access", "restricted"]);
     expect(updated).toBeTruthy();
-    if (updated?.payload?.kind === 'recursive-publish') {
-      expect(updated.payload.data.args).toEqual(['-r', '--access', 'restricted']);
+    if (updated?.payload?.kind === "recursive-publish") {
+      expect(updated.payload.data.args).toEqual(["-r", "--access", "restricted"]);
     }
   });
 
-  it('Scenario: Given a non-publish event (setup-oidc), When updating args, Then it is rejected (undefined)', async () => {
+  it("Scenario: Given a non-publish event (setup-oidc), When updating args, Then it is rejected (undefined)", async () => {
     const store = new DaemonStore();
     await store.load();
     const evt = store.createEvent({
-      kind: 'setup-oidc',
-      profile: 'alice',
-      payload: { kind: 'setup-oidc', data: { repo: 'o/r', name: '@scope/pkg', path: '/p' } },
+      kind: "setup-oidc",
+      profile: "alice",
+      payload: { kind: "setup-oidc", data: { repo: "o/r", name: "@scope/pkg", path: "/p" } },
     });
-    expect(store.updateEventArgs(evt.id, ['--access', 'public'])).toBeUndefined();
+    expect(store.updateEventArgs(evt.id, ["--access", "public"])).toBeUndefined();
   });
 
-  it('Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)', async () => {
+  it("Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)", async () => {
     const store = new DaemonStore();
     await store.load();
     const evt = store.createEvent({
-      kind: 'publish',
-      profile: 'alice',
-      payload: { kind: 'publish', data: { source: { kind: 'directory', path: '/p' }, args: [], target: { name: 'pkg', version: '1.0.0', path: '/p' } } },
+      kind: "publish",
+      profile: "alice",
+      payload: {
+        kind: "publish",
+        data: {
+          source: { kind: "directory", path: "/p" },
+          args: [],
+          target: { name: "pkg", version: "1.0.0", path: "/p" },
+        },
+      },
     });
-    store.resolveEvent(evt.id, 'success', 'done');
-    expect(store.updateEventArgs(evt.id, ['--access', 'public'])).toBeUndefined();
+    store.resolveEvent(evt.id, "success", "done");
+    expect(store.updateEventArgs(evt.id, ["--access", "public"])).toBeUndefined();
   });
 });
 
-describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {
-  it('Scenario: Given a risky workspace, When staged, Then the confirmation token is not the path', async () => {
+describe("DaemonStore preferences (Chapter 6.4)", () => {
+  it("defaults keepOnTop to false on first run (no file)", async () => {
     const store = new DaemonStore();
     await store.load();
-    const token = store.stageRiskyWorkspace({ path: '/Users/x/Downloads', pinned: false, addedAt: 1 });
-    expect(token).not.toBe('/Users/x/Downloads');
+    expect(store.getPreferences()).toEqual({ keepOnTop: false });
+  });
+
+  it("persists keepOnTop across reloads", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.setKeepOnTop(true);
+
+    const reloaded = new DaemonStore();
+    await reloaded.load();
+    expect(reloaded.getPreferences().keepOnTop).toBe(true);
+  });
+
+  it("emits a preferences event on change (and not on no-op)", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const seen: Preferences[] = [];
+    store.on("preferences", (prefs: Preferences) => seen.push(prefs));
+    await store.setKeepOnTop(true);
+    await store.setKeepOnTop(true); // no-op, no second emit
+    expect(seen).toEqual([{ keepOnTop: true }]);
+  });
+});
+
+describe("DaemonStore risk-boundary state machine (Chapter 5.3.2)", () => {
+  it("Scenario: Given a risky workspace, When staged, Then the confirmation token is not the path", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const token = store.stageRiskyWorkspace({
+      path: "/Users/x/Downloads",
+      pinned: false,
+      addedAt: 1,
+    });
+    expect(token).not.toBe("/Users/x/Downloads");
     expect(token).toMatch(/^[0-9a-f-]{36}$/);
     // Nothing written yet.
     expect(store.getWorkspaces()).toEqual([]);
-    expect(store.getStagedRiskyWorkspaces().map((w) => w.path)).toContain('/Users/x/Downloads');
+    expect(store.getStagedRiskyWorkspaces().map((w) => w.path)).toContain("/Users/x/Downloads");
   });
 
-  it('Scenario: Given a staged risky workspace, When confirmed by opaque token, Then it persists once', async () => {
+  it("Scenario: Given a staged risky workspace, When confirmed by opaque token, Then it persists once", async () => {
     const store = new DaemonStore();
     await store.load();
-    const token = store.stageRiskyWorkspace({ path: '/risky', pinned: false, addedAt: 2 });
-    await expect(store.confirmRiskyWorkspace('/risky')).resolves.toBe(false);
+    const token = store.stageRiskyWorkspace({ path: "/risky", pinned: false, addedAt: 2 });
+    await expect(store.confirmRiskyWorkspace("/risky")).resolves.toBe(false);
     expect(store.getWorkspaces()).toEqual([]);
     const confirmed = await store.confirmRiskyWorkspace(token);
     expect(confirmed).toBe(true);
-    expect(store.getWorkspaces().map((w) => w.path)).toContain('/risky');
+    expect(store.getWorkspaces().map((w) => w.path)).toContain("/risky");
     // Token consumed — a second confirm fails.
     const again = await store.confirmRiskyWorkspace(token);
     expect(again).toBe(false);
   });
 
-  it('cancel discards a staged risky workspace without persisting', async () => {
+  it("cancel discards a staged risky workspace without persisting", async () => {
     const store = new DaemonStore();
     await store.load();
-    const token = store.stageRiskyWorkspace({ path: '/risky2', pinned: false, addedAt: 3 });
+    const token = store.stageRiskyWorkspace({ path: "/risky2", pinned: false, addedAt: 3 });
     store.cancelRiskyWorkspace(token);
     expect(store.getStagedRiskyWorkspaces()).toEqual([]);
     expect(store.getWorkspaces()).toEqual([]);
   });
 
-  it('Scenario: Given runtime workspace input with extra projection fields, When stored, Then only workspace ontology fields persist', async () => {
+  it("Scenario: Given runtime workspace input with extra projection fields, When stored, Then only workspace ontology fields persist", async () => {
     const store = new DaemonStore();
     await store.load();
-    const root = path.join(sandbox, 'workspace');
-    const firstEntry = { path: root, pinned: false, addedAt: 1, displayName: 'Workspace' };
-    const updatedEntry = { path: root, pinned: true, addedAt: 2, displayName: 'Renamed workspace' };
+    const root = path.join(sandbox, "workspace");
+    const firstEntry = { path: root, pinned: false, addedAt: 1, displayName: "Workspace" };
+    const updatedEntry = { path: root, pinned: true, addedAt: 2, displayName: "Renamed workspace" };
 
     await store.addWorkspace(firstEntry);
     await store.addWorkspace(updatedEntry);
 
     const [workspace] = store.getWorkspaces();
     expect(workspace).toEqual({ path: root, pinned: true, addedAt: 2 });
-    expect('displayName' in workspace!).toBe(false);
+    expect("displayName" in workspace!).toBe(false);
   });
 
-  it('Scenario: Given malformed workspaces.json, When loading, Then workspace truth falls back to empty config', async () => {
+  it("Scenario: Given malformed workspaces.json, When loading, Then workspace truth falls back to empty config", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       workspacesPath(),
-      JSON.stringify({ paths: [{ path: '/proj', pinned: 'yes', addedAt: 1 }] }),
-      'utf8',
+      JSON.stringify({ paths: [{ path: "/proj", pinned: "yes", addedAt: 1 }] }),
+      "utf8",
     );
     const store = new DaemonStore();
 
@@ -315,12 +374,12 @@ describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {
     expect(store.getWorkspaces()).toEqual([]);
   });
 
-  it('Scenario: Given workspaces.json with a relative path, When loading, Then workspace truth falls back to empty config', async () => {
+  it("Scenario: Given workspaces.json with a relative path, When loading, Then workspace truth falls back to empty config", async () => {
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       workspacesPath(),
-      JSON.stringify({ paths: [{ path: 'packages/widget', pinned: false, addedAt: 1 }] }),
-      'utf8',
+      JSON.stringify({ paths: [{ path: "packages/widget", pinned: false, addedAt: 1 }] }),
+      "utf8",
     );
     const store = new DaemonStore();
 
@@ -329,8 +388,8 @@ describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {
     expect(store.getWorkspaces()).toEqual([]);
   });
 
-  it('Scenario: Given workspaces.json with duplicate root paths, When loading, Then workspace truth falls back to empty config', async () => {
-    const root = path.join(sandbox, 'repo');
+  it("Scenario: Given workspaces.json with duplicate root paths, When loading, Then workspace truth falls back to empty config", async () => {
+    const root = path.join(sandbox, "repo");
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       workspacesPath(),
@@ -340,7 +399,7 @@ describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {
           { path: root, pinned: true, addedAt: 2 },
         ],
       }),
-      'utf8',
+      "utf8",
     );
     const store = new DaemonStore();
 
@@ -349,13 +408,13 @@ describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {
     expect(store.getWorkspaces()).toEqual([]);
   });
 
-  it('Scenario: Given workspaces.json with an invalid timestamp, When loading, Then workspace truth falls back to empty config', async () => {
-    const root = path.join(sandbox, 'repo');
+  it("Scenario: Given workspaces.json with an invalid timestamp, When loading, Then workspace truth falls back to empty config", async () => {
+    const root = path.join(sandbox, "repo");
     await fsp.mkdir(appDir(), { recursive: true });
     await fsp.writeFile(
       workspacesPath(),
       JSON.stringify({ paths: [{ path: root, pinned: false, addedAt: -1 }] }),
-      'utf8',
+      "utf8",
     );
     const store = new DaemonStore();
 

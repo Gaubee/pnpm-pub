@@ -13,10 +13,10 @@ import {
   deleteTrustedPublisher,
   type NpmClient,
   type TrustedPublisherConfigCreate,
-} from 'safe-npm-sdk';
-import { generateTotp } from './totp.js';
-import { TrustedPublisherConfigSchema } from '../shared/schemas.js';
-import type { TrustedPublisherConfig } from '../shared/index.js';
+} from "safe-npm-sdk";
+import { generateTotp } from "./totp.js";
+import { TrustedPublisherConfigSchema } from "../shared/schemas.js";
+import type { TrustedPublisherConfig } from "../shared/index.js";
 
 /** Credentials needed to construct a one-shot SDK client + OTP. */
 export interface TrustAuth {
@@ -51,13 +51,17 @@ function otp(auth: TrustAuth): string {
 export async function listTrustedPublishers(
   auth: TrustAuth,
   name: string,
-): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string }> {
+): Promise<
+  { ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string }
+> {
   const client = makeClient(auth);
   const result = await getTrustedPublishers(name, { otp: otp(auth) }, client);
   if (result.ok) {
     // The SDK returns TrustedPublisherConfigs (the parsed array/object shape).
     // Map to our shared type — shapes are structurally compatible.
-    const configs = (result.data as unknown[]).filter((c): c is TrustedPublisherConfig => c !== null);
+    const configs = (result.data as unknown[]).filter(
+      (c): c is TrustedPublisherConfig => c !== null,
+    );
     return { ok: true, configs };
   }
   return { ok: false, status: result.error.status, error: result.error.message };
@@ -91,7 +95,11 @@ export async function removeTrustedPublisher(
   uuid: string,
 ): Promise<TrustResult> {
   const client = makeClient(auth);
-  const result = await deleteTrustedPublisher({ package: name, configUuid: uuid }, { otp: otp(auth) }, client);
+  const result = await deleteTrustedPublisher(
+    { package: name, configUuid: uuid },
+    { otp: otp(auth) },
+    client,
+  );
   return {
     ok: result.ok,
     status: result.ok ? 200 : result.error.status,

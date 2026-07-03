@@ -1,23 +1,21 @@
-import { execFile } from 'node:child_process';
-import os from 'node:os';
-import path from 'node:path';
-import { promises as fsp } from 'node:fs';
-import { promisify } from 'node:util';
+import { execFile } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { promises as fsp } from "node:fs";
+import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_PUBLISH_BRANCHES = ['master', 'main'] as const;
+const DEFAULT_PUBLISH_BRANCHES = ["master", "main"] as const;
 
-export type PublishGitCheckResult =
-  | { ok: true }
-  | { ok: false; error: string };
+export type PublishGitCheckResult = { ok: true } | { ok: false; error: string };
 
 function readCliGitChecks(args: string[]): boolean | undefined {
   let enabled: boolean | undefined;
   for (const arg of args) {
-    if (arg === '--no-git-checks') enabled = false;
-    if (arg === '--git-checks') enabled = true;
-    if (arg.startsWith('--git-checks=')) enabled = arg.slice('--git-checks='.length) !== 'false';
+    if (arg === "--no-git-checks") enabled = false;
+    if (arg === "--git-checks") enabled = true;
+    if (arg.startsWith("--git-checks=")) enabled = arg.slice("--git-checks=".length) !== "false";
   }
   return enabled;
 }
@@ -28,9 +26,12 @@ function readEnvGitChecks(): boolean | undefined {
 }
 
 function parseBooleanConfigValue(value: string): boolean | undefined {
-  const normalized = value.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
-  if (normalized === 'true' || normalized === 'yes' || normalized === '1') return true;
-  if (normalized === 'false' || normalized === 'no' || normalized === '0') return false;
+  const normalized = value
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .toLowerCase();
+  if (normalized === "true" || normalized === "yes" || normalized === "1") return true;
+  if (normalized === "false" || normalized === "no" || normalized === "0") return false;
   return undefined;
 }
 
@@ -38,7 +39,7 @@ function parseNpmrcGitChecks(text: string): boolean | undefined {
   let value: boolean | undefined;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
     const match = line.match(/^git-checks\s*=\s*(.+)$/i);
     if (!match?.[1]) continue;
     const parsed = parseBooleanConfigValue(match[1]);
@@ -50,9 +51,9 @@ function parseNpmrcGitChecks(text: string): boolean | undefined {
 async function readNearestNpmrcGitChecks(cwd: string): Promise<boolean | undefined> {
   let dir = path.resolve(cwd);
   for (;;) {
-    const npmrc = path.join(dir, '.npmrc');
+    const npmrc = path.join(dir, ".npmrc");
     try {
-      const value = parseNpmrcGitChecks(await fsp.readFile(npmrc, 'utf8'));
+      const value = parseNpmrcGitChecks(await fsp.readFile(npmrc, "utf8"));
       if (value !== undefined) return value;
     } catch {
       /* no .npmrc at this level */
@@ -65,7 +66,7 @@ async function readNearestNpmrcGitChecks(cwd: string): Promise<boolean | undefin
 
 async function readNpmrcGitChecksFile(file: string): Promise<boolean | undefined> {
   try {
-    return parseNpmrcGitChecks(await fsp.readFile(file, 'utf8'));
+    return parseNpmrcGitChecks(await fsp.readFile(file, "utf8"));
   } catch {
     return undefined;
   }
@@ -73,7 +74,9 @@ async function readNpmrcGitChecksFile(file: string): Promise<boolean | undefined
 
 function resolveUserNpmrcPath(): string {
   const configured = process.env.npm_config_userconfig ?? process.env.NPM_CONFIG_USERCONFIG;
-  return configured && configured.length > 0 ? path.resolve(configured) : path.join(os.homedir(), '.npmrc');
+  return configured && configured.length > 0
+    ? path.resolve(configured)
+    : path.join(os.homedir(), ".npmrc");
 }
 
 async function readUserNpmrcGitChecks(): Promise<boolean | undefined> {
@@ -83,9 +86,13 @@ async function readUserNpmrcGitChecks(): Promise<boolean | undefined> {
 function resolveGlobalNpmrcPath(): string {
   const configured = process.env.npm_config_globalconfig ?? process.env.NPM_CONFIG_GLOBALCONFIG;
   if (configured && configured.length > 0) return path.resolve(configured);
-  const prefix = process.env.npm_config_prefix ?? process.env.NPM_CONFIG_PREFIX ?? process.env.PREFIX;
-  const resolvedPrefix = prefix && prefix.length > 0 ? path.resolve(prefix) : path.dirname(path.dirname(process.execPath));
-  return path.join(resolvedPrefix, 'etc', 'npmrc');
+  const prefix =
+    process.env.npm_config_prefix ?? process.env.NPM_CONFIG_PREFIX ?? process.env.PREFIX;
+  const resolvedPrefix =
+    prefix && prefix.length > 0
+      ? path.resolve(prefix)
+      : path.dirname(path.dirname(process.execPath));
+  return path.join(resolvedPrefix, "etc", "npmrc");
 }
 
 async function readGlobalNpmrcGitChecks(): Promise<boolean | undefined> {
@@ -105,17 +112,17 @@ async function resolveGitChecksEnabled(cwd: string, args: string[]): Promise<boo
 }
 
 function resolvePublishBranchPattern(args: string[]): string {
-  let pattern = DEFAULT_PUBLISH_BRANCHES.join('|');
+  let pattern = DEFAULT_PUBLISH_BRANCHES.join("|");
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (!arg) continue;
-    if (arg === '--publish-branch') {
+    if (arg === "--publish-branch") {
       const next = args[index + 1];
-      if (next && !next.startsWith('-')) pattern = next;
+      if (next && !next.startsWith("-")) pattern = next;
       continue;
     }
-    if (arg.startsWith('--publish-branch=')) {
-      const value = arg.slice('--publish-branch='.length);
+    if (arg.startsWith("--publish-branch=")) {
+      const value = arg.slice("--publish-branch=".length);
       if (value.length > 0) pattern = value;
     }
   }
@@ -123,20 +130,23 @@ function resolvePublishBranchPattern(args: string[]): string {
 }
 
 function branchPatternAllows(pattern: string, branch: string): boolean {
-  return pattern.split('|').some((entry) => entry.trim() === branch);
+  return pattern.split("|").some((entry) => entry.trim() === branch);
 }
 
 function parseAheadBehindCounts(text: string): { ahead: number; behind: number } | null {
   const parts = text.trim().split(/\s+/);
-  const ahead = Number.parseInt(parts[0] ?? '', 10);
-  const behind = Number.parseInt(parts[1] ?? '', 10);
+  const ahead = Number.parseInt(parts[0] ?? "", 10);
+  const behind = Number.parseInt(parts[1] ?? "", 10);
   if (!Number.isInteger(ahead) || !Number.isInteger(behind)) return null;
   return { ahead, behind };
 }
 
-async function git(cwd: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false }> {
+async function git(
+  cwd: string,
+  args: string[],
+): Promise<{ ok: true; stdout: string } | { ok: false }> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], {
+    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
       maxBuffer: 1024 * 1024,
     });
     return { ok: true, stdout };
@@ -145,13 +155,16 @@ async function git(cwd: string, args: string[]): Promise<{ ok: true; stdout: str
   }
 }
 
-export async function checkPublishGitState(cwd: string, args: string[]): Promise<PublishGitCheckResult> {
+export async function checkPublishGitState(
+  cwd: string,
+  args: string[],
+): Promise<PublishGitCheckResult> {
   if (!(await resolveGitChecksEnabled(cwd, args))) return { ok: true };
 
-  const inside = await git(cwd, ['rev-parse', '--is-inside-work-tree']);
-  if (!inside.ok || inside.stdout.trim() !== 'true') return { ok: true };
+  const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (!inside.ok || inside.stdout.trim() !== "true") return { ok: true };
 
-  const status = await git(cwd, ['status', '--porcelain']);
+  const status = await git(cwd, ["status", "--porcelain"]);
   if (!status.ok) return { ok: true };
   if (status.stdout.trim().length > 0) {
     return {
@@ -161,12 +174,13 @@ export async function checkPublishGitState(cwd: string, args: string[]): Promise
     };
   }
 
-  const branch = await git(cwd, ['branch', '--show-current']);
-  const currentBranch = branch.ok ? branch.stdout.trim() : '';
+  const branch = await git(cwd, ["branch", "--show-current"]);
+  const currentBranch = branch.ok ? branch.stdout.trim() : "";
   if (!currentBranch) {
     return {
       ok: false,
-      error: 'Cannot publish from a detached HEAD unless Git checks are disabled with "--no-git-checks".',
+      error:
+        'Cannot publish from a detached HEAD unless Git checks are disabled with "--no-git-checks".',
     };
   }
 
@@ -182,10 +196,10 @@ export async function checkPublishGitState(cwd: string, args: string[]): Promise
 }
 
 async function checkUpstreamHistory(cwd: string): Promise<PublishGitCheckResult> {
-  const upstream = await git(cwd, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  const upstream = await git(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
   if (!upstream.ok || upstream.stdout.trim().length === 0) return { ok: true };
 
-  const counts = await git(cwd, ['rev-list', '--left-right', '--count', 'HEAD...@{u}']);
+  const counts = await git(cwd, ["rev-list", "--left-right", "--count", "HEAD...@{u}"]);
   if (!counts.ok) return { ok: true };
   const parsed = parseAheadBehindCounts(counts.stdout);
   if (!parsed) return { ok: true };

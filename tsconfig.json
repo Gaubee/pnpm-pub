@@ -15,7 +15,6 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
       "@pnpm-pub/shared": ["./src/shared/index.ts"],
       "@pnpm-pub/shared/*": ["./src/shared/*"]

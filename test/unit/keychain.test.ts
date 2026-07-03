@@ -5,7 +5,7 @@
  * never touch the developer's real pnpm-pub credentials. We mock the native
  * @github/keytar surface with an in-memory map.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 // In-memory keytar stub shared across the test file.
 const store = new Map<string, string>();
@@ -50,10 +50,10 @@ import {
   resetService,
   activeService,
   __setKeytarForTest,
-} from '../../src/daemon/keychain.js';
-import { KEYCHAIN_SERVICE_SANDBOX, authKey } from '../../src/shared/index.js';
+} from "../../src/daemon/keychain.js";
+import { KEYCHAIN_SERVICE_SANDBOX, authKey } from "../../src/shared/index.js";
 
-describe('Keychain sandbox isolation (Chapter 10.2.1)', () => {
+describe("Keychain sandbox isolation (Chapter 10.2.1)", () => {
   beforeEach(async () => {
     store.clear();
     useSandboxService();
@@ -67,39 +67,39 @@ describe('Keychain sandbox isolation (Chapter 10.2.1)', () => {
     resetService();
   });
 
-  it('uses the sandbox service name', () => {
+  it("uses the sandbox service name", () => {
     expect(activeService()).toBe(KEYCHAIN_SERVICE_SANDBOX);
   });
 
-  it('round-trips a token under the mapped account key (Chapter 4.2)', async () => {
-    await setToken('john_doe', 'npm_abc');
-    expect(store.get(`${KEYCHAIN_SERVICE_SANDBOX}:john_doe_npm_token`)).toBe('npm_abc');
-    expect(await getToken('john_doe')).toBe('npm_abc');
+  it("round-trips a token under the mapped account key (Chapter 4.2)", async () => {
+    await setToken("john_doe", "npm_abc");
+    expect(store.get(`${KEYCHAIN_SERVICE_SANDBOX}:john_doe_npm_token`)).toBe("npm_abc");
+    expect(await getToken("john_doe")).toBe("npm_abc");
   });
 
-  it('round-trips a TOTP secret', async () => {
-    await setTotpSecret('john_doe', 'JBSWY3DPEHPK3PXP');
-    expect(await getTotpSecret('john_doe')).toBe('JBSWY3DPEHPK3PXP');
+  it("round-trips a TOTP secret", async () => {
+    await setTotpSecret("john_doe", "JBSWY3DPEHPK3PXP");
+    expect(await getTotpSecret("john_doe")).toBe("JBSWY3DPEHPK3PXP");
   });
 
-  it('keeps profiles isolated by username', async () => {
-    await setToken('alice', 'npm_alice');
-    await setToken('bob', 'npm_bob');
-    expect(await getToken('alice')).toBe('npm_alice');
-    expect(await getToken('bob')).toBe('npm_bob');
+  it("keeps profiles isolated by username", async () => {
+    await setToken("alice", "npm_alice");
+    await setToken("bob", "npm_bob");
+    expect(await getToken("alice")).toBe("npm_alice");
+    expect(await getToken("bob")).toBe("npm_bob");
   });
 
-  it('deletes both token and secret for a profile', async () => {
-    await setToken('alice', 'npm_alice');
-    await setTotpSecret('alice', 'SECRET');
-    await deleteProfile('alice');
-    expect(await getToken('alice')).toBeNull();
-    expect(await getTotpSecret('alice')).toBeNull();
+  it("deletes both token and secret for a profile", async () => {
+    await setToken("alice", "npm_alice");
+    await setTotpSecret("alice", "SECRET");
+    await deleteProfile("alice");
+    expect(await getToken("alice")).toBeNull();
+    expect(await getTotpSecret("alice")).toBeNull();
   });
 
-  it('resets back to the production service name', () => {
+  it("resets back to the production service name", () => {
     resetService();
-    expect(activeService()).toBe('pnpm-pub');
+    expect(activeService()).toBe("pnpm-pub");
   });
 });
 
@@ -107,7 +107,7 @@ describe('Keychain sandbox isolation (Chapter 10.2.1)', () => {
 // Merged profile-auth item (Chapter 4.2 — pnpm_pub-key<user>-auth)
 // ---------------------------------------------------------------------------
 
-describe('Merged profile secrets (ProfileSecrets)', () => {
+describe("Merged profile secrets (ProfileSecrets)", () => {
   beforeEach(() => {
     store.clear();
     useSandboxService();
@@ -118,53 +118,56 @@ describe('Merged profile secrets (ProfileSecrets)', () => {
     resetService();
   });
 
-  const secrets = { npm_token: 'npm_abc123', totp_secret: 'JBSWY3DPEHPK3PXP', npm_pwd: 'hunter2' };
+  const secrets = { npm_token: "npm_abc123", totp_secret: "JBSWY3DPEHPK3PXP", npm_pwd: "hunter2" };
 
-  it('round-trips token + totp + password in ONE keychain item', async () => {
-    await setProfileSecrets('john_doe', secrets);
+  it("round-trips token + totp + password in ONE keychain item", async () => {
+    await setProfileSecrets("john_doe", secrets);
     // The merged item uses authKey as the account name.
-    const raw = store.get(`${KEYCHAIN_SERVICE_SANDBOX}:${authKey('john_doe')}`);
+    const raw = store.get(`${KEYCHAIN_SERVICE_SANDBOX}:${authKey("john_doe")}`);
     expect(raw).toBeTruthy();
-    expect(JSON.parse(raw!).npm_token).toBe('npm_abc123');
+    expect(JSON.parse(raw!).npm_token).toBe("npm_abc123");
 
-    const got = await getProfileSecrets('john_doe');
+    const got = await getProfileSecrets("john_doe");
     expect(got).toEqual(secrets);
   });
 
-  it('returns null when no merged item exists', async () => {
-    expect(await getProfileSecrets('nobody')).toBeNull();
+  it("returns null when no merged item exists", async () => {
+    expect(await getProfileSecrets("nobody")).toBeNull();
   });
 
-  it('returns null for malformed JSON', async () => {
-    store.set(`${KEYCHAIN_SERVICE_SANDBOX}:${authKey('bad')}`, 'not-json{');
-    expect(await getProfileSecrets('bad')).toBeNull();
+  it("returns null for malformed JSON", async () => {
+    store.set(`${KEYCHAIN_SERVICE_SANDBOX}:${authKey("bad")}`, "not-json{");
+    expect(await getProfileSecrets("bad")).toBeNull();
   });
 
-  it('returns null when JSON is valid but missing required fields', async () => {
-    store.set(`${KEYCHAIN_SERVICE_SANDBOX}:${authKey('partial')}`, JSON.stringify({ npm_token: 'x' }));
-    expect(await getProfileSecrets('partial')).toBeNull();
+  it("returns null when JSON is valid but missing required fields", async () => {
+    store.set(
+      `${KEYCHAIN_SERVICE_SANDBOX}:${authKey("partial")}`,
+      JSON.stringify({ npm_token: "x" }),
+    );
+    expect(await getProfileSecrets("partial")).toBeNull();
   });
 
-  it('overwrites the merged item on re-write', async () => {
-    await setProfileSecrets('john_doe', secrets);
-    await setProfileSecrets('john_doe', { ...secrets, npm_token: 'npm_new' });
-    const got = await getProfileSecrets('john_doe');
-    expect(got?.npm_token).toBe('npm_new');
+  it("overwrites the merged item on re-write", async () => {
+    await setProfileSecrets("john_doe", secrets);
+    await setProfileSecrets("john_doe", { ...secrets, npm_token: "npm_new" });
+    const got = await getProfileSecrets("john_doe");
+    expect(got?.npm_token).toBe("npm_new");
   });
 
-  it('deletes the merged item', async () => {
-    await setProfileSecrets('john_doe', secrets);
-    await deleteProfileSecrets('john_doe');
-    expect(await getProfileSecrets('john_doe')).toBeNull();
+  it("deletes the merged item", async () => {
+    await setProfileSecrets("john_doe", secrets);
+    await deleteProfileSecrets("john_doe");
+    expect(await getProfileSecrets("john_doe")).toBeNull();
   });
 
-  it('deleteProfile clears both merged and legacy items', async () => {
-    await setProfileSecrets('john_doe', secrets);
-    await setToken('john_doe', 'legacy_token');
-    await setTotpSecret('john_doe', 'legacy_totp');
-    await deleteProfile('john_doe');
-    expect(await getProfileSecrets('john_doe')).toBeNull();
-    expect(await getToken('john_doe')).toBeNull();
-    expect(await getTotpSecret('john_doe')).toBeNull();
+  it("deleteProfile clears both merged and legacy items", async () => {
+    await setProfileSecrets("john_doe", secrets);
+    await setToken("john_doe", "legacy_token");
+    await setTotpSecret("john_doe", "legacy_totp");
+    await deleteProfile("john_doe");
+    expect(await getProfileSecrets("john_doe")).toBeNull();
+    expect(await getToken("john_doe")).toBeNull();
+    expect(await getTotpSecret("john_doe")).toBeNull();
   });
 });

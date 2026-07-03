@@ -16,15 +16,15 @@
 
 /** Logical CSS-pixel rectangle (matches @opentray/spec `Rect`). */
 export interface OpentrayRect {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** Payload of the overlay `geometrychange` event (physical→CSS converted). */
 export interface OpentrayOverlayGeometryChange {
-	titlebarAreaRect: OpentrayRect;
+  titlebarAreaRect: OpentrayRect;
 }
 
 /**
@@ -32,22 +32,22 @@ export interface OpentrayOverlayGeometryChange {
  * region the page may occupy; the OS min/max/close cluster sits outside it.
  */
 export interface OpentrayWindowOverlay {
-	readonly visible: boolean;
-	getTitlebarAreaRect(): Promise<OpentrayRect>;
-	/** Native event subscription; returns an async unsubscribe. */
-	listen?(
-		event: 'geometrychange',
-		handler: (event: OpentrayOverlayGeometryChange) => void,
-	): Promise<() => Promise<void>>;
-	/** DOM-style fallback subscription. */
-	addEventListener?(
-		event: 'geometrychange',
-		handler: (event: OpentrayOverlayGeometryChange) => void,
-	): void;
-	removeEventListener?(
-		event: 'geometrychange',
-		handler: (event: OpentrayOverlayGeometryChange) => void,
-	): void;
+  readonly visible: boolean;
+  getTitlebarAreaRect(): Promise<OpentrayRect>;
+  /** Native event subscription; returns an async unsubscribe. */
+  listen?(
+    event: "geometrychange",
+    handler: (event: OpentrayOverlayGeometryChange) => void,
+  ): Promise<() => Promise<void>>;
+  /** DOM-style fallback subscription. */
+  addEventListener?(
+    event: "geometrychange",
+    handler: (event: OpentrayOverlayGeometryChange) => void,
+  ): void;
+  removeEventListener?(
+    event: "geometrychange",
+    handler: (event: OpentrayOverlayGeometryChange) => void,
+  ): void;
 }
 
 /**
@@ -58,26 +58,24 @@ export interface OpentrayWindowOverlay {
  * each route its preferred default geometry).
  */
 export interface OpentrayWindowBridge {
-	readonly overlay?: OpentrayWindowOverlay;
-	startAppRegionDrag?(options?: {
-		x?: number;
-		y?: number;
-		pointerId?: number;
-	}): Promise<{ active: boolean }>;
-	stopAppRegionDrag?(): Promise<{ active: boolean }>;
-	/** Resize the OS window (logical CSS pixels). No-op when not in a host. */
-	resizeTo?(width: number, height: number): Promise<{ width: number; height: number }>;
+  readonly overlay?: OpentrayWindowOverlay;
+  startAppRegionDrag?(options?: {
+    x?: number;
+    y?: number;
+    pointerId?: number;
+  }): Promise<{ active: boolean }>;
+  stopAppRegionDrag?(): Promise<{ active: boolean }>;
+  /** Resize the OS window (logical CSS pixels). No-op when not in a host. */
+  resizeTo?(width: number, height: number): Promise<{ width: number; height: number }>;
 }
 
 declare global {
-	interface Navigator {
-		/** Present when the page runs inside an opentray native WebView host. */
-		opentrayWindow?: OpentrayWindowBridge;
-		/** Legacy/alt namespace some hosts expose; same bridge shape. */
-		opentray?: {
-			window?: OpentrayWindowBridge;
-		};
-	}
+  interface Navigator {
+    /** Present when the page runs inside an opentray native WebView host. */
+    opentrayWindow?: OpentrayWindowBridge;
+    /** Legacy/alt namespace some hosts expose; same bridge shape. */
+    opentray?: {
+      window?: OpentrayWindowBridge;
+    };
+  }
 }
-
-export {};

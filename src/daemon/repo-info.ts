@@ -16,19 +16,13 @@
  * the raw repository string, so repeated renders of the same package never
  * re-parse.
  */
-import type { Database as DatabaseType } from 'better-sqlite3';
-import { kvGet, kvSet } from './event-db.js';
+import type { Database as DatabaseType } from "better-sqlite3";
+import { kvGet, kvSet } from "./event-db.js";
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const CACHE_PREFIX = 'repo-info:';
+const CACHE_PREFIX = "repo-info:";
 
-export type RepoBrand =
-  | 'github'
-  | 'gitlab'
-  | 'gitee'
-  | 'bitbucket'
-  | 'codeberg'
-  | 'gitcode';
+export type RepoBrand = "github" | "gitlab" | "gitee" | "bitbucket" | "codeberg" | "gitcode";
 
 export interface RepoInfo {
   /** Lowercased host without scheme (e.g. `github.com`). Empty for bare slugs. */
@@ -47,12 +41,12 @@ export interface RepoInfo {
 
 /** Known forge host → brand mapping. Substring match on the host. */
 const BRAND_HOSTS: { match: string; brand: RepoBrand; url: string }[] = [
-  { match: 'github.com', brand: 'github', url: 'https://github.com' },
-  { match: 'gitlab.com', brand: 'gitlab', url: 'https://gitlab.com' },
-  { match: 'gitee.com', brand: 'gitee', url: 'https://gitee.com' },
-  { match: 'bitbucket.org', brand: 'bitbucket', url: 'https://bitbucket.org' },
-  { match: 'codeberg.org', brand: 'codeberg', url: 'https://codeberg.org' },
-  { match: 'gitcode.com', brand: 'gitcode', url: 'https://gitcode.com' },
+  { match: "github.com", brand: "github", url: "https://github.com" },
+  { match: "gitlab.com", brand: "gitlab", url: "https://gitlab.com" },
+  { match: "gitee.com", brand: "gitee", url: "https://gitee.com" },
+  { match: "bitbucket.org", brand: "bitbucket", url: "https://bitbucket.org" },
+  { match: "codeberg.org", brand: "codeberg", url: "https://codeberg.org" },
+  { match: "gitcode.com", brand: "gitcode", url: "https://gitcode.com" },
 ];
 
 function matchBrandHost(host: string): { brand: RepoBrand; url: string } | null {
@@ -69,17 +63,15 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
   if (!input) return null;
 
   // Strip a leading `git+` (package.json convention) and trailing `.git`.
-  const cleaned = input.replace(/^git\+/, '').replace(/\.git$/i, '');
+  const cleaned = input.replace(/^git\+/, "").replace(/\.git$/i, "");
 
   // Try to interpret as a URL. `URL` needs a scheme; accept scheme-less by
   // testing for `://` first, otherwise treat as a bare slug.
   let parsedUrl: URL | null = null;
-  if (/^[a-z]+:\/\//i.test(cleaned) || cleaned.startsWith('git@')) {
+  if (/^[a-z]+:\/\//i.test(cleaned) || cleaned.startsWith("git@")) {
     try {
       // Normalise scp-style `git@host:owner/repo` → ssh URL for URL parsing.
-      const sshForm = cleaned.startsWith('git@')
-        ? `ssh://${cleaned.replace(':', '/')}`
-        : cleaned;
+      const sshForm = cleaned.startsWith("git@") ? `ssh://${cleaned.replace(":", "/")}` : cleaned;
       parsedUrl = new URL(sshForm);
     } catch {
       parsedUrl = null;
@@ -90,8 +82,8 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
   if (parsedUrl && parsedUrl.host) {
     const host = parsedUrl.host.toLowerCase();
     // Path → `owner/repo` slug (drop leading `/`, strip trailing slash).
-    const slug = decodeURIComponent(parsedUrl.pathname).replace(/^\/+/, '').replace(/\/+$/, '');
-    const shortName = (slug.split('/').pop() ?? slug) || host;
+    const slug = decodeURIComponent(parsedUrl.pathname).replace(/^\/+/, "").replace(/\/+$/, "");
+    const shortName = (slug.split("/").pop() ?? slug) || host;
     const brand = matchBrandHost(host);
     if (brand) {
       return {
@@ -99,7 +91,7 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
         shortName,
         slug: slug || shortName,
         browseUrl: slug ? `${brand.url}/${slug}` : brand.url,
-        faviconUrl: '',
+        faviconUrl: "",
         brand: brand.brand,
       };
     }
@@ -119,15 +111,15 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
   // canonical forge — GitHub — since that's what `normalizeRepository` bases its
   // slug extraction on, and a plain slug carries no host signal.
   if (/^[\w.@-]+\/[\w.@-]+/.test(cleaned)) {
-    const slug = cleaned.replace(/^\/+/, '').replace(/\/+$/, '');
-    const shortName = slug.split('/').pop() ?? slug;
+    const slug = cleaned.replace(/^\/+/, "").replace(/\/+$/, "");
+    const shortName = slug.split("/").pop() ?? slug;
     return {
-      host: 'github.com',
+      host: "github.com",
       shortName,
       slug,
       browseUrl: `https://github.com/${slug}`,
-      faviconUrl: '',
-      brand: 'github',
+      faviconUrl: "",
+      brand: "github",
     };
   }
 

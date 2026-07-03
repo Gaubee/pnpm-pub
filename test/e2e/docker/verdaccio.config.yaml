@@ -7,11 +7,11 @@ auth:
     file: /verdaccio/storage/htpasswd
     max_users: -1
 packages:
-  '@*/*':
+  "@*/*":
     access: $all
     publish: $all
     unpublish: $all
-  '**':
+  "**":
     access: $all
     publish: $all
     unpublish: $all

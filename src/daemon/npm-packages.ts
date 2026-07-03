@@ -32,16 +32,16 @@ const PAGE_SIZE = 250;
 const MAX_TOTAL = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value.trim() : null;
 }
 
 function normalizeRegistry(registry: string): string {
-  return registry.trim().replace(/\/$/, '') || 'https://registry.npmjs.org';
+  return registry.trim().replace(/\/$/, "") || "https://registry.npmjs.org";
 }
 
 function registryUrl(registry: string, pathname: string): string {
@@ -50,7 +50,7 @@ function registryUrl(registry: string, pathname: string): string {
 
 async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
   try {
-    const res = await fetch(url, { headers: { accept: 'application/json' }, signal });
+    const res = await fetch(url, { headers: { accept: "application/json" }, signal });
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -81,7 +81,7 @@ function readScope(name: string): string | null {
  */
 export async function listMaintainerPackages(
   username: string,
-  registry = 'https://registry.npmjs.org/',
+  registry = "https://registry.npmjs.org/",
   signal?: AbortSignal,
 ): Promise<NpmPackage[]> {
   const normalizedUsername = username.trim();
@@ -99,7 +99,7 @@ export async function listMaintainerPackages(
     );
     const data = await fetchJson(url, signal);
     if (!isRecord(data) || !Array.isArray(data.objects)) break;
-    if (typeof data.total === 'number' && Number.isFinite(data.total)) {
+    if (typeof data.total === "number" && Number.isFinite(data.total)) {
       total = Math.min(Math.trunc(data.total), MAX_TOTAL);
     }
     let addedThisPage = 0;
@@ -109,10 +109,12 @@ export async function listMaintainerPackages(
       // Defend against the search query returning publisher-only matches:
       // only keep packages whose current maintainers include the username.
       const maintainers = pkg.maintainers;
-      const isMaintainer = Array.isArray(maintainers) && maintainers.some((m) => {
-        if (!isRecord(m)) return false;
-        return readString(m.username)?.toLowerCase() === lowerUsername;
-      });
+      const isMaintainer =
+        Array.isArray(maintainers) &&
+        maintainers.some((m) => {
+          if (!isRecord(m)) return false;
+          return readString(m.username)?.toLowerCase() === lowerUsername;
+        });
       if (!isMaintainer) continue;
       const name = readString(pkg.name);
       if (!name) continue;
@@ -120,7 +122,7 @@ export async function listMaintainerPackages(
       const final = scoreSrc.final;
       out.push({
         name,
-        version: readString(pkg.version) ?? '0.0.0',
+        version: readString(pkg.version) ?? "0.0.0",
         description: readString(pkg.description),
         repository: readRepository(pkg),
         date: readString(pkg.date) ?? readString(entry.updated),
@@ -128,7 +130,7 @@ export async function listMaintainerPackages(
         keywords: Array.isArray(pkg.keywords)
           ? pkg.keywords.map((k) => readString(k)).filter((k): k is string => !!k)
           : [],
-        score: typeof final === 'number' && Number.isFinite(final) ? final : 0,
+        score: typeof final === "number" && Number.isFinite(final) ? final : 0,
       });
       addedThisPage++;
     }

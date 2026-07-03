@@ -12,19 +12,19 @@
  * This is for local UX testing only. Add a profile in the UI before attempting
  * to publish against a real registry or a local Verdaccio instance.
  */
-import os from 'node:os';
-import path from 'node:path';
+import os from "node:os";
+import path from "node:path";
 
-import { bootDaemon } from './index.js';
-import { setHomeOverride } from '../shared/paths.js';
-import { resolveDevTrayMode } from './dev-mode.js';
+import { bootDaemon } from "./index.js";
+import { setHomeOverride } from "../shared/paths.js";
+import { resolveDevTrayMode } from "./dev-mode.js";
 
 async function main(): Promise<void> {
   installDevProcessDiagnostics();
   // Isolate dev state in its own home so we never touch real ~/.pnpm-pub.
   // Use a stable, short path so the macOS 104-char socket limit is respected
   // and so a separately-spawned CLI can agree on it via PNPM_PUB_HOME.
-  const devHome = process.env.PNPM_PUB_HOME ?? path.join(os.tmpdir(), 'pnpm-pub-dev');
+  const devHome = process.env.PNPM_PUB_HOME ?? path.join(os.tmpdir(), "pnpm-pub-dev");
   setHomeOverride(devHome);
   // Propagate to child processes (the CLI we launch to test interception).
   process.env.PNPM_PUB_HOME = devHome;
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   }
 
   const handles = await bootDaemon({
-    cliVersion: '0.1.0-dev',
+    cliVersion: "0.1.0-dev",
     port: readOptionalPort(process.env.PNPM_PUB_DEV_DAEMON_PORT),
     webviewUrl: process.env.PNPM_PUB_DEV_WEBVIEW_URL,
     withTray: trayMode.withTray,
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
 
   if (!handles) {
     // eslint-disable-next-line no-console
-    console.error('[dev] Another daemon already holds the socket. Run `pnpm-pub stop` first.');
+    console.error("[dev] Another daemon already holds the socket. Run `pnpm-pub stop` first.");
     process.exit(0);
   }
   const stopSupervisorWatch = watchDevSupervisor(handles);
@@ -65,19 +65,19 @@ async function main(): Promise<void> {
 └─────────────────────────────────────────────────────────────────┘
 `);
 
-  process.once('exit', stopSupervisorWatch);
+  process.once("exit", stopSupervisorWatch);
 }
 
 function installDevProcessDiagnostics(): void {
-  process.once('exit', (code) => {
+  process.once("exit", (code) => {
     console.error(`[dev] daemon process exit: code=${String(code)}`);
   });
-  process.once('uncaughtException', (error) => {
-    console.error('[dev] daemon uncaughtException:', error);
+  process.once("uncaughtException", (error) => {
+    console.error("[dev] daemon uncaughtException:", error);
     process.exit(1);
   });
-  process.once('unhandledRejection', (reason) => {
-    console.error('[dev] daemon unhandledRejection:', reason);
+  process.once("unhandledRejection", (reason) => {
+    console.error("[dev] daemon unhandledRejection:", reason);
   });
 }
 
@@ -91,19 +91,23 @@ function readOptionalPort(value: string | undefined): number | undefined {
 }
 
 function devWebUiUrl(handles: NonNullable<Awaited<ReturnType<typeof bootDaemon>>>): string {
-  return process.env.PNPM_PUB_DEV_WEBVIEW_URL?.replace(
-    '__PNPM_PUB_WEB_TOKEN__',
-    encodeURIComponent(handles.webToken),
-  ) ?? handles.web.webUiUrl(handles.port);
+  return (
+    process.env.PNPM_PUB_DEV_WEBVIEW_URL?.replace(
+      "__PNPM_PUB_WEB_TOKEN__",
+      encodeURIComponent(handles.webToken),
+    ) ?? handles.web.webUiUrl(handles.port)
+  );
 }
 
 main().catch((err) => {
   // eslint-disable-next-line no-console
-  console.error('[dev] fatal:', err);
+  console.error("[dev] fatal:", err);
   process.exit(1);
 });
 
-function watchDevSupervisor(handles: NonNullable<Awaited<ReturnType<typeof bootDaemon>>>): () => void {
+function watchDevSupervisor(
+  handles: NonNullable<Awaited<ReturnType<typeof bootDaemon>>>,
+): () => void {
   const rawPid = process.env.PNPM_PUB_DEV_SUPERVISOR_PID;
   if (!rawPid) return () => {};
   const pid = Number.parseInt(rawPid, 10);
@@ -128,6 +132,8 @@ function isProcessAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error instanceof Error && 'code' in error && (error as { code?: string }).code === 'EPERM';
+    return (
+      error instanceof Error && "code" in error && (error as { code?: string }).code === "EPERM"
+    );
   }
 }

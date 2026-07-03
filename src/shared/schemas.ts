@@ -13,7 +13,7 @@
  *   - WS / REST protocol: `.passthrough()` — forward-compatible so a newer
  *     daemon adding a field doesn't break an older webui.
  */
-import { z } from 'zod';
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Config: profiles.json
@@ -24,7 +24,7 @@ export const ProfileSchema = z.object({
   registry: z.string().optional(),
   avatarUrl: z.string().optional(),
   ciPreferences: z.record(z.string(), z.unknown()).optional(),
-  authStatus: z.enum(['authenticated', 'unauthenticated']).optional(),
+  authStatus: z.enum(["authenticated", "unauthenticated"]).optional(),
   /**
    * Whether the daemon should automatically re-mint the NPM token (using the
    * stored password) before it expires. Off requires the user to renew manually.
@@ -56,6 +56,23 @@ export const WorkspacesConfigSchema = z.object({
 export type WorkspacesConfig = z.infer<typeof WorkspacesConfigSchema>;
 
 // ---------------------------------------------------------------------------
+// Config: preferences.json — app-wide UI preferences (Chapter 6.4).
+//
+// Unlike profiles/workspaces this schema is NOT `.strict()`: it uses default
+// strip parsing so a future field added by a newer daemon doesn't reject an
+// older reader, and a missing file yields the defaults below. The only field
+// today is `keepOnTop` — whether the tray window stays pinned on top and is
+// exempt from blur auto-hide.
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_PREFERENCES = { keepOnTop: false } as const;
+
+export const PreferencesSchema = z.object({
+  keepOnTop: z.boolean(),
+});
+export type Preferences = z.infer<typeof PreferencesSchema>;
+
+// ---------------------------------------------------------------------------
 // Backup bundle (Chapter 8.2)
 // ---------------------------------------------------------------------------
 
@@ -71,7 +88,7 @@ export type BackupBundle = z.infer<typeof BackupBundleSchema>;
 // IPC protocol (CLI <-> Daemon)
 // ---------------------------------------------------------------------------
 
-export const ManagementCommandSchema = z.enum(['start', 'status', 'stop']);
+export const ManagementCommandSchema = z.enum(["start", "status", "stop"]);
 export type ManagementCommand = z.infer<typeof ManagementCommandSchema>;
 
 export const IpcHandshakeSchema = z.object({
@@ -80,7 +97,7 @@ export const IpcHandshakeSchema = z.object({
 export type IpcHandshake = z.infer<typeof IpcHandshakeSchema>;
 
 export const IpcPublishRequestSchema = z.object({
-  command: z.literal('publish'),
+  command: z.literal("publish"),
   cwd: z.string(),
   args: z.array(z.string()),
   profileOverride: z.string().optional(),
@@ -94,20 +111,20 @@ export const IpcManagementRequestSchema = z.object({
 export type IpcManagementRequest = z.infer<typeof IpcManagementRequestSchema>;
 
 export const IpcLogFrameSchema = z.object({
-  type: z.enum(['stdout', 'stderr']),
+  type: z.enum(["stdout", "stderr"]),
   data: z.string(),
 });
 export type IpcLogFrame = z.infer<typeof IpcLogFrameSchema>;
 
 export const IpcExitFrameSchema = z.object({
-  type: z.literal('exit'),
+  type: z.literal("exit"),
   code: z.number(),
   message: z.string().optional(),
 });
 export type IpcExitFrame = z.infer<typeof IpcExitFrameSchema>;
 
 export const IpcStatusFrameSchema = z.object({
-  type: z.literal('status'),
+  type: z.literal("status"),
   active: z.boolean(),
   profile: z.string().optional(),
   pid: z.number().optional(),
@@ -125,22 +142,22 @@ export type IpcRequest = IpcHandshake | IpcPublishRequest | IpcManagementRequest
 // ---------------------------------------------------------------------------
 
 export const EventKindSchema = z.enum([
-  'publish',
-  'setup-oidc',
-  'create-placeholder',
-  'refresh-token',
-  'unpublish',
-  'recursive-publish',
+  "publish",
+  "setup-oidc",
+  "create-placeholder",
+  "refresh-token",
+  "unpublish",
+  "recursive-publish",
 ]);
 export type EventKind = z.infer<typeof EventKindSchema>;
 
 export const EventStatusSchema = z.enum([
-  'pending',
-  'success',
-  'failed',
-  'expired',
-  'action-required',
-  'rejected',
+  "pending",
+  "success",
+  "failed",
+  "expired",
+  "action-required",
+  "rejected",
 ]);
 export type EventStatus = z.infer<typeof EventStatusSchema>;
 
@@ -163,9 +180,9 @@ export const PublishTargetSchema = z.object({
 });
 export type PublishTarget = z.infer<typeof PublishTargetSchema>;
 
-export const PublishSourceSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('directory'), path: z.string() }),
-  z.object({ kind: z.literal('tarball'), path: z.string() }),
+export const PublishSourceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("directory"), path: z.string() }),
+  z.object({ kind: z.literal("tarball"), path: z.string() }),
 ]);
 export type PublishSource = z.infer<typeof PublishSourceSchema>;
 
@@ -225,17 +242,17 @@ export const RecursivePublishContextSchema = z.object({
 });
 export type RecursivePublishContext = z.infer<typeof RecursivePublishContextSchema>;
 
-export const EventPayloadSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('publish'), data: PublishContextSchema }),
-  z.object({ kind: z.literal('setup-oidc'), data: OidcContextSchema }),
-  z.object({ kind: z.literal('create-placeholder'), data: CreatePlaceholderContextSchema }),
-  z.object({ kind: z.literal('refresh-token'), data: RefreshTokenContextSchema }),
-  z.object({ kind: z.literal('unpublish'), data: UnpublishContextSchema }),
-  z.object({ kind: z.literal('recursive-publish'), data: RecursivePublishContextSchema }),
+export const EventPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("publish"), data: PublishContextSchema }),
+  z.object({ kind: z.literal("setup-oidc"), data: OidcContextSchema }),
+  z.object({ kind: z.literal("create-placeholder"), data: CreatePlaceholderContextSchema }),
+  z.object({ kind: z.literal("refresh-token"), data: RefreshTokenContextSchema }),
+  z.object({ kind: z.literal("unpublish"), data: UnpublishContextSchema }),
+  z.object({ kind: z.literal("recursive-publish"), data: RecursivePublishContextSchema }),
 ]);
 export type EventPayload = z.infer<typeof EventPayloadSchema>;
 
-export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
+export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>["data"];
 
 // ---------------------------------------------------------------------------
 // Tarball file-tree summary — cached on publish events so the WebUI can
@@ -283,18 +300,17 @@ export type PubEvent = z.infer<typeof PubEventSchema>;
 // Trusted Publishing (OIDC) — npm /trust API
 // ---------------------------------------------------------------------------
 
-export const TrustedPublisherTypeSchema = z.enum(['github', 'circleci', 'gitlab']);
+export const TrustedPublisherTypeSchema = z.enum(["github", "circleci", "gitlab"]);
 export type TrustedPublisherType = z.infer<typeof TrustedPublisherTypeSchema>;
 
-export const TrustedPublisherPermissionSchema = z.enum([
-  'createPackage',
-  'createStagedPackage',
-]);
+export const TrustedPublisherPermissionSchema = z.enum(["createPackage", "createStagedPackage"]);
 export type TrustedPublisherPermission = z.infer<typeof TrustedPublisherPermissionSchema>;
 
 const TrustedPublisherBaseSchema = z.object({
   id: z.string().optional(),
-  permissions: z.array(TrustedPublisherPermissionSchema).default(['createPackage', 'createStagedPackage']),
+  permissions: z
+    .array(TrustedPublisherPermissionSchema)
+    .default(["createPackage", "createStagedPackage"]),
 });
 
 // Field names mirror the npm registry wire format (what safe-npm-sdk sends
@@ -302,7 +318,7 @@ const TrustedPublisherBaseSchema = z.object({
 // form layer (oidc-dialog.svelte) splits these into separate inputs and
 // reassembles them in buildConfig().
 export const GithubActionsPublisherSchema = TrustedPublisherBaseSchema.extend({
-  type: z.literal('github'),
+  type: z.literal("github"),
   claims: z.object({
     repository: z.string(),
     workflow_ref: z.object({ file: z.string() }),
@@ -312,19 +328,19 @@ export const GithubActionsPublisherSchema = TrustedPublisherBaseSchema.extend({
 export type GithubActionsPublisher = z.infer<typeof GithubActionsPublisherSchema>;
 
 export const CircleCiPublisherSchema = TrustedPublisherBaseSchema.extend({
-  type: z.literal('circleci'),
+  type: z.literal("circleci"),
   claims: z.object({
-    'oidc.circleci.com/org-id': z.string(),
-    'oidc.circleci.com/project-id': z.string(),
-    'oidc.circleci.com/pipeline-definition-id': z.string(),
-    'oidc.circleci.com/context-ids': z.array(z.string()).optional(),
-    'oidc.circleci.com/vcs-origin': z.string(),
+    "oidc.circleci.com/org-id": z.string(),
+    "oidc.circleci.com/project-id": z.string(),
+    "oidc.circleci.com/pipeline-definition-id": z.string(),
+    "oidc.circleci.com/context-ids": z.array(z.string()).optional(),
+    "oidc.circleci.com/vcs-origin": z.string(),
   }),
 });
 export type CircleCiPublisher = z.infer<typeof CircleCiPublisherSchema>;
 
 export const GitlabCiPublisherSchema = TrustedPublisherBaseSchema.extend({
-  type: z.literal('gitlab'),
+  type: z.literal("gitlab"),
   claims: z.object({
     project_path: z.string(),
     ci_config_ref_uri: z.string().optional(),
@@ -333,7 +349,7 @@ export const GitlabCiPublisherSchema = TrustedPublisherBaseSchema.extend({
 });
 export type GitlabCiPublisher = z.infer<typeof GitlabCiPublisherSchema>;
 
-export const TrustedPublisherConfigSchema = z.discriminatedUnion('type', [
+export const TrustedPublisherConfigSchema = z.discriminatedUnion("type", [
   GithubActionsPublisherSchema,
   CircleCiPublisherSchema,
   GitlabCiPublisherSchema,
@@ -383,14 +399,25 @@ export type PackageDetailResponse = z.infer<typeof PackageDetailResponseSchema>;
 // WS protocol
 // ---------------------------------------------------------------------------
 
-export const WsServerMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('hello'), webTokenRequired: z.literal(true) }),
-  z.object({ type: z.literal('events'), events: z.array(PubEventSchema) }),
-  z.object({ type: z.literal('event'), event: PubEventSchema }),
-  z.object({ type: z.literal('profiles'), default: z.string(), profiles: z.array(ProfileSchema) }),
-  z.object({ type: z.literal('workspaces'), workspaces: z.array(WorkspaceEntrySchema) }),
+export const WsServerMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("hello"), webTokenRequired: z.literal(true) }),
+  z.object({ type: z.literal("events"), events: z.array(PubEventSchema) }),
+  z.object({ type: z.literal("event"), event: PubEventSchema }),
+  z.object({ type: z.literal("profiles"), default: z.string(), profiles: z.array(ProfileSchema) }),
+  z.object({ type: z.literal("workspaces"), workspaces: z.array(WorkspaceEntrySchema) }),
+  /**
+   * Pin (keepOnTop) state projection. Sent on connect (initial state) and
+   * whenever the daemon's TrayHost changes it (blur auto-hide countdown ticks,
+   * user toggles the pin, focus cancels a countdown). `countdown` is the live
+   * 3→2→1→0 number while a blur auto-hide is pending, or null when idle.
+   */
   z.object({
-    type: z.literal('packages'),
+    type: z.literal("pin"),
+    pinned: z.boolean(),
+    countdown: z.number().int().nonnegative().nullable(),
+  }),
+  z.object({
+    type: z.literal("packages"),
     root: z.string(),
     packages: z.array(PublishTargetSchema),
     riskyConfirmationToken: z.string().optional(),
@@ -399,24 +426,38 @@ export const WsServerMessageSchema = z.discriminatedUnion('type', [
     isPnpmWorkspace: z.boolean().optional(),
   }),
   z.object({
-    type: z.literal('toast'),
-    level: z.enum(['info', 'success', 'error', 'warning']),
+    type: z.literal("toast"),
+    level: z.enum(["info", "success", "error", "warning"]),
     message: z.string(),
   }),
 ]);
 export type WsServerMessage = z.infer<typeof WsServerMessageSchema>;
 
-export const WsClientMessageSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('auth'), webToken: z.string() }),
-  z.object({ type: z.literal('select-profile'), username: z.string() }),
-  z.object({ type: z.literal('confirm-event'), id: z.string() }),
-  z.object({ type: z.literal('reject-event'), id: z.string() }),
-  z.object({ type: z.literal('scan-workspace'), root: z.string() }),
-  z.object({ type: z.literal('create-event'), kind: EventKindSchema, payload: z.unknown(), groupId: z.string().optional() }),
+export const WsClientMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("auth"), webToken: z.string() }),
+  z.object({ type: z.literal("select-profile"), username: z.string() }),
+  z.object({ type: z.literal("confirm-event"), id: z.string() }),
+  z.object({ type: z.literal("reject-event"), id: z.string() }),
+  z.object({ type: z.literal("scan-workspace"), root: z.string() }),
+  z.object({
+    type: z.literal("create-event"),
+    kind: EventKindSchema,
+    payload: z.unknown(),
+    groupId: z.string().optional(),
+  }),
   /** Edit a pending publish event's CLI args before confirmation. Only honored
    *  for publish events still in `pending`; the scheduler re-reads args live at
    *  confirm time, so an in-place mutation takes effect immediately. */
-  z.object({ type: z.literal('update-event'), id: z.string(), args: z.array(z.string()) }),
+  z.object({ type: z.literal("update-event"), id: z.string(), args: z.array(z.string()) }),
+  /** Toggle the tray window's keepOnTop pin (persisted + applied immediately). */
+  z.object({ type: z.literal("set-pin"), pinned: z.boolean() }),
+  /**
+   * Notify the daemon that the tray window was hidden out-of-band (OS close X
+   * or host hide() — neither emits a dedicated lifecycle event). Lets the
+   * TrayHost keep its in-memory visibility in sync so the next tray click
+   * re-shows in a single click instead of two. Idempotent.
+   */
+  z.object({ type: z.literal("window-hidden") }),
 ]);
 export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 

@@ -216,7 +216,13 @@
 	);
 	const npmUrl = $derived.by(() => {
 		if (!packageName) return '';
-		if (packageVersion) return `https://www.npmjs.com/package/${packageName}/v/${packageVersion}`;
+		// Only link to the specific published version once the publish actually
+		// succeeded; while pending (or failed/expired/rejected) that version
+		// isn't on the registry yet, and placeholder/unpublish events never have
+		// a real published version — so link to the package landing page instead.
+		if (packageVersion && isPublish && event.status === 'success') {
+			return `https://www.npmjs.com/package/${packageName}/v/${packageVersion}`;
+		}
 		return `https://www.npmjs.com/package/${packageName}`;
 	});
 	// Whether the right-corner group has any action to show at all.

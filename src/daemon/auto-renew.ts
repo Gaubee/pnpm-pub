@@ -23,11 +23,11 @@
  * stored password (`npm_pwd` in the keychain) — without it the profile is left
  * for the user to renew manually (authStatus → unauthenticated).
  */
-import type { DaemonStore } from './store.js';
-import { applyToken, verifyCredentials } from './npm-api.js';
-import { getProfileSecrets, setProfileSecrets, type ProfileSecrets } from './keychain.js';
-import { lookupNpmProfileIdentity } from './avatar.js';
-import { kvGet, kvSet } from './event-db.js';
+import type { DaemonStore } from "./store.js";
+import { applyToken, verifyCredentials } from "./npm-api.js";
+import { getProfileSecrets, setProfileSecrets, type ProfileSecrets } from "./keychain.js";
+import { lookupNpmProfileIdentity } from "./avatar.js";
+import { kvGet, kvSet } from "./event-db.js";
 
 /** Tick cadence: evaluate every profile every 30s. */
 export const TICK_INTERVAL_MS = 30_000;
@@ -37,7 +37,7 @@ export const TOKEN_LIFETIME_MS = 2 * 60 * 60 * 1000;
 export const RENEW_LEAD_TIME_MS = 30_000;
 /** kv TTL for the persisted createdAt — well past the 2h token life. */
 const KV_TTL_MS = 3 * 60 * 60 * 1000;
-const KV_PREFIX = 'autorenew:tokenCreatedAt:';
+const KV_PREFIX = "autorenew:tokenCreatedAt:";
 
 function kvKey(username: string): string {
   return `${KV_PREFIX}${username}`;
@@ -48,7 +48,11 @@ function kvKey(username: string): string {
  * when the 2h window closes. Called by both the manual renew path
  * (WebServer.renewProfile) and this scheduler after a successful re-mint.
  */
-export function recordTokenCreatedAt(store: DaemonStore, username: string, createdAt = Date.now()): void {
+export function recordTokenCreatedAt(
+  store: DaemonStore,
+  username: string,
+  createdAt = Date.now(),
+): void {
   const db = store.getEventDb();
   if (!db) return;
   kvSet(db, kvKey(username), { createdAt }, KV_TTL_MS);
@@ -59,7 +63,7 @@ export function readTokenCreatedAt(store: DaemonStore, username: string): number
   const db = store.getEventDb();
   if (!db) return null;
   const v = kvGet(db, kvKey(username)) as { createdAt?: unknown } | undefined;
-  return typeof v?.createdAt === 'number' ? v.createdAt : null;
+  return typeof v?.createdAt === "number" ? v.createdAt : null;
 }
 
 /**
@@ -81,42 +85,59 @@ export async function renewTokenForProfile(
 
   const creds = store.getCredentials(username);
   // TOTP + password come from the credential pool, else the merged keychain item.
-  const fallbackSecrets = creds?.totpSecret && creds?.npmPwd ? null : await getProfileSecrets(username);
+  const fallbackSecrets =
+    creds?.totpSecret && creds?.npmPwd ? null : await getProfileSecrets(username);
   const totpSecret = creds?.totpSecret ?? fallbackSecrets?.totp_secret;
   const password = creds?.npmPwd ?? fallbackSecrets?.npm_pwd;
-  const registry = profile.registry ?? 'https://registry.npmjs.org/';
+  const registry = profile.registry ?? "https://registry.npmjs.org/";
 
   if (!totpSecret) return { ok: false, error: `No TOTP secret for ${username}.` };
   if (!password) {
-    await store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+    await store.upsertProfile({ ...profile, authStatus: "unauthenticated" });
     return { ok: false, error: `No stored password for ${username}; re-authenticate.` };
   }
 
   const res = await applyToken({ registry, username, password, totpSecret });
   if (!res.ok) {
     if (!res.needsManualToken) {
-      await store.upsertProfile({ ...profile, authStatus: 'unauthenticated' });
+      await store.upsertProfile({ ...profile, authStatus: "unauthenticated" });
     }
-    return { ok: false, needsManualToken: res.needsManualToken, error: res.error ?? 'Token apply failed.' };
+    return {
+      ok: false,
+      needsManualToken: res.needsManualToken,
+      error: res.error ?? "Token apply failed.",
+    };
   }
   if (!res.token) {
-    return { ok: false, error: 'Token minting returned no token.' };
+    return { ok: false, error: "Token minting returned no token." };
   }
   const token = res.token;
 
   // Validate before persisting.
   const verified = await verifyCredentials({ registry, token, totpSecret });
   if (!verified.ok || !verified.check?.authValid || verified.check.otpValid === false) {
-    return { ok: false, error: verified.check?.message ?? verified.error ?? 'verification failed' };
+    return { ok: false, error: verified.check?.message ?? verified.error ?? "verification failed" };
   }
 
   try {
-    const secrets: ProfileSecrets = { npm_token: token, totp_secret: totpSecret, npm_pwd: password };
+    const secrets: ProfileSecrets = {
+      npm_token: token,
+      totp_secret: totpSecret,
+      npm_pwd: password,
+    };
     await setProfileSecrets(username, secrets);
     const identity = await lookupNpmProfileIdentity(username, registry, { token });
-    await store.upsertProfile({ ...profile, registry, avatarUrl: identity.avatarUrl ?? profile.avatarUrl, authStatus: 'authenticated' });
+    await store.upsertProfile({
+      ...profile,
+      registry,
+      avatarUrl: identity.avatarUrl ?? profile.avatarUrl,
+      authStatus: "authenticated",
+    });
   } catch (error: unknown) {
-    return { ok: false, error: `Failed to persist renewed token: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      ok: false,
+      error: `Failed to persist renewed token: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 
   store.setCredentials(username, { token, totpSecret, npmPwd: password });
@@ -180,7 +201,7 @@ export class AutoRenewScheduler {
     const creds = store.getCredentials(username);
     const profile = store.getProfile(username);
     if (!creds || !profile) return;
-    const registry = profile.registry ?? 'https://registry.npmjs.org/';
+    const registry = profile.registry ?? "https://registry.npmjs.org/";
 
     // Strategy A (proactive): re-mint ~30s before the 2h window closes.
     const createdAt = readTokenCreatedAt(store, username);
@@ -195,13 +216,19 @@ export class AutoRenewScheduler {
 
     // Strategy B (reactive): probe liveness; renew immediately if already invalid.
     try {
-      const v = await verifyCredentials({ registry, token: creds.token, totpSecret: creds.totpSecret });
+      const v = await verifyCredentials({
+        registry,
+        token: creds.token,
+        totpSecret: creds.totpSecret,
+      });
       if (!v.ok || !v.check?.authValid) {
         const res = await renewTokenForProfile(store, username, log);
         if (!res.ok) log?.(`[auto-renew] reactive renew failed for ${username}: ${res.error}`);
       }
     } catch (error: unknown) {
-      log?.(`[auto-renew] liveness probe error for ${username}: ${error instanceof Error ? error.message : String(error)}`);
+      log?.(
+        `[auto-renew] liveness probe error for ${username}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 }

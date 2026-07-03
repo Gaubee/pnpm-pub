@@ -12,28 +12,27 @@
  * explicit management subcommands; EVERYTHING else is forwarded verbatim to
  * the daemon as a publish intent.
  */
-import net from 'node:net';
-import { execFile, spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import yargs from 'yargs';
-import { hideBin } from 'yargs/helpers';
-import { encodeFrame, FrameReader, isIpcFrame } from '../shared/frame.js';
-import type { IpcPublishRequest, IpcHandshake, IpcManagementRequest } from '../shared/index.js';
-import { readPackageVersion } from '../shared/package-version.js';
-import { daemonLogPath, ensureAppDirs, socketPath } from '../shared/paths.js';
+import net from "node:net";
+import { execFile, spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import { encodeFrame, FrameReader, isIpcFrame } from "../shared/frame.js";
+import type { IpcPublishRequest, IpcHandshake, IpcManagementRequest } from "../shared/index.js";
+import { readPackageVersion } from "../shared/package-version.js";
+import { daemonLogPath, ensureAppDirs, socketPath } from "../shared/paths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The daemon entry the CLI spawns. In the bundled output this is dist/daemon.js
 // (sibling of dist/cli.js). For dev (bun/tsx from source) override via env so
 // the CLI can launch src/daemon/main.ts directly without a build step.
-const DAEMON_ENTRY =
-  process.env.PNPM_PUB_DAEMON_ENTRY ?? path.join(__dirname, 'daemon.js');
+const DAEMON_ENTRY = process.env.PNPM_PUB_DAEMON_ENTRY ?? path.join(__dirname, "daemon.js");
 const CLI_VERSION = readPackageVersion();
 const execFileAsync = promisify(execFile);
-const PROFILE_ERROR = '--profile requires a value (e.g. --profile alice).';
+const PROFILE_ERROR = "--profile requires a value (e.g. --profile alice).";
 
 // ---------------------------------------------------------------------------
 // Daemon connection helpers (Chapter 7.2.1 — auto-booting ghost process).
@@ -56,8 +55,8 @@ async function connectWithRetry(maxWaitMs: number): Promise<net.Socket | null> {
 function connectOnce(): Promise<net.Socket | null> {
   return new Promise((resolve) => {
     const sock = net.createConnection(socketPath());
-    sock.once('connect', () => resolve(sock));
-    sock.once('error', () => resolve(null));
+    sock.once("connect", () => resolve(sock));
+    sock.once("error", () => resolve(null));
   });
 }
 
@@ -65,10 +64,10 @@ function spawnDaemon(): void {
   // Detached ghost process — outlives the parent terminal (Chapter 5.1.2).
   // Redirect stdout/stderr into the daemon log so IPC errors / uncaught
   // rejections are recoverable instead of going to /dev/null.
-  const stdio: Array<'ignore' | number> = ['ignore', 'ignore', 'ignore'];
+  const stdio: Array<"ignore" | number> = ["ignore", "ignore", "ignore"];
   try {
     ensureAppDirs();
-    const fd = fs.openSync(daemonLogPath(), 'a');
+    const fd = fs.openSync(daemonLogPath(), "a");
     stdio[1] = fd;
     stdio[2] = fd;
   } catch {
@@ -76,7 +75,7 @@ function spawnDaemon(): void {
   }
   const child = spawn(process.execPath, [DAEMON_ENTRY], {
     detached: true,
-    stdio: stdio as ['ignore' | number, 'ignore' | number, 'ignore' | number],
+    stdio: stdio as ["ignore" | number, "ignore" | number, "ignore" | number],
     env: { ...process.env },
   });
   child.unref();
@@ -114,47 +113,47 @@ async function runPublish(cwd: string, args: string[], profileOverride?: string)
       continue;
     }
     if (!sock) {
-      process.stderr.write('Failed to start the pnpm-pub daemon.\n');
+      process.stderr.write("Failed to start the pnpm-pub daemon.\n");
       return 1;
     }
 
-    const req: IpcPublishRequest = { command: 'publish', cwd, args, profileOverride };
+    const req: IpcPublishRequest = { command: "publish", cwd, args, profileOverride };
     sock.write(encodeFrame(req));
 
-    process.stdout.write('> Waiting for GUI confirmation. Please check your system tray...\n');
+    process.stdout.write("> Waiting for GUI confirmation. Please check your system tray...\n");
     return relay(sock);
   }
-  process.stderr.write('Could not bring the daemon up to date after retry.\n');
+  process.stderr.write("Could not bring the daemon up to date after retry.\n");
   return 1;
 }
 
 function isPublishTerminalIntent(args: string[]): boolean {
   for (const arg of args) {
-    if (arg === '--') return false;
-    if (arg === '--help' || arg === '-h' || arg === '--version') return true;
+    if (arg === "--") return false;
+    if (arg === "--help" || arg === "-h" || arg === "--version") return true;
   }
   return false;
 }
 
 function readExecText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Buffer.isBuffer(value)) return value.toString('utf8');
-  return '';
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  return "";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readExecExitCode(error: unknown): number {
   if (!isRecord(error)) return 1;
   const code = error.code;
-  return typeof code === 'number' ? code : 1;
+  return typeof code === "number" ? code : 1;
 }
 
 async function runNativePublishTerminalIntent(args: string[]): Promise<number> {
   try {
-    const result = await execFileAsync('pnpm', ['publish', ...args], {
+    const result = await execFileAsync("pnpm", ["publish", ...args], {
       cwd: process.cwd(),
       maxBuffer: 1024 * 1024,
     });
@@ -197,14 +196,14 @@ function handshakeAndWait(graceMs = 300): Promise<{ sock: net.Socket | null; out
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      sock.removeListener('data', onData);
-      sock.removeListener('close', onClose);
+      sock.removeListener("data", onData);
+      sock.removeListener("close", onClose);
       resolve({ sock: outdated ? null : sock, outdated });
     };
     const onData = (chunk: Buffer): void => {
       // Peek for the outdated signal without consuming the stream — relay()
       // owns frame parsing. We only look for the sentinel string.
-      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       if (text.includes('"daemon-outdated"')) {
         finish(true);
       }
@@ -212,8 +211,8 @@ function handshakeAndWait(graceMs = 300): Promise<{ sock: net.Socket | null; out
     const onClose = (): void => finish(false);
     const timer = setTimeout(() => finish(false), graceMs);
 
-    sock.on('data', onData);
-    sock.on('close', onClose);
+    sock.on("data", onData);
+    sock.on("close", onClose);
 
     sock.write(encodeFrame({ cliVersion: CLI_VERSION } satisfies IpcHandshake));
   });
@@ -223,17 +222,17 @@ function handshakeAndWait(graceMs = 300): Promise<{ sock: net.Socket | null; out
 function relay(sock: net.Socket): Promise<number> {
   return new Promise((resolve) => {
     const reader = new FrameReader();
-    sock.on('data', (chunk) => {
+    sock.on("data", (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcFrame(frame)) {
-          process.stderr.write('Invalid daemon IPC frame.\n');
+          process.stderr.write("Invalid daemon IPC frame.\n");
           resolve(1);
           continue;
         }
-        if (frame.type === 'stdout') process.stdout.write(frame.data);
-        else if (frame.type === 'stderr') process.stderr.write(frame.data);
-        else if (frame.type === 'exit') {
+        if (frame.type === "stdout") process.stdout.write(frame.data);
+        else if (frame.type === "stderr") process.stderr.write(frame.data);
+        else if (frame.type === "exit") {
           try {
             sock.end();
           } catch {
@@ -243,37 +242,37 @@ function relay(sock: net.Socket): Promise<number> {
         }
       }
     });
-    sock.on('close', () => resolve(1));
-    sock.on('error', () => resolve(1));
+    sock.on("close", () => resolve(1));
+    sock.on("error", () => resolve(1));
   });
 }
 
 async function runStatus(): Promise<number> {
   const sock = await connectWithRetry(500);
   if (!sock) {
-    process.stdout.write('Daemon is not running.\n');
+    process.stdout.write("Daemon is not running.\n");
     return 0;
   }
-  sock.write(encodeFrame({ command: 'status' }));
+  sock.write(encodeFrame({ command: "status" }));
   await new Promise<void>((resolve) => {
     const reader = new FrameReader();
-    sock.on('data', (chunk) => {
+    sock.on("data", (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcFrame(frame)) continue;
-        if (frame.type === 'status') {
+        if (frame.type === "status") {
           if (frame.active) {
             process.stdout.write(
-              `Daemon running (pid=${frame.pid ?? '?'}). Active profile: ${frame.profile ?? '(none)'}\n`,
+              `Daemon running (pid=${frame.pid ?? "?"}). Active profile: ${frame.profile ?? "(none)"}\n`,
             );
           } else {
-            process.stdout.write('Daemon is stopping.\n');
+            process.stdout.write("Daemon is stopping.\n");
           }
           resolve();
         }
       }
     });
-    sock.on('close', () => resolve());
+    sock.on("close", () => resolve());
   });
   return 0;
 }
@@ -281,29 +280,29 @@ async function runStatus(): Promise<number> {
 async function runStop(): Promise<number> {
   const sock = await connectWithRetry(500);
   if (!sock) {
-    process.stdout.write('Daemon is not running.\n');
+    process.stdout.write("Daemon is not running.\n");
     return 0;
   }
-  sock.write(encodeFrame({ command: 'stop' }));
+  sock.write(encodeFrame({ command: "stop" }));
   try {
     sock.end();
   } catch {
     /* ignore */
   }
-  process.stdout.write('Stop signal sent.\n');
+  process.stdout.write("Stop signal sent.\n");
   return 0;
 }
 
 async function runStart(profileOverride?: string): Promise<number> {
   const sock = await ensureDaemon();
   if (!sock) {
-    process.stderr.write('Failed to start the pnpm-pub daemon.\n');
+    process.stderr.write("Failed to start the pnpm-pub daemon.\n");
     return 1;
   }
   // Chapter 7.1.1: `start [--profile=*]` selects the default identity the
   // daemon should load. We send a management request so the daemon applies it.
   if (profileOverride && profileOverride.length > 0) {
-    sock.write(encodeFrame({ command: 'start', profileOverride } satisfies IpcManagementRequest));
+    sock.write(encodeFrame({ command: "start", profileOverride } satisfies IpcManagementRequest));
     return relayStart(sock);
   }
   try {
@@ -311,7 +310,7 @@ async function runStart(profileOverride?: string): Promise<number> {
   } catch {
     /* ignore */
   }
-  process.stdout.write('Daemon started. Open the tray to interact.\n');
+  process.stdout.write("Daemon started. Open the tray to interact.\n");
   return 0;
 }
 
@@ -329,27 +328,27 @@ function relayStart(sock: net.Socket): Promise<number> {
       }
       resolve(code);
     };
-    sock.on('data', (chunk) => {
+    sock.on("data", (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcFrame(frame)) continue;
-        if (frame.type === 'stdout') {
+        if (frame.type === "stdout") {
           process.stdout.write(frame.data);
-        } else if (frame.type === 'stderr') {
+        } else if (frame.type === "stderr") {
           process.stderr.write(frame.data);
-        } else if (frame.type === 'status') {
-          process.stdout.write('Daemon started. Open the tray to interact.\n');
+        } else if (frame.type === "status") {
+          process.stdout.write("Daemon started. Open the tray to interact.\n");
           finish(0);
           return;
-        } else if (frame.type === 'exit') {
+        } else if (frame.type === "exit") {
           if (frame.message) process.stderr.write(`${frame.message}\n`);
           finish(frame.code);
           return;
         }
       }
     });
-    sock.on('close', () => finish(settled ? 0 : 1));
-    sock.on('error', () => finish(1));
+    sock.on("close", () => finish(settled ? 0 : 1));
+    sock.on("error", () => finish(1));
   });
 }
 
@@ -363,7 +362,7 @@ function extractProfile(args: string[]): { profile?: string; rest: string[]; err
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === '--') {
+    if (a === "--") {
       rest.push(...args.slice(i));
       break;
     }
@@ -374,11 +373,11 @@ function extractProfile(args: string[]): { profile?: string; rest: string[]; err
       profile = parsed.profile;
       continue;
     }
-    if (a === '--profile') {
+    if (a === "--profile") {
       // A bare trailing --profile with no value is a user error — surface it
       // rather than silently dropping the flag and publishing under default.
       const next = args[i + 1];
-      if (!next || next.startsWith('-')) {
+      if (!next || next.startsWith("-")) {
         return { rest, error: PROFILE_ERROR };
       }
       const parsed = readProfileValue(next);
@@ -409,16 +408,14 @@ export function formatCliFatalError(error: unknown): string {
 
 export async function main(argv: string[]): Promise<void> {
   const parsed = await yargs(hideBin(argv))
-    .scriptName('pnpm-pub')
-    .command(
-      'start',
-      'Boot the daemon and open the tray window',
-      (y) => y.option('profile', { type: 'string' }),
+    .scriptName("pnpm-pub")
+    .command("start", "Boot the daemon and open the tray window", (y) =>
+      y.option("profile", { type: "string" }),
     )
-    .command('status', 'Check the running daemon and active profile')
-    .command('stop', 'Gracefully stop the daemon')
-    .command('version', 'Print the pnpm-pub version')
-    .option('profile', { type: 'string', describe: 'Profile to use for the action' })
+    .command("status", "Check the running daemon and active profile")
+    .command("stop", "Gracefully stop the daemon")
+    .command("version", "Print the pnpm-pub version")
+    .option("profile", { type: "string", describe: "Profile to use for the action" })
     .help(false)
     .version(false)
     .fail((_, _err, yargsInstance) => {
@@ -436,16 +433,16 @@ export async function main(argv: string[]): Promise<void> {
 
   // Explicit subcommand?
   const positional = toPositionalStrings(parsed._);
-  if (positional[0] === 'start') {
+  if (positional[0] === "start") {
     process.exit(await runStart(parsedProfile.profile));
   }
-  if (positional[0] === 'status') {
+  if (positional[0] === "status") {
     process.exit(await runStatus());
   }
-  if (positional[0] === 'stop') {
+  if (positional[0] === "stop") {
     process.exit(await runStop());
   }
-  if (positional[0] === 'version') {
+  if (positional[0] === "version") {
     // pnpm-pub's own version. Note `pnpm-pub --version` is distinct: it is a
     // publish terminal intent (Chapter 7.1.2) and forwards to `pnpm publish
     // --version` (≡ `pnpm --version`), preserving muscle-memory parity.
@@ -462,7 +459,7 @@ export async function main(argv: string[]): Promise<void> {
     process.exit(1);
   }
   const { profile, rest } = extracted;
-  const publishArgs = rest[0] === 'publish' ? rest.slice(1) : rest;
+  const publishArgs = rest[0] === "publish" ? rest.slice(1) : rest;
   if (isPublishTerminalIntent(publishArgs)) {
     process.exit(await runNativePublishTerminalIntent(publishArgs));
   }
@@ -471,7 +468,8 @@ export async function main(argv: string[]): Promise<void> {
 
 // Run when invoked as the bin entrypoint.
 const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]!) === path.resolve(fileURLToPath(import.meta.url));
+  process.argv[1] &&
+  path.resolve(process.argv[1]!) === path.resolve(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   main(process.argv).catch((err) => {
     process.stderr.write(`${formatCliFatalError(err)}\n`);

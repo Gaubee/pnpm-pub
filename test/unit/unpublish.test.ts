@@ -9,109 +9,137 @@
  * ({ packageRemoved } → { wholePackageRemoved }). These tests verify that
  * delegation + mapping without re-testing the SDK internals.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 
 // Mock the SDK surface the wrapper touches.
-vi.mock('safe-npm-sdk', () => ({
+vi.mock("safe-npm-sdk", () => ({
   createClient: vi.fn(() => ({ __client: true })),
   publish: vi.fn(),
   buildPublishPackument: vi.fn(),
   unpublishPackage: vi.fn(),
 }));
 
-import { createClient, unpublishPackage as sdkUnpublish } from 'safe-npm-sdk';
-import { unpublishVersion } from '../../src/daemon/npm-api.js';
+import { createClient, unpublishPackage as sdkUnpublish } from "safe-npm-sdk";
+import { unpublishVersion } from "../../src/daemon/npm-api.js";
 
 const mockCreateClient = vi.mocked(createClient);
 const mockSdkUnpublish = vi.mocked(sdkUnpublish);
 
-const TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
+const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('unpublishVersion (SDK wrapper)', () => {
-  it('delegates name + version + otp to the SDK and maps a single-version success', async () => {
+describe("unpublishVersion (SDK wrapper)", () => {
+  it("delegates name + version + otp to the SDK and maps a single-version success", async () => {
     mockSdkUnpublish.mockResolvedValue({
       ok: true,
-      data: { removedVersion: '1.0.0', packageRemoved: false, newRev: '2-def' },
+      data: { removedVersion: "1.0.0", packageRemoved: false, newRev: "2-def" },
       response: { status: 200, headers: new Map(), body: undefined },
     });
 
     const result = await unpublishVersion({
-      registry: 'https://registry.npmjs.org',
-      token: 'tok', totpSecret: TOTP_SECRET,
-      name: 'pkg', version: '1.0.0',
+      registry: "https://registry.npmjs.org",
+      token: "tok",
+      totpSecret: TOTP_SECRET,
+      name: "pkg",
+      version: "1.0.0",
     });
 
     expect(result.ok).toBe(true);
     expect(result.status).toBe(200);
     expect(result.wholePackageRemoved).toBe(false);
     // SDK called with the right args + a derived OTP.
-    expect(mockSdkUnpublish).toHaveBeenCalledWith('pkg', '1.0.0', expect.objectContaining({ otp: expect.any(String) }), expect.anything());
+    expect(mockSdkUnpublish).toHaveBeenCalledWith(
+      "pkg",
+      "1.0.0",
+      expect.objectContaining({ otp: expect.any(String) }),
+      expect.anything(),
+    );
   });
 
-  it('maps whole-package removal (packageRemoved → wholePackageRemoved)', async () => {
+  it("maps whole-package removal (packageRemoved → wholePackageRemoved)", async () => {
     mockSdkUnpublish.mockResolvedValue({
       ok: true,
-      data: { removedVersion: '0.1.0', packageRemoved: true },
+      data: { removedVersion: "0.1.0", packageRemoved: true },
       response: { status: 200, headers: new Map(), body: undefined },
     });
 
     const result = await unpublishVersion({
-      registry: 'https://registry.npmjs.org', token: 'tok', totpSecret: TOTP_SECRET,
-      name: 'pkg', version: '0.1.0',
+      registry: "https://registry.npmjs.org",
+      token: "tok",
+      totpSecret: TOTP_SECRET,
+      name: "pkg",
+      version: "0.1.0",
     });
 
     expect(result.ok).toBe(true);
     expect(result.wholePackageRemoved).toBe(true);
   });
 
-  it('propagates an SDK failure (status + message)', async () => {
+  it("propagates an SDK failure (status + message)", async () => {
     mockSdkUnpublish.mockResolvedValue({
       ok: false,
-      error: { status: 404, message: 'Not found', headers: new Map(), body: undefined },
+      error: { status: 404, message: "Not found", headers: new Map(), body: undefined },
       response: { status: 404, headers: new Map(), body: undefined },
     });
 
     const result = await unpublishVersion({
-      registry: 'https://registry.npmjs.org', token: 'tok', totpSecret: TOTP_SECRET,
-      name: 'pkg', version: '1.0.0',
+      registry: "https://registry.npmjs.org",
+      token: "tok",
+      totpSecret: TOTP_SECRET,
+      name: "pkg",
+      version: "1.0.0",
     });
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe(404);
-    expect(result.error).toBe('Not found');
+    expect(result.error).toBe("Not found");
   });
 
-  it('passes an explicit one-shot OTP through instead of deriving from the secret', async () => {
+  it("passes an explicit one-shot OTP through instead of deriving from the secret", async () => {
     mockSdkUnpublish.mockResolvedValue({
       ok: true,
-      data: { removedVersion: '1.0.0', packageRemoved: false },
+      data: { removedVersion: "1.0.0", packageRemoved: false },
       response: { status: 200, headers: new Map(), body: undefined },
     });
 
     await unpublishVersion({
-      registry: 'https://registry.npmjs.org', token: 'tok', totpSecret: TOTP_SECRET,
-      name: 'pkg', version: '1.0.0', otp: '987654',
+      registry: "https://registry.npmjs.org",
+      token: "tok",
+      totpSecret: TOTP_SECRET,
+      name: "pkg",
+      version: "1.0.0",
+      otp: "987654",
     });
 
-    expect(mockSdkUnpublish).toHaveBeenCalledWith('pkg', '1.0.0', expect.objectContaining({ otp: '987654' }), expect.anything());
+    expect(mockSdkUnpublish).toHaveBeenCalledWith(
+      "pkg",
+      "1.0.0",
+      expect.objectContaining({ otp: "987654" }),
+      expect.anything(),
+    );
   });
 
-  it('builds the client with the token + registry', async () => {
+  it("builds the client with the token + registry", async () => {
     mockSdkUnpublish.mockResolvedValue({
       ok: true,
-      data: { removedVersion: '1.0.0', packageRemoved: false },
+      data: { removedVersion: "1.0.0", packageRemoved: false },
       response: { status: 200, headers: new Map(), body: undefined },
     });
 
     await unpublishVersion({
-      registry: 'https://registry.example.test/', token: 'my-token', totpSecret: TOTP_SECRET,
-      name: '@scope/pkg', version: '1.0.0',
+      registry: "https://registry.example.test/",
+      token: "my-token",
+      totpSecret: TOTP_SECRET,
+      name: "@scope/pkg",
+      version: "1.0.0",
     });
 
-    expect(mockCreateClient).toHaveBeenCalledWith({ auth: { token: 'my-token' }, registry: 'https://registry.example.test/' });
+    expect(mockCreateClient).toHaveBeenCalledWith({
+      auth: { token: "my-token" },
+      registry: "https://registry.example.test/",
+    });
   });
 });

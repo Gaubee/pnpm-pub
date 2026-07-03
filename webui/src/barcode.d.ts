@@ -7,20 +7,20 @@
  * minimal surface used by totp-scanner.svelte. When the API is absent at
  * runtime the scanner falls back to html5-qrcode.
  */
-declare type BarcodeFormat = 'qr_code' | 'code_128' | 'code_39' | 'ean_13' | 'ean_8' | 'upc_a';
+declare type BarcodeFormat = "qr_code" | "code_128" | "code_39" | "ean_13" | "ean_8" | "upc_a";
 
 declare interface BarcodeDetectorOptions {
-	formats?: BarcodeFormat[];
+  formats?: BarcodeFormat[];
 }
 
 declare interface DetectedBarcode {
-	rawValue: string;
-	boundingBox: DOMRectReadOnly;
-	format: BarcodeFormat;
+  rawValue: string;
+  boundingBox: DOMRectReadOnly;
+  format: BarcodeFormat;
 }
 
 declare class BarcodeDetector {
-	constructor(options?: BarcodeDetectorOptions);
-	static getSupportedFormats(): Promise<BarcodeFormat[]>;
-	detect(target: CanvasImageSource): Promise<DetectedBarcode[]>;
+  constructor(options?: BarcodeDetectorOptions);
+  static getSupportedFormats(): Promise<BarcodeFormat[]>;
+  detect(target: CanvasImageSource): Promise<DetectedBarcode[]>;
 }

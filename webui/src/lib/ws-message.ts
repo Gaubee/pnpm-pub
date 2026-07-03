@@ -7,8 +7,8 @@
  * and imported via relative path (webui can't import from src/shared/index
  * because it contains Node-only code, but schemas.ts is pure Zod).
  */
-import { WsServerMessageSchema } from '$shared/schemas.js';
-import type { WsServerMessage } from './types.js';
+import { WsServerMessageSchema } from "$shared/schemas.js";
+import type { WsServerMessage } from "./types.js";
 
 /**
  * Parse a raw WS frame (string or object) into a typed WsServerMessage.
@@ -17,7 +17,7 @@ import type { WsServerMessage } from './types.js';
 export function parseWsServerMessage(data: unknown): WsServerMessage | null {
   // The daemon sends text frames; parse JSON first if needed.
   let value: unknown = data;
-  if (typeof value === 'string') {
+  if (typeof value === "string") {
     try {
       value = JSON.parse(value);
     } catch {

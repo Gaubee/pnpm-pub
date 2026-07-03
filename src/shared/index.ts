@@ -7,14 +7,14 @@
  */
 
 // Re-export all Zod schemas + derived types from the schema module.
-export * from './schemas.js';
+export * from "./schemas.js";
 
 // ---------------------------------------------------------------------------
 // Chapter 4.2 — OS keychain credential mapping (constants only — not schemas)
 // ---------------------------------------------------------------------------
 
 /** Fixed keychain service name (Chapter 4.2). */
-export const KEYCHAIN_SERVICE = 'pnpm-pub' as const;
+export const KEYCHAIN_SERVICE = "pnpm-pub" as const;
 
 /** Build the keychain account key for an NPM token. (Legacy — see authKey.) */
 export const tokenKey = (username: string): string => `${username}_npm_token`;
@@ -28,18 +28,19 @@ export const totpKey = (username: string): string => `${username}_totp_secret`;
 export const authKey = (username: string): string => `pnpm_pub-key${username}-auth`;
 
 /** Sandbox service name used in tests so we never touch the dev's real credentials (Chapter 10.2). */
-export const KEYCHAIN_SERVICE_SANDBOX = 'pnpm-pub-test-sandbox' as const;
+export const KEYCHAIN_SERVICE_SANDBOX = "pnpm-pub-test-sandbox" as const;
 
 // ---------------------------------------------------------------------------
 // Misc constants
 // ---------------------------------------------------------------------------
 
 /** Fixed runtime directory under the user home. */
-export const APP_DIR_NAME = '.pnpm-pub';
+export const APP_DIR_NAME = ".pnpm-pub";
 
 /** Resolved at runtime via env override; the canonical config filenames. */
-export const PROFILES_FILE = 'profiles.json';
-export const WORKSPACES_FILE = 'workspaces.json';
+export const PROFILES_FILE = "profiles.json";
+export const WORKSPACES_FILE = "workspaces.json";
+/** App-wide UI preferences (keepOnTop pin, etc.). */
+export const PREFERENCES_FILE = "preferences.json";
 /** SQLite database holding the persisted event log (survives restarts). */
-export const EVENTS_DB_FILE = 'events.db';
-
+export const EVENTS_DB_FILE = "events.db";

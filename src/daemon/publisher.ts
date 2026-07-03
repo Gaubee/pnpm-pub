@@ -15,32 +15,32 @@
  * It owns the two concerns that are *not* subprocess mechanics: pnpm presence
  * probing and workspace package enumeration.
  */
-import { execa } from 'execa';
+import { execa } from "execa";
 import {
   runPublishWithDriftRecovery,
   ensureRecursive,
   type CliPublishResult,
   type PublishLogSink,
-} from './subprocess-runner.js';
+} from "./subprocess-runner.js";
 
 // Re-export the types + pure helpers the scheduler / tests depend on, so the
 // public surface is stable regardless of the internal module layout.
-export type { CliPublishResult, PublishLogSink } from './subprocess-runner.js';
-export { stripOverriddenArgs, ensureRecursive, extractNpmError } from './subprocess-runner.js';
-export { registryAuthPrefix, mergeAuthIntoNpmrc } from './npmrc-auth.js';
+export type { CliPublishResult, PublishLogSink } from "./subprocess-runner.js";
+export { stripOverriddenArgs, ensureRecursive, extractNpmError } from "./subprocess-runner.js";
+export { registryAuthPrefix, mergeAuthIntoNpmrc } from "./npmrc-auth.js";
 
 /** Raised when `pnpm` cannot be found on PATH; the scheduler falls back to the
  *  registry-API publish path (single-package only; recursive is unsupported). */
 export class PnpmNotOnPathError extends Error {
-  constructor(message = 'pnpm is not available on PATH.') {
+  constructor(message = "pnpm is not available on PATH.") {
     super(message);
-    this.name = 'PnpmNotOnPathError';
+    this.name = "PnpmNotOnPathError";
   }
 }
 
 /** Whether `pnpm` is resolvable on PATH (probe via `--version`). */
 export async function hasPnpm(cwd: string): Promise<boolean> {
-  const probe = await execa('pnpm', ['--version'], { cwd, reject: false });
+  const probe = await execa("pnpm", ["--version"], { cwd, reject: false });
   return probe.exitCode === 0;
 }
 
@@ -64,11 +64,16 @@ export interface RecursivePackage {
  */
 export async function listRecursivePackages(cwd: string): Promise<RecursivePackage[]> {
   if (!(await hasPnpm(cwd))) throw new PnpmNotOnPathError();
-  const result = await execa('pnpm', ['list', '-r', '--json', '--depth', '-1'], { cwd, reject: false });
+  const result = await execa("pnpm", ["list", "-r", "--json", "--depth", "-1"], {
+    cwd,
+    reject: false,
+  });
   if (result.exitCode !== 0) {
-    throw new Error(`pnpm list -r failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`);
+    throw new Error(
+      `pnpm list -r failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
+    );
   }
-  const parsed: unknown = JSON.parse(result.stdout || '[]');
+  const parsed: unknown = JSON.parse(result.stdout || "[]");
   if (!Array.isArray(parsed)) return [];
   return parseRecursivePackageList(parsed);
 }
@@ -78,9 +83,10 @@ export async function listRecursivePackages(cwd: string): Promise<RecursivePacka
 export function parseRecursivePackageList(entries: unknown[]): RecursivePackage[] {
   const packages: RecursivePackage[] = [];
   for (const entry of entries) {
-    if (typeof entry !== 'object' || entry === null) continue;
+    if (typeof entry !== "object" || entry === null) continue;
     const e = entry as Record<string, unknown>;
-    if (typeof e.name !== 'string' || typeof e.version !== 'string' || typeof e.path !== 'string') continue;
+    if (typeof e.name !== "string" || typeof e.version !== "string" || typeof e.path !== "string")
+      continue;
     packages.push({ name: e.name, version: e.version, path: e.path, private: e.private === true });
   }
   return packages;

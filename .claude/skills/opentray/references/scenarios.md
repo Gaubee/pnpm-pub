@@ -36,12 +36,14 @@ Use this when clicking a tray item should open a WebView window.
 Why: `primaryEvent` stays a normal menu item role, so direct tray activation and menu selection share the same `menuClick` law.
 
 ```ts
-const tray = (await createTray({
-  trayId: "timer",
-  title: "Timer",
-  icon: { type: "file", path: "./timer.png" },
-  menu: { items: [{ type: "item", id: 1, title: "Open Timer", primaryEvent: true }] },
-})).extend(WebviewExt);
+const tray = (
+  await createTray({
+    trayId: "timer",
+    title: "Timer",
+    icon: { type: "file", path: "./timer.png" },
+    menu: { items: [{ type: "item", id: 1, title: "Open Timer", primaryEvent: true }] },
+  })
+).extend(WebviewExt);
 
 const window = tray.createWebviewWindow({ html, width: 360, height: 240 });
 tray.onMenuClick(({ itemId }) => {

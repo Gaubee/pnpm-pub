@@ -4,14 +4,14 @@
  * subprocess mechanics are testable independently of the OTP / drift-recovery
  * orchestration that sits on top.
  */
-import { execa } from 'execa';
-import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
-import { isOtpFailureText, isExpiredTokenText } from './npm-api.js';
-import { withTempNpmrc } from './npmrc-auth.js';
+import { execa } from "execa";
+import { generateTotp, totpAfterDrift, parseHttpDate } from "./totp.js";
+import { isOtpFailureText, isExpiredTokenText } from "./npm-api.js";
+import { withTempNpmrc } from "./npmrc-auth.js";
 
 /** Log sink — the scheduler's PendingClient (CLI terminal + WebUI relay). */
 export interface PublishLogSink {
-  log(stream: 'stdout' | 'stderr', data: string): void;
+  log(stream: "stdout" | "stderr", data: string): void;
 }
 
 /** Result shape aligned with `npm-api.ts:PublishResult` so the scheduler can
@@ -43,7 +43,7 @@ export function stripOverriddenArgs(args: string[], flags: string[]): string[] {
     if (flagSet.has(arg)) {
       // `--otp value` form: skip the value token too (unless it's itself a flag).
       const next = args[i + 1];
-      if (next !== undefined && !next.startsWith('-')) i += 1;
+      if (next !== undefined && !next.startsWith("-")) i += 1;
       continue;
     }
     if (flags.some((f) => arg.startsWith(`${f}=`))) continue;
@@ -56,8 +56,10 @@ export function stripOverriddenArgs(args: string[], flags: string[]): string[] {
  *  `-r`/`--recursive` aliases and pnpm's legacy `-m`/`--multi` as "already
  *  recursive" so we never prepend a duplicate. */
 export function ensureRecursive(args: string[]): string[] {
-  const alreadyRecursive = args.some((arg) => arg === '-r' || arg === '--recursive' || arg === '-m' || arg === '--multi');
-  return alreadyRecursive ? args : ['-r', ...args];
+  const alreadyRecursive = args.some(
+    (arg) => arg === "-r" || arg === "--recursive" || arg === "-m" || arg === "--multi",
+  );
+  return alreadyRecursive ? args : ["-r", ...args];
 }
 
 interface RunPublishSubprocessOpts {
@@ -80,9 +82,9 @@ interface SubprocessOutcome {
 export function extractNpmError(stderr: string): string | undefined {
   // `npm error <message>` lines carry the most actionable text.
   const errorLines = stderr
-    .split('\n')
+    .split("\n")
     .filter((l) => /^\s*npm error\b/i.test(l))
-    .map((l) => l.replace(/^\s*npm error\s*/i, '').trim())
+    .map((l) => l.replace(/^\s*npm error\s*/i, "").trim())
     .filter(Boolean);
   if (errorLines.length > 0) {
     // Prefer the line that looks like the root cause (not the log-path line).
@@ -91,8 +93,8 @@ export function extractNpmError(stderr: string): string | undefined {
   }
   // Fallback: pnpm's own `ERROR` lines.
   const pnpmError = stderr
-    .split('\n')
-    .map((l) => l.replace(/^\s*ERROR\s*/i, '').trim())
+    .split("\n")
+    .map((l) => l.replace(/^\s*ERROR\s*/i, "").trim())
     .filter(Boolean)[0];
   return pnpmError || undefined;
 }
@@ -103,22 +105,30 @@ async function runPublishSubprocess(opts: RunPublishSubprocessOpts): Promise<Sub
     // Strip any --otp/--registry the caller already carried: the runner injects
     // authoritative values below (--otp from the TOTP secret, registry via the
     // temporary .npmrc) and pnpm rejects duplicate flags.
-    const args = stripOverriddenArgs(opts.args, ['--otp', '--registry']);
-    const subprocess = execa(
-      'pnpm',
-      ['publish', ...args, '--otp', opts.otp],
-      { cwd: opts.cwd, reject: false, buffer: false },
-    );
-    let stderr = '';
-    const drain = async (stream: NodeJS.ReadableStream | AsyncIterable<unknown> | null, tag: 'stdout' | 'stderr'): Promise<void> => {
-      if (!stream || typeof (stream as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] !== 'function') return;
+    const args = stripOverriddenArgs(opts.args, ["--otp", "--registry"]);
+    const subprocess = execa("pnpm", ["publish", ...args, "--otp", opts.otp], {
+      cwd: opts.cwd,
+      reject: false,
+      buffer: false,
+    });
+    let stderr = "";
+    const drain = async (
+      stream: NodeJS.ReadableStream | AsyncIterable<unknown> | null,
+      tag: "stdout" | "stderr",
+    ): Promise<void> => {
+      if (
+        !stream ||
+        typeof (stream as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] !== "function"
+      )
+        return;
       for await (const chunk of stream as AsyncIterable<unknown>) {
-        const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8');
-        if (tag === 'stderr') stderr += text;
+        const text =
+          typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8");
+        if (tag === "stderr") stderr += text;
         opts.sink.log(tag, text);
       }
     };
-    await Promise.all([drain(subprocess.stdout, 'stdout'), drain(subprocess.stderr, 'stderr')]);
+    await Promise.all([drain(subprocess.stdout, "stdout"), drain(subprocess.stderr, "stderr")]);
     const result = await subprocess;
     return classifyOutcome(result, stderr, opts.sink);
   });
@@ -133,12 +143,18 @@ type ExecaResult = Awaited<ReturnType<typeof execa>>;
  * prior hasPnpm probe). Treat that as a failure rather than masking it as
  * success (exit 0).
  */
-function classifyOutcome(result: ExecaResult, capturedStderr: string, sink: PublishLogSink): SubprocessOutcome {
+function classifyOutcome(
+  result: ExecaResult,
+  capturedStderr: string,
+  sink: PublishLogSink,
+): SubprocessOutcome {
   let stderr = capturedStderr;
-  const exitCode = typeof result.exitCode === 'number' ? result.exitCode : -1;
+  const exitCode = typeof result.exitCode === "number" ? result.exitCode : -1;
   if (exitCode === -1 && !stderr) {
-    stderr = result.originalMessage ? `pnpm spawn failed: ${result.originalMessage}` : 'pnpm publish terminated unexpectedly.';
-    sink.log('stderr', stderr + '\n');
+    stderr = result.originalMessage
+      ? `pnpm spawn failed: ${result.originalMessage}`
+      : "pnpm publish terminated unexpectedly.";
+    sink.log("stderr", stderr + "\n");
   }
   return { exitCode, stderr };
 }
@@ -146,16 +162,35 @@ function classifyOutcome(result: ExecaResult, capturedStderr: string, sink: Publ
 /** Build the final result from a subprocess outcome. */
 function outcomeToResult(outcome: SubprocessOutcome, explicitOtp: boolean): CliPublishResult {
   if (outcome.exitCode === 0) {
-    return { ok: true, status: 200, stdout: '', stderr: outcome.stderr };
+    return { ok: true, status: 200, stdout: "", stderr: outcome.stderr };
   }
   const stderr = outcome.stderr;
   if (isExpiredTokenText(stderr)) {
-    return { ok: false, status: 401, expired: true, error: extractNpmError(stderr), stdout: '', stderr };
+    return {
+      ok: false,
+      status: 401,
+      expired: true,
+      error: extractNpmError(stderr),
+      stdout: "",
+      stderr,
+    };
   }
   if (isOtpFailureText(stderr) && !explicitOtp) {
-    return { ok: false, status: 403, error: extractNpmError(stderr) ?? 'OTP validation failed', stdout: '', stderr };
+    return {
+      ok: false,
+      status: 403,
+      error: extractNpmError(stderr) ?? "OTP validation failed",
+      stdout: "",
+      stderr,
+    };
   }
-  return { ok: false, status: 1, error: extractNpmError(stderr) ?? `pnpm publish failed (exit ${outcome.exitCode})`, stdout: '', stderr };
+  return {
+    ok: false,
+    status: 1,
+    error: extractNpmError(stderr) ?? `pnpm publish failed (exit ${outcome.exitCode})`,
+    stdout: "",
+    stderr,
+  };
 }
 
 /** Fetch the registry's server `Date` header (epoch ms) for drift recovery. */
@@ -163,8 +198,8 @@ async function fetchServerDateMs(registry: string): Promise<number | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
   try {
-    const res = await fetch(registry, { method: 'GET', signal: controller.signal });
-    return parseHttpDate(res.headers.get('date'));
+    const res = await fetch(registry, { method: "GET", signal: controller.signal });
+    return parseHttpDate(res.headers.get("date"));
   } catch {
     return null;
   } finally {
@@ -193,7 +228,7 @@ export async function runPublishWithDriftRecovery(opts: RunPublishOpts): Promise
   const explicitOtp = opts.otp && opts.otp.length > 0 ? opts.otp : undefined;
   const firstOtp = explicitOtp ?? generateTotp(totpSecret);
   const first = await runPublishSubprocess({ cwd, args, registry, token, otp: firstOtp, sink });
-  if (first.exitCode === 0) return { ok: true, status: 200, stdout: '', stderr: first.stderr };
+  if (first.exitCode === 0) return { ok: true, status: 200, stdout: "", stderr: first.stderr };
 
   const firstResult = outcomeToResult(first, !!explicitOtp);
 
@@ -202,9 +237,22 @@ export async function runPublishWithDriftRecovery(opts: RunPublishOpts): Promise
     const serverMs = await fetchServerDateMs(registry);
     if (serverMs !== null) {
       const correctedOtp = totpAfterDrift(totpSecret, serverMs);
-      const retry = await runPublishSubprocess({ cwd, args, registry, token, otp: correctedOtp, sink });
+      const retry = await runPublishSubprocess({
+        cwd,
+        args,
+        registry,
+        token,
+        otp: correctedOtp,
+        sink,
+      });
       if (retry.exitCode === 0) {
-        return { ok: true, status: 200, clockDriftRecovered: true, stdout: '', stderr: retry.stderr };
+        return {
+          ok: true,
+          status: 200,
+          clockDriftRecovered: true,
+          stdout: "",
+          stderr: retry.stderr,
+        };
       }
       return outcomeToResult(retry, false);
     }

@@ -6,11 +6,11 @@
  * live only in the in-memory pool (populated from the OS keychain at startup,
  * Chapter 3.1).
  */
-import { EventEmitter } from 'node:events';
-import { promises as fsp } from 'node:fs';
-import path from 'node:path';
-import { randomUUID } from 'node:crypto';
-import type { Database as DatabaseType } from 'better-sqlite3';
+import { EventEmitter } from "node:events";
+import { promises as fsp } from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import type { Database as DatabaseType } from "better-sqlite3";
 import {
   type PnpmPubConfig,
   type Profile,
@@ -19,9 +19,21 @@ import {
   type PubEvent,
   type EventKind,
   type EventPayload,
-} from '../shared/index.js';
-import { profilesPath, workspacesPath, eventsDbPath, ensureAppDirs } from '../shared/paths.js';
-import { PnpmPubConfigSchema, WorkspacesConfigSchema } from '../shared/schemas.js';
+  type Preferences,
+} from "../shared/index.js";
+import {
+  profilesPath,
+  workspacesPath,
+  preferencesPath,
+  eventsDbPath,
+  ensureAppDirs,
+} from "../shared/paths.js";
+import {
+  PnpmPubConfigSchema,
+  WorkspacesConfigSchema,
+  PreferencesSchema,
+  DEFAULT_PREFERENCES,
+} from "../shared/schemas.js";
 import {
   openEventDb,
   insertEvent,
@@ -30,13 +42,14 @@ import {
   recentEvents,
   type EventQuery,
   type EventQueryResult,
-} from './event-db.js';
+} from "./event-db.js";
 
-const DEFAULT_CONFIG: PnpmPubConfig = { default: '', profiles: [] };
+const DEFAULT_CONFIG: PnpmPubConfig = { default: "", profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
+const DEFAULT_PREFS: Preferences = { ...DEFAULT_PREFERENCES };
 
-type EventResolutionMetadata = Pick<PubEvent, 'clockDriftRecovered'> & {
-  tarballSummary?: PubEvent['tarballSummary'];
+type EventResolutionMetadata = Pick<PubEvent, "clockDriftRecovered"> & {
+  tarballSummary?: PubEvent["tarballSummary"];
 };
 
 /** In-memory credential pool (Chapter 3.1 runtime phase). */
@@ -50,6 +63,7 @@ export interface CredentialPool {
 export class DaemonStore extends EventEmitter {
   private config: PnpmPubConfig = { ...DEFAULT_CONFIG };
   private workspaces: WorkspacesConfig = { ...DEFAULT_WORKSPACES };
+  private preferences: Preferences = { ...DEFAULT_PREFS };
   private events: PubEvent[] = [];
   private credentials = new Map<string, CredentialPool>();
   private eventDb: DatabaseType | null = null;
@@ -63,8 +77,15 @@ export class DaemonStore extends EventEmitter {
 
   async load(): Promise<void> {
     ensureAppDirs();
-    this.config = parsePnpmPubConfig(await this.readJson(profilesPath())) ?? structuredClone(DEFAULT_CONFIG);
-    this.workspaces = parseWorkspacesConfig(await this.readJson(workspacesPath())) ?? structuredClone(DEFAULT_WORKSPACES);
+    this.config =
+      parsePnpmPubConfig(await this.readJson(profilesPath())) ?? structuredClone(DEFAULT_CONFIG);
+    this.workspaces =
+      parseWorkspacesConfig(await this.readJson(workspacesPath())) ??
+      structuredClone(DEFAULT_WORKSPACES);
+    // preferences use strip parsing (not strict) and fall back to defaults — a
+    // missing/empty file is the common case on first run.
+    this.preferences =
+      parsePreferences(await this.readJson(preferencesPath())) ?? structuredClone(DEFAULT_PREFS);
     // Open the persisted event log. openEventDb sweeps orphan 'pending' rows to
     // 'failed' on startup, so the in-memory array is seeded from current DB state.
     this.eventDb = openEventDb(eventsDbPath());
@@ -81,7 +102,7 @@ export class DaemonStore extends EventEmitter {
 
   private async readJson(file: string): Promise<unknown> {
     try {
-      const text = await fsp.readFile(file, 'utf8');
+      const text = await fsp.readFile(file, "utf8");
       const parsed: unknown = JSON.parse(text);
       return parsed;
     } catch {
@@ -95,7 +116,7 @@ export class DaemonStore extends EventEmitter {
     // `.tmp` and leave one with an ENOENT on rename.
     const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
     await fsp.mkdir(path.dirname(file), { recursive: true });
-    await fsp.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+    await fsp.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
     await fsp.rename(tmp, file);
   }
 
@@ -117,7 +138,7 @@ export class DaemonStore extends EventEmitter {
     if (!this.getProfile(username)) return false;
     this.config.default = username;
     await this.writeJson(profilesPath(), this.config);
-    this.emit('profiles', this.snapshotProfiles());
+    this.emit("profiles", this.snapshotProfiles());
     return true;
   }
 
@@ -127,32 +148,36 @@ export class DaemonStore extends EventEmitter {
     else this.config.profiles.push(profile);
     if (!this.config.default) this.config.default = profile.username;
     await this.writeJson(profilesPath(), this.config);
-    this.emit('profiles', this.snapshotProfiles());
+    this.emit("profiles", this.snapshotProfiles());
   }
 
   async removeProfile(username: string): Promise<boolean> {
     if (!this.getProfile(username)) return false;
     this.config.profiles = this.config.profiles.filter((p) => p.username !== username);
     if (this.config.default === username) {
-      this.config.default = this.config.profiles[0]?.username ?? '';
+      this.config.default = this.config.profiles[0]?.username ?? "";
     }
     this.credentials.delete(username);
     // Chapter 4.2: purge the profile's secrets from the OS keychain too, so a
     // deleted identity leaves no orphaned token/TOTP behind. Lazy import to
     // avoid a static cycle (keychain imports store types only).
     try {
-      const keychain = await import('./keychain.js');
+      const keychain = await import("./keychain.js");
       await keychain.deleteProfile(username);
     } catch {
       /* keychain unavailable — config + memory already cleared */
     }
     await this.writeJson(profilesPath(), this.config);
-    this.emit('profiles', this.snapshotProfiles());
+    this.emit("profiles", this.snapshotProfiles());
     return true;
   }
 
   private snapshotProfiles() {
-    return { type: 'profiles' as const, default: this.config.default, profiles: [...this.config.profiles] };
+    return {
+      type: "profiles" as const,
+      default: this.config.default,
+      profiles: [...this.config.profiles],
+    };
   }
 
   // ----- credentials (in-memory only, Chapter 3.1) -----
@@ -185,10 +210,17 @@ export class DaemonStore extends EventEmitter {
       existing.pinned = entry.pinned;
       existing.addedAt = entry.addedAt;
     } else {
-      this.workspaces.paths.push({ path: entry.path, pinned: entry.pinned, addedAt: entry.addedAt });
+      this.workspaces.paths.push({
+        path: entry.path,
+        pinned: entry.pinned,
+        addedAt: entry.addedAt,
+      });
     }
     await this.writeJson(workspacesPath(), this.workspaces);
-    this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
+    this.emit("workspaces", {
+      type: "workspaces" as const,
+      workspaces: [...this.workspaces.paths],
+    });
   }
 
   async removeWorkspace(path: string): Promise<boolean> {
@@ -196,7 +228,10 @@ export class DaemonStore extends EventEmitter {
     if (idx < 0) return false;
     this.workspaces.paths.splice(idx, 1);
     await this.writeJson(workspacesPath(), this.workspaces);
-    this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
+    this.emit("workspaces", {
+      type: "workspaces" as const,
+      workspaces: [...this.workspaces.paths],
+    });
     return true;
   }
 
@@ -240,8 +275,25 @@ export class DaemonStore extends EventEmitter {
     if (entry) {
       entry.pinned = pinned;
       await this.writeJson(workspacesPath(), this.workspaces);
-      this.emit('workspaces', { type: 'workspaces' as const, workspaces: [...this.workspaces.paths] });
+      this.emit("workspaces", {
+        type: "workspaces" as const,
+        workspaces: [...this.workspaces.paths],
+      });
     }
+  }
+
+  // ----- preferences (Chapter 6.4) -----
+
+  getPreferences(): Preferences {
+    return { ...this.preferences };
+  }
+
+  /** Persist the keepOnTop pin and emit a 'preferences' event. */
+  async setKeepOnTop(keepOnTop: boolean): Promise<void> {
+    if (this.preferences.keepOnTop === keepOnTop) return;
+    this.preferences = { keepOnTop };
+    await this.writeJson(preferencesPath(), this.preferences);
+    this.emit("preferences", this.getPreferences());
   }
 
   // ----- events (Chapter 6.2) -----
@@ -252,7 +304,9 @@ export class DaemonStore extends EventEmitter {
    * snapshot only carries live pending items.
    */
   getEvents(): PubEvent[] {
-    return this.events.filter((e) => e.status === 'pending').sort((a, b) => b.createdAt - a.createdAt);
+    return this.events
+      .filter((e) => e.status === "pending")
+      .sort((a, b) => b.createdAt - a.createdAt);
   }
 
   getEvent(id: string): PubEvent | undefined {
@@ -284,7 +338,7 @@ export class DaemonStore extends EventEmitter {
     const evt: PubEvent = {
       id: randomUUID(),
       kind: opts.kind,
-      status: 'pending',
+      status: "pending",
       profile: opts.profile,
       profileOverride: opts.profileOverride,
       createdAt: Date.now(),
@@ -293,13 +347,13 @@ export class DaemonStore extends EventEmitter {
     };
     this.events.unshift(evt);
     if (this.eventDb) insertEvent(this.eventDb, evt);
-    this.emit('event', { type: 'event' as const, event: evt });
+    this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
 
   resolveEvent(
     id: string,
-    status: PubEvent['status'],
+    status: PubEvent["status"],
     result?: string,
     metadata?: EventResolutionMetadata,
   ): PubEvent | undefined {
@@ -315,7 +369,7 @@ export class DaemonStore extends EventEmitter {
       evt.tarballSummary = metadata.tarballSummary;
     }
     if (this.eventDb) updateEvent(this.eventDb, evt);
-    this.emit('event', { type: 'event' as const, event: evt });
+    this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
 
@@ -329,13 +383,14 @@ export class DaemonStore extends EventEmitter {
    */
   updateEventArgs(id: string, args: string[]): PubEvent | undefined {
     const evt = this.events.find((e) => e.id === id);
-    if (!evt || evt.status !== 'pending') return undefined;
+    if (!evt || evt.status !== "pending") return undefined;
     // Both single-package `publish` and `recursive-publish` carry an editable
     // `args` array on their payload data.
-    if (evt.payload?.kind !== 'publish' && evt.payload?.kind !== 'recursive-publish') return undefined;
+    if (evt.payload?.kind !== "publish" && evt.payload?.kind !== "recursive-publish")
+      return undefined;
     evt.payload.data.args = args;
     if (this.eventDb) updateEvent(this.eventDb, evt);
-    this.emit('event', { type: 'event' as const, event: evt });
+    this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
 }
@@ -355,7 +410,7 @@ function parsePnpmPubConfig(value: unknown): PnpmPubConfig | null {
   }
   const defaultProfile = result.data.profiles.some((p) => p.username === result.data.default)
     ? result.data.default
-    : (result.data.profiles[0]?.username ?? '');
+    : (result.data.profiles[0]?.username ?? "");
   return { default: defaultProfile, profiles: result.data.profiles };
 }
 
@@ -370,4 +425,16 @@ function parseWorkspacesConfig(value: unknown): WorkspacesConfig | null {
     roots.add(entry.path);
   }
   return { paths: result.data.paths };
+}
+
+/**
+ * Parse preferences.json with default-strip semantics. Missing file or a parse
+ * failure yields null (caller falls back to DEFAULT_PREFS). A partial file
+ * (e.g. only `keepOnTop`) merges over defaults so a forward-compatible field
+ * added by a newer daemon doesn't break this reader.
+ */
+function parsePreferences(value: unknown): Preferences | null {
+  const result = PreferencesSchema.safeParse(value);
+  if (!result.success) return null;
+  return { keepOnTop: result.data.keepOnTop };
 }

@@ -9,25 +9,30 @@
  * We keep the real typed handles (`EventfulTrayHandle & WebviewTrayCapability` +
  * `WebviewWindowHandle`) instead of inventing a parallel abstraction. The host
  * layering on top is purely the product behavior the skill leaves to the app:
- *   - tray primary click toggles show/hide
- *   - keepOnTop style applied on show when configured
- *
- * NOTE: an earlier version drove a pin/release state machine from pending
- * events (keepOnTop + window.hide() on resolve, auto-reject on hide, blur
- * auto-hide). That trapped the window and rejected events on focus loss, so it
- * has been removed. The tray now stays open until the user explicitly hides it;
- * pending events are surfaced only via the WebUI badge, never via window
- * lifecycle.
+ *   - tray primary click toggles show/hide (synced with out-of-band hides)
+ *   - the window is ALWAYS kept on top (keepOnTop is permanent, not a toggle)
+ *   - blur auto-hide with a live countdown, unless "keep open" (pinned) is on
+ *   - the keep-open pin is persisted via the store + projected to the WebUI
  *
  * opentray 0.8 removed its broker daemon concept: the tray lifetime is now owned
  * in-process by the caller (this daemon). createWebviewWindow bootstraps ONCE
  * per session; repeated tray activations restore via show()/hide() and must NOT
  * replay startup width/height/style. So this host never re-creates the panel —
  * it toggles visibility only.
+ *
+ * Event semantics (verified against the opentray native runtimes):
+ *   - `blur`/`focus` are reliable — emitted by the OS key-window transition
+ *     (macOS NSWindowDidResignKeyNotification / Windows WM_ACTIVATE WA_INACTIVE).
+ *   - Host `hide()` and the OS close (X) button do NOT emit a dedicated lifecycle
+ *     event (only an incidental `blur` if the window was key). So the WebUI
+ *     reports out-of-band hides via the `window-hidden` WS message, and we keep
+ *     `visibility` authoritative in-memory here.
+ *   - The OS close button only hides the window (orderOut/SW_HIDE); the handle
+ *     stays alive and `show()` resurrects it — no re-creation needed.
  */
-import type { EventfulTrayHandle } from 'opentray';
-import type { WebviewTrayCapability, WebviewWindowHandle } from '@opentray/ext-webview';
-import type { DaemonStore } from './store.js';
+import type { EventfulTrayHandle } from "opentray";
+import type { WebviewTrayCapability, WebviewWindowHandle } from "@opentray/ext-webview";
+import type { DaemonStore } from "./store.js";
 
 /**
  * The opentray surfaces this host drives, typed against the real SDK types.
@@ -45,16 +50,40 @@ export interface TrayHostOptions {
   log?: (line: string) => void;
   /** Menu item id that opens the window (primaryEvent). */
   openItemId?: number;
-  /** Whether show() applies a keepOnTop style (window stays above other apps). */
-  keepOnTop?: boolean;
   /** Initial native window visibility when TrayHost takes ownership. */
   initialVisible?: boolean;
+  /**
+   * Projected pin (keepOnTop) state — called on every state change so the host
+   * can broadcast it to connected WebUI clients. `countdown` is the live 3→2→1→0
+   * number while a blur auto-hide is pending, or null when idle.
+   */
+  onPinFrame?: (pinned: boolean, countdown: number | null) => void;
+  /**
+   * Override the blur auto-hide cadence (ms). The sequence is: blur → show 3 →
+   * every `tickMs` decrement to 2/1/0 → after one more tick, hide. Defaults to
+   * 1000ms (a 4s total sequence: 3,2,1,0 then hide).
+   */
+  autoHideTickMs?: number;
 }
 
-type Visibility = 'hidden' | 'shown';
+type Visibility = "hidden" | "shown";
+
+/** Countdown value that means "hide the window now" (never rendered). */
+const COUNTDOWN_HIDE = -1;
+/** First countdown number shown immediately on blur. */
+const COUNTDOWN_START = 3;
 
 export class TrayHost {
-  private visibility: Visibility = 'hidden';
+  private visibility: Visibility = "hidden";
+  /**
+   * "Keep open" pin — when true the window ignores blur auto-hide. The window
+   * is ALWAYS kept on top regardless of this flag (keepOnTop is permanent); the
+   * pin only decides whether a blur starts the auto-hide countdown.
+   */
+  private pinned = false;
+  /** Live auto-hide countdown (3→2→1→0) while pending, else null. */
+  private countdown: number | null = null;
+  private blurTimer: ReturnType<typeof setInterval> | null = null;
   private unsubs: Array<() => void> = [];
 
   constructor(
@@ -63,12 +92,19 @@ export class TrayHost {
     private window: OpentrayWindow | null,
     private opts: TrayHostOptions = {},
   ) {
-    this.visibility = opts.initialVisible ? 'shown' : 'hidden';
+    this.visibility = opts.initialVisible ? "shown" : "hidden";
+    // Seed the pin from persisted preferences (Chapter 6.4). The window was
+    // created with this same value at mount time, so no setStyle is needed.
+    this.pinned = store.getPreferences().keepOnTop;
     this.wireUp();
   }
 
   private log(line: string): void {
     this.opts.log?.(`[tray] ${line}`);
+  }
+
+  private get tickMs(): number {
+    return this.opts.autoHideTickMs ?? 1000;
   }
 
   /**
@@ -80,8 +116,17 @@ export class TrayHost {
    */
   private safeCall(label: string, p: Promise<unknown> | undefined): void {
     if (!p) return;
-    if (typeof p.catch === 'function') {
+    if (typeof p.catch === "function") {
       p.catch((error: unknown) => this.log(`${label} failed: ${errorToLogMessage(error)}`));
+    }
+  }
+
+  /** Push the current pin/countdown frame to the WebUI (best-effort). */
+  private emitPinFrame(): void {
+    try {
+      this.opts.onPinFrame?.(this.pinned, this.countdown);
+    } catch {
+      /* projection must never throw */
     }
   }
 
@@ -95,40 +140,137 @@ export class TrayHost {
       });
       this.unsubs.push(off);
     }
+    // blur auto-hide: only when unpinned. focus cancels any pending countdown.
+    if (this.window) {
+      const offBlur = this.window.listen("blur", () => {
+        this.log("window blur");
+        this.startCountdown();
+      });
+      this.unsubs.push(offBlur);
+      const offFocus = this.window.listen("focus", () => {
+        this.log("window focus");
+        this.cancelCountdown();
+      });
+      this.unsubs.push(offFocus);
+    }
+  }
+
+  /**
+   * Start the blur auto-hide countdown (3→2→1→0→hide). No-op if pinned or a
+   * countdown is already running. Every tick + the terminal hide project a pin
+   * frame so the WebUI can render the live number.
+   */
+  private startCountdown(): void {
+    if (this.pinned) return;
+    if (this.countdown !== null) return; // already counting
+    this.countdown = COUNTDOWN_START;
+    this.emitPinFrame();
+    this.blurTimer = setInterval(() => this.tick(), this.tickMs);
+  }
+
+  private tick(): void {
+    if (this.countdown === null) return;
+    const next = this.countdown - 1;
+    if (next === COUNTDOWN_HIDE) {
+      // Sequence complete: hide and reset. Keep visibility in sync so the next
+      // tray click re-shows in one click. Project the cleared frame so the
+      // WebUI stops rendering the countdown number.
+      this.clearTimer();
+      this.countdown = null;
+      this.hide();
+      this.emitPinFrame();
+      return;
+    }
+    this.countdown = next;
+    this.emitPinFrame();
+  }
+
+  private cancelCountdown(): void {
+    if (this.countdown === null && this.blurTimer === null) return;
+    this.clearTimer();
+    this.countdown = null;
+    this.emitPinFrame();
+  }
+
+  private clearTimer(): void {
+    if (this.blurTimer !== null) {
+      clearInterval(this.blurTimer);
+      this.blurTimer = null;
+    }
   }
 
   /** Restore window visibility (skill: show() restores, never re-bootstraps). */
   show(): void {
     const showP = this.window?.show();
-    this.safeCall('show', showP);
-    if (this.opts.keepOnTop) {
-      if (showP && typeof showP.then === 'function') {
-        showP.then(
-          () => this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true })),
-          () => {},
-        );
-      } else {
-        this.safeCall('setStyle(keepOnTop)', this.window?.setStyle({ keepOnTop: true }));
-      }
+    this.safeCall("show", showP);
+    // keepOnTop is PERMANENT (the window always stays above others). Re-apply
+    // on show so a freshly-resurrected window is still on top.
+    this.applyKeepOnTop(showP);
+    this.visibility = "shown";
+    this.log("show");
+  }
+
+  /** Re-apply the permanent keepOnTop style, chaining after show() if needed. */
+  private applyKeepOnTop(showP: Promise<unknown> | undefined): void {
+    const apply = () => this.safeCall("setStyle(keepOnTop)", this.window?.setStyle({ keepOnTop: true }));
+    if (showP && typeof showP.then === "function") {
+      showP.then(apply, () => {});
+    } else {
+      apply();
     }
-    this.visibility = 'shown';
-    this.log('show');
   }
 
   /** Primary tray click behavior for a tray-owned panel. */
   toggle(): void {
-    if (this.visibility === 'hidden') this.show();
+    if (this.visibility === "hidden") this.show();
     else this.hide();
   }
 
   /** Reversible dismissal (skill: hide(), NOT destroy()). */
   hide(): void {
-    this.safeCall('hide', this.window?.hide());
-    this.visibility = 'hidden';
-    this.log('hide');
+    this.safeCall("hide", this.window?.hide());
+    this.visibility = "hidden";
+    this.log("hide");
+  }
+
+  /**
+   * Mark the window as hidden out-of-band (OS close X / host hide that this
+   * process didn't initiate). The WebUI reports these via the `window-hidden`
+   * WS message because opentray emits no dedicated lifecycle event for them.
+   * Idempotent. This keeps `toggle()` correct so the next tray click re-shows
+   * in a single click instead of two.
+   */
+  markHidden(): void {
+    this.cancelCountdown();
+    this.visibility = "hidden";
+  }
+
+  /**
+   * Toggle the "keep open" pin: persist it and (when pinning) cancel any pending
+   * auto-hide. The window's keepOnTop style is permanent and NOT affected by the
+   * pin — the pin only gates blur auto-hide. Projected to the WebUI immediately.
+   */
+  async setPin(pinned: boolean): Promise<void> {
+    if (this.pinned === pinned) {
+      this.emitPinFrame();
+      return;
+    }
+    this.pinned = pinned;
+    // Persist (fire-and-forget; the store swallows nothing but writeJson is
+    // atomic + best-effort). Awaited so callers/tests can observe completion.
+    await this.store.setKeepOnTop(pinned);
+    if (pinned) this.cancelCountdown();
+    this.log(`keep-open pin set to ${pinned}`);
+    this.emitPinFrame();
+  }
+
+  /** Current pin + live countdown (for the WebUI initial snapshot). */
+  getPinState(): { pinned: boolean; countdown: number | null } {
+    return { pinned: this.pinned, countdown: this.countdown };
   }
 
   async destroy(): Promise<void> {
+    this.clearTimer();
     for (const off of this.unsubs) {
       try {
         off();

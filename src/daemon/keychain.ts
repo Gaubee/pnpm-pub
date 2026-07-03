@@ -7,12 +7,18 @@
  * here — never statically imported — so tsdown can inline the JS surface while
  * leaving the binary out of the bundle graph.
  */
-import path from 'node:path';
-import fs from 'node:fs';
-import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
-import { KEYCHAIN_SERVICE, KEYCHAIN_SERVICE_SANDBOX, tokenKey, totpKey, authKey } from '../shared/index.js';
-import { ProfileSecretsSchema } from '../shared/schemas.js';
+import path from "node:path";
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import {
+  KEYCHAIN_SERVICE,
+  KEYCHAIN_SERVICE_SANDBOX,
+  tokenKey,
+  totpKey,
+  authKey,
+} from "../shared/index.js";
+import { ProfileSecretsSchema } from "../shared/schemas.js";
 
 // ESM-safe __dirname (tsdown shims __dirname in the bundle, but dev/tsx and
 // vitest run true ESM where it is undefined).
@@ -74,7 +80,7 @@ export async function loadKeytar(): Promise<KeytarApi> {
   if (cached) return cached;
   // 1. Bundled layout (Chapter 9.2.2): the copied keytar JS shim sits next to
   //    its copied prebuilds. Require it — it loads the platform .node binary.
-  const inlineJs = path.join(__dirname, 'prebuilds', 'keytar', 'lib', 'keytar.js');
+  const inlineJs = path.join(__dirname, "prebuilds", "keytar", "lib", "keytar.js");
   if (fs.existsSync(inlineJs)) {
     const mod: unknown = require(inlineJs);
     cached = parseKeytarModule(mod);
@@ -82,7 +88,7 @@ export async function loadKeytar(): Promise<KeytarApi> {
   }
   // 2. Dev fallback: resolve the package through createRequire so it is never a
   //    static import (keeps keytar out of the bundle graph in production builds).
-  const resolved = require.resolve('@github/keytar');
+  const resolved = require.resolve("@github/keytar");
   const mod: unknown = require(resolved);
   cached = parseKeytarModule(mod);
   return cached;
@@ -91,22 +97,22 @@ export async function loadKeytar(): Promise<KeytarApi> {
 function parseKeytarModule(value: unknown): KeytarApi {
   if (isKeytarApi(value)) return value;
   if (isRecord(value) && isKeytarApi(value.default)) return value.default;
-  throw new Error('Loaded @github/keytar module does not expose the required credential API.');
+  throw new Error("Loaded @github/keytar module does not expose the required credential API.");
 }
 
 function isKeytarApi(value: unknown): value is KeytarApi {
   return (
     isRecord(value) &&
-    typeof value.setPassword === 'function' &&
-    typeof value.getPassword === 'function' &&
-    typeof value.deletePassword === 'function' &&
-    typeof value.findCredentials === 'function' &&
-    typeof value.findPassword === 'function'
+    typeof value.setPassword === "function" &&
+    typeof value.getPassword === "function" &&
+    typeof value.deletePassword === "function" &&
+    typeof value.findCredentials === "function" &&
+    typeof value.findPassword === "function"
   );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +207,7 @@ export async function listStoredAccounts(): Promise<string[]> {
   const set = new Set<string>();
   for (const c of creds) {
     // account keys look like `${username}_npm_token` / `${username}_totp_secret`
-    const idx = c.account.lastIndexOf('_');
+    const idx = c.account.lastIndexOf("_");
     if (idx > 0) set.add(c.account.slice(0, idx));
   }
   return [...set];

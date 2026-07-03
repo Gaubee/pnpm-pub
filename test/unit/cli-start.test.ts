@@ -1,17 +1,17 @@
 /**
  * CLI start command regressions (Chapter 7.1.1).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { FrameReader, isIpcRequest } from '../../src/shared/frame.js';
-import type { IpcFrame, IpcRequest } from '../../src/shared/index.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
+import { FrameReader, isIpcRequest } from "../../src/shared/frame.js";
+import type { IpcFrame, IpcRequest } from "../../src/shared/index.js";
 
 const mockState = vi.hoisted((): { responseFrames: IpcFrame[]; frames: IpcRequest[] } => ({
-  responseFrames: [{ type: 'status', active: true }],
+  responseFrames: [{ type: "status", active: true }],
   frames: [],
 }));
 
-vi.mock('node:net', async () => {
-  const { EventEmitter } = await import('node:events');
+vi.mock("node:net", async () => {
+  const { EventEmitter } = await import("node:events");
 
   class CliStartMockSocket extends EventEmitter {
     write(chunk: Buffer | Uint8Array | string): boolean {
@@ -21,10 +21,10 @@ vi.mock('node:net', async () => {
         if (isIpcRequest(frame)) {
           mockState.frames.push(frame);
         }
-        if (isIpcRequest(frame) && 'command' in frame && frame.command === 'start') {
+        if (isIpcRequest(frame) && "command" in frame && frame.command === "start") {
           setImmediate(() => {
-            const payload = `${mockState.responseFrames.map((item) => JSON.stringify(item)).join('\n')}\n`;
-            this.emit('data', Buffer.from(payload, 'utf8'));
+            const payload = `${mockState.responseFrames.map((item) => JSON.stringify(item)).join("\n")}\n`;
+            this.emit("data", Buffer.from(payload, "utf8"));
           });
         }
       }
@@ -32,12 +32,12 @@ vi.mock('node:net', async () => {
     }
 
     end(): this {
-      setImmediate(() => this.emit('close'));
+      setImmediate(() => this.emit("close"));
       return this;
     }
 
     destroy(): this {
-      setImmediate(() => this.emit('close'));
+      setImmediate(() => this.emit("close"));
       return this;
     }
   }
@@ -47,17 +47,17 @@ vi.mock('node:net', async () => {
   return {
     default: {
       createConnection: vi.fn(() => {
-        setImmediate(() => socket.emit('connect'));
+        setImmediate(() => socket.emit("connect"));
         return socket;
       }),
     },
   };
 });
 
-describe('CLI start command', () => {
+describe("CLI start command", () => {
   beforeEach(() => {
     vi.resetModules();
-    mockState.responseFrames = [{ type: 'status', active: true }];
+    mockState.responseFrames = [{ type: "status", active: true }];
     mockState.frames = [];
   });
 
@@ -65,103 +65,104 @@ describe('CLI start command', () => {
     vi.restoreAllMocks();
   });
 
-  it('Scenario: Given start --profile, When the daemon accepts the profile, Then CLI sends the start frame and prints success', async () => {
-    const { main } = await import('../../src/cli/cli.js');
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+  it("Scenario: Given start --profile, When the daemon accepts the profile, Then CLI sends the start frame and prints success", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new ExitCode(code ?? 0);
     });
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      await main(['node', 'pnpm-pub', 'start', '--profile=work']);
+      await main(["node", "pnpm-pub", "start", "--profile=work"]);
     } catch (err) {
       expectExitCode(err, 0);
     }
 
-    expect(mockState.frames).toContainEqual({ command: 'start', profileOverride: 'work' });
-    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining('Daemon started.'));
+    expect(mockState.frames).toContainEqual({ command: "start", profileOverride: "work" });
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("Daemon started."));
     expect(stderrSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
 
-  it('Scenario: Given start --profile, When the daemon rejects the profile, Then CLI surfaces the daemon exit frame', async () => {
-    mockState.responseFrames = [{
-      type: 'exit',
-      code: 1,
-      message: 'Profile "ghost" not found. Add it via the tray GUI first.',
-    }];
-    const { main } = await import('../../src/cli/cli.js');
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+  it("Scenario: Given start --profile, When the daemon rejects the profile, Then CLI surfaces the daemon exit frame", async () => {
+    mockState.responseFrames = [
+      {
+        type: "exit",
+        code: 1,
+        message: 'Profile "ghost" not found. Add it via the tray GUI first.',
+      },
+    ];
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new ExitCode(code ?? 0);
     });
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      await main(['node', 'pnpm-pub', 'start', '--profile=ghost']);
+      await main(["node", "pnpm-pub", "start", "--profile=ghost"]);
     } catch (err) {
       expectExitCode(err, 1);
     }
 
-    expect(mockState.frames).toContainEqual({ command: 'start', profileOverride: 'ghost' });
+    expect(mockState.frames).toContainEqual({ command: "start", profileOverride: "ghost" });
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Profile "ghost" not found'));
-    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining('Daemon started.'));
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("Daemon started."));
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
 
-  it('Scenario: Given start --profile=, When CLI parses it, Then it fails locally before IPC', async () => {
-    const { main } = await import('../../src/cli/cli.js');
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+  it("Scenario: Given start --profile=, When CLI parses it, Then it fails locally before IPC", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new ExitCode(code ?? 0);
     });
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      await main(['node', 'pnpm-pub', 'start', '--profile=']);
+      await main(["node", "pnpm-pub", "start", "--profile="]);
     } catch (err) {
       expectExitCode(err, 1);
     }
 
     expect(mockState.frames).toEqual([]);
-    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining('Daemon started.'));
-    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('--profile requires a value'));
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("Daemon started."));
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("--profile requires a value"));
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
 
-
-  it('Scenario: Given start --profile receives daemon stderr before rejection, When relaying the verdict, Then CLI preserves the stderr stream', async () => {
+  it("Scenario: Given start --profile receives daemon stderr before rejection, When relaying the verdict, Then CLI preserves the stderr stream", async () => {
     mockState.responseFrames = [
-      { type: 'stderr', data: 'Checking requested profile...\n' },
+      { type: "stderr", data: "Checking requested profile...\n" },
       {
-        type: 'exit',
+        type: "exit",
         code: 1,
         message: 'Profile "ghost" not found. Add it via the tray GUI first.',
       },
     ];
-    const { main } = await import('../../src/cli/cli.js');
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
       throw new ExitCode(code ?? 0);
     });
-    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
     try {
-      await main(['node', 'pnpm-pub', 'start', '--profile=ghost']);
+      await main(["node", "pnpm-pub", "start", "--profile=ghost"]);
     } catch (err) {
       expectExitCode(err, 1);
     }
 
-    expect(stderrSpy).toHaveBeenCalledWith('Checking requested profile...\n');
+    expect(stderrSpy).toHaveBeenCalledWith("Checking requested profile...\n");
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('Profile "ghost" not found'));
-    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining('Daemon started.'));
+    expect(stdoutSpy).not.toHaveBeenCalledWith(expect.stringContaining("Daemon started."));
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
@@ -175,7 +176,7 @@ class ExitCode {
 function expectExitCode(value: unknown, code: number): void {
   expect(value).toBeInstanceOf(ExitCode);
   if (!(value instanceof ExitCode)) {
-    throw new Error('Expected process.exit to throw ExitCode.');
+    throw new Error("Expected process.exit to throw ExitCode.");
   }
   expect(value.code).toBe(code);
 }

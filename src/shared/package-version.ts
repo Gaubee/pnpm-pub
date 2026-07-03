@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const thisFile = fileURLToPath(import.meta.url);
 
@@ -13,10 +13,10 @@ export function readPackageVersion(): string {
 export function readPackageVersionFrom(startDir: string): string {
   const pkgPath = findPackageJson(startDir);
   if (!pkgPath) {
-    throw new Error('Unable to locate pnpm-pub package.json for version handshake.');
+    throw new Error("Unable to locate pnpm-pub package.json for version handshake.");
   }
   const manifest = parsePackageManifest(readJsonFile(pkgPath));
-  if (!manifest || manifest.name !== 'pnpm-pub' || manifest.version.length === 0) {
+  if (!manifest || manifest.name !== "pnpm-pub" || manifest.version.length === 0) {
     throw new Error(`Invalid pnpm-pub package metadata at ${pkgPath}.`);
   }
   return manifest.version;
@@ -25,10 +25,10 @@ export function readPackageVersionFrom(startDir: string): string {
 function findPackageJson(startDir: string): string | null {
   let dir = startDir;
   for (;;) {
-    const candidate = path.join(dir, 'package.json');
+    const candidate = path.join(dir, "package.json");
     try {
       const manifest = parsePackageManifest(readJsonFile(candidate));
-      if (manifest?.name === 'pnpm-pub') return candidate;
+      if (manifest?.name === "pnpm-pub") return candidate;
     } catch {
       /* keep walking */
     }
@@ -39,17 +39,17 @@ function findPackageJson(startDir: string): string | null {
 }
 
 function readJsonFile(filePath: string): unknown {
-  return JSON.parse(readFileSync(filePath, 'utf8'));
+  return JSON.parse(readFileSync(filePath, "utf8"));
 }
 
 function parsePackageManifest(value: unknown): { name?: string; version: string } | null {
   if (!isRecord(value)) return null;
   return {
-    name: typeof value.name === 'string' ? value.name : undefined,
-    version: typeof value.version === 'string' ? value.version : '',
+    name: typeof value.name === "string" ? value.name : undefined,
+    version: typeof value.version === "string" ? value.version : "",
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

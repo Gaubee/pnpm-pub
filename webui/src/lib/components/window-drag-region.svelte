@@ -10,11 +10,15 @@
 	window manager, which performs the drag (and keeps the OS controls clickable
 	because they live outside the page's titlebar area).
 
-	Geometry: we read `navigator.opentrayWindow.overlay.getTitlebarAreaRect()` so
-	the strip's right padding always reserves exactly the OS control width, and
-	we react to `geometrychange` if the platform reshuffles controls. When
+	Geometry: `getTitlebarAreaRect()` returns the titlebar SAFE AREA — the region
+	NOT occupied by OS controls, on whichever side the platform puts them
+	(macOS traffic lights on the LEFT → rect.x > 0, right edge flush; Windows
+	caption buttons on the RIGHT → rect.x ≈ 0, right inset > 0). We therefore
+	derive BOTH a left and right safe inset and position every button strictly
+	within [safeLeft, safeRight] so nothing overlaps the native controls. We
+	react to `geometrychange` if the platform reshuffles controls. When
 	opentrayWindow is absent (a plain browser, or the window lacks overlay
-	support), the strip renders inert — it just keeps the visual titlebar gap.
+	support), the strip renders with conservative symmetric insets.
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
@@ -23,8 +27,12 @@
 	import IconMoon from '@lucide/svelte/icons/moon';
 	import IconMonitor from '@lucide/svelte/icons/monitor';
 	import IconLanguages from '@lucide/svelte/icons/languages';
+	import IconPin from '@lucide/svelte/icons/pin';
+	import IconPinOff from '@lucide/svelte/icons/pin-off';
 	import { _, locale } from 'svelte-i18n';
 	import { localeNames, locales, setAppLocale, type AppLocale } from '$lib/i18n.js';
+	import { daemon, actions } from '$lib/store.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
 
 	/**
@@ -34,9 +42,16 @@
 	 */
 	type ThemeMode = 'dark' | 'light' | 'system';
 
-	// Reserved right inset for the OS window-control cluster, in CSS px.
-	// Updated from the overlay geometry; falls back to a macOS-like 70px.
-	let controlInset = $state(70);
+	/**
+	 * Safe-area insets derived from the overlay geometry, in CSS px.
+	 *   - `safeLeft`: gap before the first usable pixel (macOS traffic lights).
+	 *   - `safeRight`: gap after the last usable pixel (Windows caption buttons).
+	 * Buttons are positioned `left: safeLeft + N` / `right: safeRight + N` so
+	 * they never collide with the native control cluster. Conservative fallbacks
+	 * when the overlay is unavailable (plain browser / no overlay support).
+	 */
+	let safeLeft = $state(8);
+	let safeRight = $state(8);
 
 	const ot = (): Navigator['opentrayWindow'] | NonNullable<Navigator['opentray']>['window'] | undefined =>
 		navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
@@ -49,6 +64,23 @@
 		} catch {
 			/* drag is a nicety — never throw */
 		}
+	}
+
+	/**
+	 * Recompute the safe-area insets from a titlebar rect. The rect is the SAFE
+	 * AREA (controls excluded): its left edge is after the macOS traffic lights,
+	 * its right edge is before the Windows caption buttons. So the OS controls
+	 * occupy [0, rect.x) on the left and [rect.x + rect.width, innerWidth) on
+	 * the right. We add a small breathing margin so buttons don't sit flush
+	 * against the native cluster.
+	 */
+	const CONTROL_MARGIN = 4;
+	function applyRect(rect: OpentrayRect): void {
+		const inner = globalThis.innerWidth;
+		const left = Math.max(0, Math.round(rect.x));
+		const right = Math.max(0, Math.round(inner - rect.x - rect.width));
+		safeLeft = left + (left > 0 ? CONTROL_MARGIN : 0);
+		safeRight = right + (right > 0 ? CONTROL_MARGIN : 0);
 	}
 
 	// Three-state theme cycle: system → light → dark → system.
@@ -72,18 +104,32 @@
 		setAppLocale(select.value as AppLocale);
 	}
 
+	// "Keep open" pin (Chapter 6.4). The window is ALWAYS kept on top; this pin
+	// only decides whether blur auto-hide is enabled. When pinned (keep open) a
+	// blur is ignored; when unpinned a blur starts a 3→2→1→0 countdown shown
+	// beside the icon. The daemon owns the state; we read its projection.
+	const pinned = $derived($daemon.pinned);
+	const pinCountdown = $derived($daemon.pinCountdown);
+	const counting = $derived(pinCountdown !== null);
+
+	/** Tooltip varies by state: pinned / unpinned / countdown-active. */
+	const pinLabel = $derived(
+		counting
+			? $_('titlebar.pinCountdownHint')
+			: pinned
+				? $_('titlebar.keepOpen')
+				: $_('titlebar.keepOpenOff'),
+	);
+
 	onMount(() => {
 		const overlay: OpentrayWindowOverlay | undefined = ot()?.overlay;
 		if (!overlay) return;
 
 		const apply = async () => {
 			try {
-				const rect: OpentrayRect = await overlay.getTitlebarAreaRect();
-				// The OS controls sit to the right of the titlebar area; the inset
-				// is how much of the window width the controls occupy.
-				controlInset = Math.max(0, Math.round(globalThis.innerWidth - rect.x - rect.width));
+				applyRect(await overlay.getTitlebarAreaRect());
 			} catch {
-				/* geometry read is best-effort */
+				/* geometry read is best-effort — keep the conservative insets */
 			}
 		};
 		void apply();
@@ -92,14 +138,10 @@
 		let off: (() => void) | undefined;
 		if (overlay.listen) {
 			void overlay
-				.listen('geometrychange', (e) => {
-					controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));
-				})
+				.listen('geometrychange', (e) => applyRect(e.titlebarAreaRect))
 				.then((unsub) => (off = () => void unsub?.()));
 		} else if (overlay.addEventListener) {
-			const handler = (e: { titlebarAreaRect: OpentrayRect }) => {
-				controlInset = Math.max(0, Math.round(globalThis.innerWidth - e.titlebarAreaRect.x - e.titlebarAreaRect.width));
-			};
+			const handler = (e: { titlebarAreaRect: OpentrayRect }) => applyRect(e.titlebarAreaRect);
 			overlay.addEventListener('geometrychange', handler);
 			off = () => overlay.removeEventListener?.('geometrychange', handler);
 		}
@@ -108,24 +150,55 @@
 </script>
 
 <!--
-	Titlebar strip: transparent so the native blur shows through, with a right
-	inset reserving space for the OS controls. The strip hosts the native drag
-	gesture; a theme toggle sits at the inline-end, just left of the OS control
-	cluster (offset by `controlInset`). The toggle stops pointerdown so grabbing
-	it never starts a window drag.
+	Titlebar strip: transparent so the native blur shows through. The strip
+	hosts the native drag gesture. Buttons are anchored to the safe-area edges
+	(`safeLeft` / `safeRight`) so they never overlap the OS control cluster:
+	  - pin (keepOnTop) sits at the inline-start edge (left)
+	  - locale + theme sit at the inline-end edge (right, before caption buttons)
+	Each interactive control stops pointerdown so grabbing it never starts a
+	window drag. The strip itself carries symmetric horizontal padding equal to
+	the safe insets so the drag region also stays clear of the native controls.
 -->
 <div
 	data-window-titlebar
 	class="drag-strip no-drag shrink-0"
-	style="padding-right: {controlInset}px"
+	style="padding-left: {safeLeft}px; padding-right: {safeRight}px"
 	role="toolbar"
 	tabindex="-1"
-	aria-label={$_('titlebar.windowTitlebar')}
-	onpointerdown={onPointerDown}
->
+		aria-label={$_('titlebar.windowTitlebar')}
+		onpointerdown={onPointerDown}
+	>
+	<!--
+		"Keep open" pin (Chapter 6.4) — inline-start. A ghost icon Button matching
+		the Workspaces page's pin affordance: the ICON turns brand-colored when
+		active (Pin), muted otherwise (PinOff). The window is always kept on top;
+		this pin only decides whether blur auto-hide is enabled. The live countdown
+		(3→2→1→0) overlays beside the icon when a blur auto-hide is pending.
+		Anchored to the left safe edge so it clears the macOS traffic lights.
+	-->
+	<Button
+		variant="ghost"
+		size="sm"
+		class="pin-toggle no-drag {counting ? 'counting' : ''}"
+		style="left: {safeLeft + 6}px"
+		onclick={() => actions.setPin(!pinned)}
+		onpointerdown={(e) => e.stopPropagation()}
+		aria-label={pinLabel}
+		aria-pressed={pinned}
+		title={pinLabel}
+	>
+		{#if pinned}
+			<IconPin class="h-3.5 w-3.5 text-brand" />
+		{:else}
+			<IconPinOff class="h-3.5 w-3.5" />
+		{/if}
+		{#if counting}
+			<span class="pin-countdown" aria-hidden="true">{pinCountdown}</span>
+		{/if}
+	</Button>
 	<div
 		class="locale-picker no-drag"
-		style="right: {controlInset + 36}px"
+		style="right: {safeRight + 36}px"
 		role="group"
 		aria-label={$_('common.language')}
 		onpointerdown={(e) => e.stopPropagation()}
@@ -145,7 +218,7 @@
 	<button
 		type="button"
 		class="theme-toggle no-drag"
-		style="right: {controlInset + 6}px"
+		style="right: {safeRight + 6}px"
 		onclick={cycleTheme}
 		onpointerdown={(e) => e.stopPropagation()}
 		aria-label={$_(LABEL_KEY[currentMode])}
@@ -168,6 +241,39 @@
 		width: 100%;
 		background: transparent;
 		cursor: default;
+	}
+	/*
+		pin-toggle wraps the shadcn Button (ghost, icon-sm). We only own its
+		ABSOLUTE POSITIONING (anchored to the left safe edge) here — sizing,
+		hover/focus come from buttonVariants; the active state is conveyed by the
+		brand-colored icon, not a bg fill. The selectors are :global because the
+		class is applied to the Button's (child) root element, which Svelte's
+		scoped-CSS analyzer can't see.
+	*/
+	:global(.pin-toggle) {
+		position: absolute;
+		top: 50%;
+		transform: translateY(-50%);
+	}
+	/* During a blur auto-hide countdown, draw the eye so the user notices the
+		overlay number and knows clicking here cancels it (and pins the window). */
+	:global(.pin-toggle.counting) {
+		animation: pin-pulse 1s ease-in-out infinite;
+	}
+	.pin-countdown {
+		font-size: 0.6875rem;
+		font-variant-numeric: tabular-nums;
+		font-weight: 600;
+		line-height: 1;
+	}
+	@keyframes pin-pulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.55;
+		}
 	}
 	.theme-toggle {
 		position: absolute;

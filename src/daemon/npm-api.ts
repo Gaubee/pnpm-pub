@@ -7,10 +7,14 @@
  * stay on raw registry fetches so Verdaccio and the real registry share the
  * same wire format.
  */
-import { Buffer } from 'node:buffer';
-import { generateTotp, totpAfterDrift, parseHttpDate } from './totp.js';
-import { burnBuffer } from './totp.js';
-import { loginWithPassword, isManualTokenFallbackError, resultErrorMessage } from './npm-profile-client.js';
+import { Buffer } from "node:buffer";
+import { generateTotp, totpAfterDrift, parseHttpDate } from "./totp.js";
+import { burnBuffer } from "./totp.js";
+import {
+  loginWithPassword,
+  isManualTokenFallbackError,
+  resultErrorMessage,
+} from "./npm-profile-client.js";
 import {
   createClient,
   publish as sdkPublish,
@@ -18,7 +22,7 @@ import {
   unpublishPackage as sdkUnpublish,
   verifyCredentials as sdkVerifyCredentials,
   type VerificationResult,
-} from 'safe-npm-sdk';
+} from "safe-npm-sdk";
 
 export interface RegistryConfig {
   registry: string;
@@ -44,11 +48,11 @@ export interface PublishResult {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
+  if (typeof value !== "string") return undefined;
   return value.trim().length > 0 ? value : undefined;
 }
 
@@ -90,10 +94,10 @@ function parseTokenResponse(body: unknown): { token?: string } {
 }
 
 function bodyToText(body: unknown): string {
-  if (typeof body === 'string') return body;
-  if (body === null || body === undefined) return '';
+  if (typeof body === "string") return body;
+  if (body === null || body === undefined) return "";
   try {
-    return JSON.stringify(body) ?? '';
+    return JSON.stringify(body) ?? "";
   } catch {
     return String(body);
   }
@@ -174,10 +178,10 @@ export async function applyToken(opts: {
   error?: string;
 }> {
   const { registry, username, totpSecret } = opts;
-  const pwBuf = Buffer.from(opts.password, 'utf8');
+  const pwBuf = Buffer.from(opts.password, "utf8");
   try {
     const otp = generateTotp(totpSecret);
-    const password = pwBuf.toString('utf8');
+    const password = pwBuf.toString("utf8");
     const session = await loginWithPassword(username, password, { registry, otp });
     return {
       ok: true,
@@ -240,7 +244,7 @@ export async function publishPackage(opts: {
   const { registry, token, totpSecret, name, tarball, metadata } = opts;
 
   const version = String(metadata.version ?? opts.version);
-  const registryBase = registry.replace(/\/$/, '');
+  const registryBase = registry.replace(/\/$/, "");
 
   // Build the canonical npm publish packument via the SDK's pure builder
   // (computes sha512 integrity + sha1 shasum, handles scoped tarball naming,
@@ -250,7 +254,7 @@ export async function publishPackage(opts: {
   const packument = await buildPublishPackument(metadata, tarball, {
     registry: registryBase,
     ...(opts.distTag ? { tag: opts.distTag } : {}),
-    ...(opts.access === 'public' || opts.access === 'restricted' ? { access: opts.access } : {}),
+    ...(opts.access === "public" || opts.access === "restricted" ? { access: opts.access } : {}),
   });
 
   // Construct a one-shot SDK client.
@@ -267,7 +271,7 @@ export async function publishPackage(opts: {
       ok: true,
       status: result.response.status,
       stdout: `[publish] + ${name}@${version}`,
-      stderr: '',
+      stderr: "",
     };
   }
 
@@ -277,27 +281,58 @@ export async function publishPackage(opts: {
 
   // Chapter 6.2.4: an expired/invalid/revoked token is NOT a generic failure.
   if (isExpiredToken(errorStatus, errorBody)) {
-    return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody), expired: true };
+    return {
+      ok: false,
+      status: errorStatus,
+      error: errorMsg,
+      stdout: "",
+      stderr: bodyToText(errorBody),
+      expired: true,
+    };
   }
 
   if (explicitOtp) {
-    return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody) };
+    return {
+      ok: false,
+      status: errorStatus,
+      error: errorMsg,
+      stdout: "",
+      stderr: bodyToText(errorBody),
+    };
   }
 
   // Clock-drift recovery (Chapter 8.4): retry ONLY on OTP failures.
   if (isOtpFailure(errorBody, errorStatus)) {
-    const serverMs = parseHttpDate(result.response.headers.get('date'));
+    const serverMs = parseHttpDate(result.response.headers.get("date"));
     if (serverMs !== null) {
       const correctedOtp = totpAfterDrift(totpSecret, serverMs);
       const retry = await sdkPublish(name, packument, { otp: correctedOtp }, client);
       if (retry.ok) {
-        return { ok: true, status: retry.response.status, stdout: `[publish+drift] + ${name}@${version}`, stderr: '', clockDriftRecovered: true };
+        return {
+          ok: true,
+          status: retry.response.status,
+          stdout: `[publish+drift] + ${name}@${version}`,
+          stderr: "",
+          clockDriftRecovered: true,
+        };
       }
-      return { ok: false, status: retry.error.status, error: retry.error.message, stdout: '', stderr: bodyToText(retry.error.body) };
+      return {
+        ok: false,
+        status: retry.error.status,
+        error: retry.error.message,
+        stdout: "",
+        stderr: bodyToText(retry.error.body),
+      };
     }
   }
 
-  return { ok: false, status: errorStatus, error: errorMsg, stdout: '', stderr: bodyToText(errorBody) };
+  return {
+    ok: false,
+    status: errorStatus,
+    error: errorMsg,
+    stdout: "",
+    stderr: bodyToText(errorBody),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -326,15 +361,15 @@ export async function configureOidc(opts: {
 }): Promise<PublishResult> {
   const { registry, token, totpSecret, name } = opts;
   // 2fa-required endpoint: scope and name are URL-encoded, scope keeps its '@'.
-  const scoped = name.startsWith('@');
-  const encoded = scoped ? name.replace(/^@([^/]+)\//, '@$1%2F') : encodeURIComponent(name);
-  const url = `${registry.replace(/\/$/, '')}/-/package/${encoded}/-volatile/2fa-required`;
+  const scoped = name.startsWith("@");
+  const encoded = scoped ? name.replace(/^@([^/]+)\//, "@$1%2F") : encodeURIComponent(name);
+  const url = `${registry.replace(/\/$/, "")}/-/package/${encoded}/-volatile/2fa-required`;
   const res = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'content-type': 'application/json',
+      "content-type": "application/json",
       authorization: `Bearer ${token}`,
-      'npm-otp': generateTotp(totpSecret),
+      "npm-otp": generateTotp(totpSecret),
     },
   });
   const body = await readRegistryBody(res);
@@ -342,8 +377,8 @@ export async function configureOidc(opts: {
     ok: res.ok,
     status: res.status,
     error: res.ok ? undefined : (parseNpmError(body) ?? `HTTP ${res.status}`),
-    stdout: res.ok ? `[oidc] enabled provenance for ${name}` : '',
-    stderr: res.ok ? '' : bodyToText(body),
+    stdout: res.ok ? `[oidc] enabled provenance for ${name}` : "",
+    stderr: res.ok ? "" : bodyToText(body),
   };
 }
 
@@ -390,7 +425,11 @@ export async function unpublishVersion(opts: {
   const client = createClient({ auth: { token: opts.token }, registry: opts.registry });
   const result = await sdkUnpublish(opts.name, opts.version, { otp }, client);
   if (result.ok) {
-    return { ok: true, status: result.response.status, wholePackageRemoved: result.data.packageRemoved };
+    return {
+      ok: true,
+      status: result.response.status,
+      wholePackageRemoved: result.data.packageRemoved,
+    };
   }
   return { ok: false, status: result.error.status, error: result.error.message };
 }
@@ -468,9 +507,14 @@ export async function verifyCredentials(opts: {
         message: v.message,
         // The SDK signals a bad/expired token as `authValid:false`; surface a
         // conventional code so callers can branch without parsing the message.
-        code: v.authValid ? undefined : 'E401',
+        code: v.authValid ? undefined : "E401",
       },
     };
   }
-  return { ok: false, status: result.error.status, code: result.error.code, error: result.error.message };
+  return {
+    ok: false,
+    status: result.error.status,
+    code: result.error.code,
+    error: result.error.message,
+  };
 }
