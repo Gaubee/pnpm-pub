@@ -349,15 +349,41 @@ describe("DaemonStore risk-boundary state machine (Chapter 5.3.2)", () => {
     const store = new DaemonStore();
     await store.load();
     const root = path.join(sandbox, "workspace");
-    const firstEntry = { path: root, pinned: false, addedAt: 1, displayName: "Workspace" };
-    const updatedEntry = { path: root, pinned: true, addedAt: 2, displayName: "Renamed workspace" };
-
-    await store.addWorkspace(firstEntry);
-    await store.addWorkspace(updatedEntry);
+    // First insert with pinned=false/addedAt=1; the extra projection field
+    // (displayName) must be stripped to only workspace ontology fields.
+    // Cast to bypass the excess-property check on purpose — the point of the
+    // test is that the store ignores unknown keys.
+    const entryWithExtra = {
+      path: root,
+      pinned: false,
+      addedAt: 1,
+      displayName: "Workspace",
+    } as unknown as Parameters<DaemonStore["addWorkspace"]>[0];
+    await store.addWorkspace(entryWithExtra);
 
     const [workspace] = store.getWorkspaces();
-    expect(workspace).toEqual({ path: root, pinned: true, addedAt: 2 });
+    expect(workspace).toEqual({ path: root, pinned: false, addedAt: 1 });
     expect("displayName" in workspace!).toBe(false);
+  });
+
+  it("Scenario: Given a tracked pinned workspace, When addWorkspace is re-called (re-scan / auto-collect) with pinned:false, Then the user-set pin and original addedAt are preserved", async () => {
+    const root = path.join(sandbox, "pinned-repo");
+    const store = new DaemonStore();
+    await store.load();
+
+    await store.addWorkspace({ path: root, pinned: true, addedAt: 1_000 });
+    // Simulate the WorkspaceDetail scan-on-mount / scheduler auto-collect path,
+    // which always supplies pinned:false and a fresh addedAt.
+    await store.addWorkspace({ path: root, pinned: false, addedAt: 9_999 });
+
+    const [workspace] = store.getWorkspaces();
+    expect(workspace).toEqual({ path: root, pinned: true, addedAt: 1_000 });
+
+    // Persistence: a freshly-loaded store must still see the preserved pin.
+    const reloaded = new DaemonStore();
+    await reloaded.load();
+    const [persisted] = reloaded.getWorkspaces();
+    expect(persisted).toEqual({ path: root, pinned: true, addedAt: 1_000 });
   });
 
   it("Scenario: Given malformed workspaces.json, When loading, Then workspace truth falls back to empty config", async () => {

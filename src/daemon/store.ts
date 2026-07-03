@@ -207,8 +207,9 @@ export class DaemonStore extends EventEmitter {
   async addWorkspace(entry: WorkspaceEntry): Promise<void> {
     const existing = this.workspaces.paths.find((w) => w.path === entry.path);
     if (existing) {
-      existing.pinned = entry.pinned;
-      existing.addedAt = entry.addedAt;
+      // Re-scan / auto-collect must NOT clobber user-set pin state or the
+      // original add time. Only `path` is the identity key; pinned/addedAt
+      // are user-meaningful and must be preserved across re-touches.
     } else {
       this.workspaces.paths.push({
         path: entry.path,
