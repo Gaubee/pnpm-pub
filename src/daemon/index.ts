@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createResolverByRootFile } from "@gaubee/node/path";
+import type { CreateTrayOptions, EventfulTrayHandle, TrayIcon } from "opentray";
 import type { IpcStatusFrame } from "../shared/index.js";
 import { daemonLogPath } from "../shared/paths.js";
 import { trayIconForProfile } from "./avatar.js";
@@ -69,7 +70,7 @@ export interface DaemonHandles {
  * product domain vocabulary rather than SDK internals.
  */
 type MountedTray = OpentrayTray;
-type BaseTray = Awaited<ReturnType<typeof import("opentray").createTray>>;
+type BaseTray = EventfulTrayHandle;
 
 type TrayMountFailureStage = "runtime-binding" | "tray-extend" | "window-create" | "window-show";
 
@@ -215,8 +216,17 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     activeProfileRef = defaultProfile;
     if (defaultProfile) {
       const registry = store.getProfile(defaultProfile)?.registry ?? "https://registry.npmjs.org/";
-      void import("./avatar.js").then(({ fetchAndCacheAvatar }) =>
-        fetchAndCacheAvatar(defaultProfile, registry),
+      // Pass the profile's npm token so the resolver takes the reliable
+      // authenticated-profile path (email → Gravatar) instead of the slow,
+      // often-unsuccessful anonymous maintainer-search probe. Token read is
+      // best-effort; if the keychain isn't unlocked yet we resolve headless.
+      void Promise.all([
+        import("./avatar.js"),
+        getProfileSecrets(defaultProfile)
+          .then((s) => s?.npm_token)
+          .catch(() => undefined),
+      ]).then(([{ fetchAndCacheAvatar }, token]) =>
+        fetchAndCacheAvatar(defaultProfile, registry, { token }),
       );
     }
     const mounted = await tryCreateTray(
@@ -397,9 +407,9 @@ async function tryCreateTray(
     const opentray = await import("opentray");
     const ext = await import("@opentray/ext-webview");
 
-    // trayOptions is typed by createTray's own parameter (TrayOptions from
-    // @opentray/spec) via inference, so we don't need a direct spec dep.
-    const trayOptions: Parameters<typeof opentray.createTray>[0] = {
+    // Use opentray's app-facing public type instead of deriving the shape from
+    // createTray. This keeps pnpm-pub source stable as the SDK grows named atoms.
+    const trayOptions: CreateTrayOptions = {
       id: "pnpm-pub",
       tooltip: { title: "pnpm-pub", description: "pnpm publish companion" },
       menu: {
@@ -674,7 +684,7 @@ const ICON_COLOR_FILE = "icon-windows.png";
 const ICON_MONO_FILE = "icon-macos.png";
 
 /**
- * Resolve the tray icon projection (@opentray/spec `Icon`).
+ * Resolve the tray icon projection (`opentray` public `TrayIcon`).
  *
  * Two-icon model driven by pending-event state:
  *   - DEFAULT (no pending events): macOS shows the mono TEMPLATE silhouette
@@ -693,7 +703,7 @@ const ICON_MONO_FILE = "icon-macos.png";
  */
 function iconProjection(
   hasPending = false,
-): NonNullable<Parameters<typeof import("opentray").createTray>[0]["icon"]> | undefined {
+): TrayIcon | undefined {
   console.log("QAQ",'iconProjection',hasPending)
   // Active state: color everywhere (a template can't show "active").
   if (hasPending) {
@@ -710,10 +720,7 @@ function iconProjection(
   const mono = resolveAsset(ICON_MONO_FILE);
   const color = resolveAsset(ICON_COLOR_FILE);
   if (!mono && !color) return undefined;
-  const icon: {
-    "darwin-icon-only"?: { type: "file"; path: string; isTemplate?: boolean };
-    "icon-only"?: { type: "file"; path: string };
-  } = {};
+  const icon: TrayIcon = {};
   if (mono) icon["darwin-icon-only"] = { type: "file", path: mono, isTemplate: true };
   if (color) icon["icon-only"] = { type: "file", path: color };
   return icon;

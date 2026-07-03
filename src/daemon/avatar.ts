@@ -224,10 +224,18 @@ async function lookupAuthenticatedIdentity(
  * Fetch a profile's avatar from NPM and cache it. Returns the local path on
  * success, or null when the avatar can't be resolved (network failure, missing
  * user, non-image content). Errors are swallowed — avatars are cosmetic.
+ *
+ * `token` is the profile's npm access token. When provided the resolver takes
+ * the authenticated-profile path (email → Gravatar), which is the reliable way
+ * npm avatars resolve today — the registry's `/-/user/<name>` endpoint no
+ * longer exposes `avatar`. Without a token the resolver falls back to a slow,
+ * often-unsuccessful maintainer-search probe, so callers that have a token
+ * should always pass it.
  */
 export async function fetchAndCacheAvatar(
   username: string,
   registry = "https://registry.npmjs.org/",
+  options: { token?: string } = {},
 ): Promise<string | null> {
   // Fast path: serve a cached avatar PNG.
   const cached = avatarCachePath(username);
@@ -241,7 +249,7 @@ export async function fetchAndCacheAvatar(
   if (hasRecentNegativeCache(username)) return null;
 
   try {
-    const identity = await lookupNpmProfileIdentity(username, registry);
+    const identity = await lookupNpmProfileIdentity(username, registry, options);
     if (!identity.avatarUrl) {
       writeNegativeCache(username);
       return null;
