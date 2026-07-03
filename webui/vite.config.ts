@@ -5,9 +5,10 @@ import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execa, type ResultPromise } from "execa";
+import httpProxy from "http-proxy";
+import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import type { ServerOptions } from "vite-plus";
 
 // Anchor module resolution at the repo root so `tsx` (a root devDep, not in
 // webui) is reachable under pnpm's isolated layout.
@@ -41,27 +42,27 @@ export default defineConfig({
         strict: false,
       }),
     }),
-    // Boot the daemon alongside the Vite dev server so a single `vp dev webui`
-    // (run from the repo root) brings up the full UI + daemon experience that
-    // the former src/dev.ts supervisor owned. The daemon runs as a SEPARATE
-    // `tsx` child process (not in-process) to preserve the node:http WebSocket
-    // upgrade semantics the daemon depends on.
+    // Boot the daemon alongside the Vite dev server and proxy daemon API/WS
+    // traffic to it. The proxy is wired in `configureServer` (not statically in
+    // `server.proxy`) because the daemon port is only known once the plugin
+    // allocates it — `server.proxy` is read at config-load time, before the
+    // plugin runs, so it would resolve to undefined and disable the proxy.
     pnpmPubDaemonDev(),
   ]),
-  server: {
-    proxy: devDaemonProxy(),
-  },
 });
 
 /**
  * Vite dev plugin: spawn the daemon (`src/daemon/dev.ts` via tsx) and tie its
- * lifecycle to the Vite dev server.
+ * lifecycle to the Vite dev server, plus proxy the daemon's `/api`, `/__token`
+ * and `/ws/rpc` endpoints to it.
  *
- * The plugin allocates a random daemon port and writes it to
- * `PNPM_PUB_DEV_DAEMON_PORT` BEFORE the `server.proxy` resolves (proxies are
- * evaluated lazily per-request, so setting the env var in `configureServer`
- * is in time for the first request). The existing `devDaemonProxy()` reads
- * that same env var, so the proxy wires itself up automatically.
+ * The proxy is wired here (in `configureServer`, once the port is known) rather
+ * than via the static `server.proxy` block because `server.proxy` is evaluated
+ * at config-load time — before this plugin has allocated a daemon port, so it
+ * would resolve to undefined and disable the proxy entirely (every `/api` and
+ * `/ws/rpc` request then fell through to SvelteKit's 404 page). Wiring an
+ * http-proxy middleware + upgrade handler here runs at request time, after the
+ * port is set.
  */
 function pnpmPubDaemonDev(): Plugin {
   return {
@@ -117,8 +118,31 @@ function pnpmPubDaemonDev(): Plugin {
       };
 
       void portPromise.then((port) => {
-        // Feed the proxy the agreed port (proxies read the env var lazily).
         process.env.PNPM_PUB_DEV_DAEMON_PORT = String(port);
+        // Wire the daemon proxy now that the port is known. http-proxy serves
+        // both regular HTTP (via a connect middleware) and WebSocket upgrades
+        // (via the 'upgrade' handler).
+        const target = `http://127.0.0.1:${port}`;
+        const proxy = httpProxy.createProxyServer({ target, ws: true });
+        const isDaemonRoute = (url: string): boolean =>
+          url.startsWith("/api/") || url.startsWith("/__token") || url.startsWith("/ws/");
+        const handler = (
+          req: http.IncomingMessage,
+          res: http.ServerResponse,
+          next: () => void,
+        ): void => {
+          if (isDaemonRoute(req.url ?? "")) proxy.web(req, res, undefined, next);
+          else next();
+        };
+        // Install at the FRONT of the connect stack so daemon routes are served
+        // before SvelteKit's own middleware can 404 them. `server.middlewares`
+        // is a Connect instance whose `.stack` is the ordered layer list.
+        (server.middlewares as unknown as { stack: unknown[] }).stack.unshift(
+          { route: "", handle: handler },
+        );
+        httpServer.on("upgrade", (req, socket, head) => {
+          if (isDaemonRoute(req.url ?? "")) proxy.ws(req, socket, head);
+        });
         // The webui URL needs the Vite port, which is only known once the HTTP
         // server is listening — defer the spawn until then.
         const launch = (): void => {
@@ -151,14 +175,4 @@ function allocateRandomPort(): Promise<number> {
       });
     });
   });
-}
-
-function devDaemonProxy(): ServerOptions["proxy"] {
-  const port = process.env.PNPM_PUB_DEV_DAEMON_PORT;
-  if (!port) return undefined;
-  const target = `http://127.0.0.1:${port}`;
-  return {
-    "/__token": { target },
-    "/ws": { target, ws: true },
-  };
 }
