@@ -93,6 +93,15 @@
 			}
 			deleteOpen = false;
 			closeAddProfile(true);
+			// If this was the last profile, force the onboarding route directly
+			// (rather than relying on the indirect / → /active-events → layout
+			// effect chain, which races and can leave the user stranded). The
+			// daemon has already pushed the empty profiles frame by this point.
+			const remaining = $daemon.profiles.filter((p) => p.username !== profile!.username);
+			if (remaining.length === 0) {
+				goto(`/add-profile${window.location.hash}`, { replaceState: true });
+				return;
+			}
 			goto(`/${window.location.hash}`, { replaceState: true });
 		} catch {
 			error = $_('profile.deleteError');

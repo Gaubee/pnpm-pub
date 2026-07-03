@@ -745,6 +745,12 @@ export class WebServer {
         registry,
         avatarUrl: identity.avatarUrl ?? undefined,
         authStatus: 'authenticated',
+        // New profiles opt into proactive token re-mint by default. NPM session
+        // tokens expire within hours; without auto-renew the user would hit an
+        // expired-token wall on their next publish. The user can opt out from the
+        // profile detail page. (Renew/re-auth preserves the prior value via the
+        // `...profile` spread, so this default only applies to brand-new profiles.)
+        autoRenew: true,
       });
     } catch (error: unknown) {
       const { deleteProfile } = await import('./keychain.js');

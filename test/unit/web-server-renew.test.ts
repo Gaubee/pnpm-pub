@@ -303,6 +303,8 @@ describe('renew flow keeps the stored secret', () => {
       registry: 'https://registry.npmjs.org/',
       avatarUrl: 'https://gravatar.com/avatar/bob?s=128&d=404',
       authStatus: 'authenticated',
+      // New profiles opt into proactive token re-mint by default.
+      autoRenew: true,
     });
   });
 

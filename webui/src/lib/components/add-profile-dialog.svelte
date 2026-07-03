@@ -14,6 +14,7 @@
 	} from '$lib/components/ui/dialog/index.js';
 	import AddProfileForm from '$lib/components/add-profile-form.svelte';
 	import { closeAddProfile, daemon, ui, activeProfile } from '$lib/store.js';
+	import { goto } from '$app/navigation';
 	import { _ } from 'svelte-i18n';
 
 	/** Dismissable only once a profile exists (the no-profile case uses the route). */
@@ -29,6 +30,17 @@
 		if (!next && !hasProfiles) return;
 		ui.set({ addProfileOpen: next });
 	}
+
+	function handleSuccess(username: string): void {
+		// Always close the dialog first.
+		closeAddProfile(true);
+		// Reauth just refreshed the active profile's token — stay where the user
+		// was. Adding a NEW profile, however, should land on its detail page so the
+		// user can review/adjust its settings.
+		if (!isReauth) {
+			goto(`/profiles/${encodeURIComponent(username)}${window.location.hash}`);
+		}
+	}
 </script>
 
 <Dialog bind:open={() => open, setOpen}>
@@ -37,7 +49,7 @@
 		<AddProfileForm
 			mode={isReauth ? 'reauth' : 'add'}
 			username={isReauth ? $activeProfile?.username : undefined}
-			onSuccess={() => closeAddProfile(true)}
+			onSuccess={handleSuccess}
 		/>
 	</DialogContent>
 </Dialog>

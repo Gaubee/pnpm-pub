@@ -19,7 +19,8 @@
 	 *
 	 * Props:
 	 *   - `onSuccess`  : called once after a successful apply (new profile is
-	 *                    pushed over the WS by the daemon).
+	 *                    pushed over the WS by the daemon), with the profile's
+	 *                    username so the shell can route (e.g. to its detail page).
 	 *   - `showAvatar` : render the daemon-backed npm identity preview (on by default).
 	 */
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -52,7 +53,9 @@
 		/** Pre-filled username in reauth mode (the profile being re-authenticated). */
 		username: usernameProp,
 	}: {
-		onSuccess?: () => void;
+		/** Fires after a successful apply, with the username of the profile that
+		 *  was created/re-authenticated (lets the shell route to detail, etc.). */
+		onSuccess?: (username: string) => void;
 		showAvatar?: boolean;
 		mode?: 'add' | 'reauth';
 		username?: string;
@@ -185,7 +188,7 @@
 			if (json.ok) {
 				phase = 'success';
 				wipeSecrets();
-				setTimeout(onSuccess, 900);
+				setTimeout(() => onSuccess(trimmedUsername), 900);
 				return;
 			}
 			if (json.needsManualToken) {

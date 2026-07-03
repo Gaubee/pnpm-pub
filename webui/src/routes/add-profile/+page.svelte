@@ -20,10 +20,11 @@
 
 	let contentEl = $state<HTMLDivElement | null>(null);
 
-	function onSuccess(): void {
-		// The new profile arrives over the WS; go home (replace so back doesn't
-		// bounce to this onboarding page).
-		goto('/active-events', { replaceState: true });
+	function onSuccess(username: string): void {
+		// The new profile arrives over the WS. Land on its detail page so the user
+		// can review / adjust settings (auto-renew, OIDC, …). replaceState keeps
+		// back from bouncing to this onboarding page.
+		goto(`/profiles/${encodeURIComponent(username)}${window.location.hash}`, { replaceState: true });
 	}
 
 	function measuredWindowSize(target: HTMLElement): { width: number; height: number } {
