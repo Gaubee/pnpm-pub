@@ -194,6 +194,61 @@ describe('DaemonStore events (Chapter 6.2)', () => {
     expect(resolved?.clockDriftRecovered).toBe(true);
     expect(resolved?.createdAt).toBe(evt.createdAt);
   });
+
+  it('Scenario: Given a pending publish event, When updating args, Then the args are mutated on the live event', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const evt = store.createEvent({
+      kind: 'publish',
+      profile: 'alice',
+      payload: { kind: 'publish', data: { source: { kind: 'directory', path: '/p' }, args: ['--access', 'public'], target: { name: 'pkg', version: '1.0.0', path: '/p' } } },
+    });
+    const updated = store.updateEventArgs(evt.id, ['--access', 'restricted', '--no-git-checks']);
+    expect(updated?.payload?.kind).toBe('publish');
+    if (updated?.payload?.kind === 'publish') {
+      expect(updated.payload.data.args).toEqual(['--access', 'restricted', '--no-git-checks']);
+    }
+    // The SAME event object in the store reflects the mutation.
+    expect(store.getEvent(evt.id)?.payload?.kind).toBe('publish');
+  });
+
+  it('Scenario: Given a pending recursive-publish event, When updating args, Then the args are mutated (parity with publish)', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const evt = store.createEvent({
+      kind: 'recursive-publish',
+      profile: 'alice',
+      payload: { kind: 'recursive-publish', data: { source: { kind: 'directory', path: '/ws' }, args: ['-r', '--no-git-checks'], targets: [{ name: 'pkg', version: '1.0.0', path: '/ws/pkg' }] } },
+    });
+    const updated = store.updateEventArgs(evt.id, ['-r', '--access', 'restricted']);
+    expect(updated).toBeTruthy();
+    if (updated?.payload?.kind === 'recursive-publish') {
+      expect(updated.payload.data.args).toEqual(['-r', '--access', 'restricted']);
+    }
+  });
+
+  it('Scenario: Given a non-publish event (setup-oidc), When updating args, Then it is rejected (undefined)', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const evt = store.createEvent({
+      kind: 'setup-oidc',
+      profile: 'alice',
+      payload: { kind: 'setup-oidc', data: { repo: 'o/r', name: '@scope/pkg', path: '/p' } },
+    });
+    expect(store.updateEventArgs(evt.id, ['--access', 'public'])).toBeUndefined();
+  });
+
+  it('Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)', async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const evt = store.createEvent({
+      kind: 'publish',
+      profile: 'alice',
+      payload: { kind: 'publish', data: { source: { kind: 'directory', path: '/p' }, args: [], target: { name: 'pkg', version: '1.0.0', path: '/p' } } },
+    });
+    store.resolveEvent(evt.id, 'success', 'done');
+    expect(store.updateEventArgs(evt.id, ['--access', 'public'])).toBeUndefined();
+  });
 });
 
 describe('DaemonStore risk-boundary state machine (Chapter 5.3.2)', () => {

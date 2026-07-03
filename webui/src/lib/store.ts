@@ -72,6 +72,8 @@ export interface DaemonState {
 	events: PubEvent[];
 	packages: PublishTarget[];
 	scannedRoot: string | null;
+	/** True when the scanned root is a pnpm workspace (pnpm-workspace.yaml). */
+	isPnpmWorkspace: boolean;
 	/** Staged confirmation token for a risky-workspace add (Chapter 5.3.2). */
 	riskyConfirmationToken: string | null;
 	toast: { level: 'info' | 'success' | 'error' | 'warning'; message: string; id: number } | null;
@@ -88,6 +90,7 @@ function createState(): DaemonState {
 		events: [],
 		packages: [],
 		scannedRoot: null,
+		isPnpmWorkspace: false,
 		riskyConfirmationToken: null,
 		toast: null,
 	};
@@ -204,6 +207,7 @@ function handleServerMessage(msg: WsServerMessage): void {
 				...s,
 				packages: msg.packages,
 				scannedRoot: msg.root,
+				isPnpmWorkspace: msg.isPnpmWorkspace ?? false,
 				riskyConfirmationToken: msg.riskyConfirmationToken ?? null,
 			}));
 			break;

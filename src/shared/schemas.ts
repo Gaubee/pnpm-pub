@@ -25,6 +25,11 @@ export const ProfileSchema = z.object({
   avatarUrl: z.string().optional(),
   ciPreferences: z.record(z.string(), z.unknown()).optional(),
   authStatus: z.enum(['authenticated', 'unauthenticated']).optional(),
+  /**
+   * Whether the daemon should automatically re-mint the NPM token (using the
+   * stored password) before it expires. Off requires the user to renew manually.
+   */
+  autoRenew: z.boolean().optional(),
 });
 export type Profile = z.infer<typeof ProfileSchema>;
 
@@ -125,6 +130,7 @@ export const EventKindSchema = z.enum([
   'create-placeholder',
   'refresh-token',
   'unpublish',
+  'recursive-publish',
 ]);
 export type EventKind = z.infer<typeof EventKindSchema>;
 
@@ -201,12 +207,31 @@ export const UnpublishContextSchema = z.object({
 });
 export type UnpublishContext = z.infer<typeof UnpublishContextSchema>;
 
+/**
+ * Recursive publish context — a workspace-level publish driven by
+ * `pnpm publish -r`. Distinct from the single-package `publish` event because
+ * it carries multiple targets and REQUIRES pnpm (no API fallback). The targets
+ * are enumerated up-front via `pnpm pack -r` so the WebUI can show what will be
+ * published before the user confirms.
+ */
+export const RecursivePublishContextSchema = z.object({
+  /** Workspace root directory (the cwd for `pnpm publish -r`). */
+  source: PublishSourceSchema,
+  /** Shared publish argv (--access/--tag/--no-git-checks/etc). */
+  args: z.array(z.string()),
+  /** The packages that will be published, enumerated via `pnpm pack -r`. */
+  targets: z.array(PublishTargetSchema),
+  branch: z.string().optional(),
+});
+export type RecursivePublishContext = z.infer<typeof RecursivePublishContextSchema>;
+
 export const EventPayloadSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('publish'), data: PublishContextSchema }),
   z.object({ kind: z.literal('setup-oidc'), data: OidcContextSchema }),
   z.object({ kind: z.literal('create-placeholder'), data: CreatePlaceholderContextSchema }),
   z.object({ kind: z.literal('refresh-token'), data: RefreshTokenContextSchema }),
   z.object({ kind: z.literal('unpublish'), data: UnpublishContextSchema }),
+  z.object({ kind: z.literal('recursive-publish'), data: RecursivePublishContextSchema }),
 ]);
 export type EventPayload = z.infer<typeof EventPayloadSchema>;
 
@@ -247,6 +272,10 @@ export const PubEventSchema = z.object({
   groupId: z.string().optional(),
   /** Packed-tarball file list, cached when the publish runs (dry or real). */
   tarballSummary: TarballSummarySchema.optional(),
+  /** Per-target tarball summaries for a recursive publish (one per target). */
+  tarballSummaries: z
+    .array(z.object({ name: z.string(), version: z.string(), summary: TarballSummarySchema }))
+    .optional(),
 });
 export type PubEvent = z.infer<typeof PubEventSchema>;
 
@@ -365,6 +394,9 @@ export const WsServerMessageSchema = z.discriminatedUnion('type', [
     root: z.string(),
     packages: z.array(PublishTargetSchema),
     riskyConfirmationToken: z.string().optional(),
+    /** True when the scanned root contains a `pnpm-workspace.yaml` — the UI
+     *  uses this to offer a "Recursive Publish" action (Chapter 5.3 / 1.3.1). */
+    isPnpmWorkspace: z.boolean().optional(),
   }),
   z.object({
     type: z.literal('toast'),

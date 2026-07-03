@@ -202,6 +202,17 @@
 		actions.createEvent('publish', publishPayload(pkg));
 		goto('/active-events');
 	}
+	function doRecursivePublish(): void {
+		if (!decodedRoot) return;
+		// The daemon enumerates the targets via `pnpm list -r` after creation, so
+		// the payload carries an empty targets array that gets filled server-side.
+		actions.createEvent('recursive-publish', {
+			source: { kind: 'directory' as const, path: decodedRoot },
+			args: ['--no-git-checks'],
+			targets: [],
+		});
+		goto('/active-events');
+	}
 </script>
 
 <svelte:head><title>{$_('workspaces.heading')} · {decodedRoot}</title></svelte:head>
@@ -219,6 +230,16 @@
 		<p class="truncate font-mono text-[10px] text-muted-foreground/70">{decodedRoot}</p>
 		</div>
 		<div class="flex shrink-0 gap-2">
+			{#if $daemon.isPnpmWorkspace}
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={doRecursivePublish}
+					title={$_('workspaces.recursivePublishTitle')}
+				>
+					<IconLayers class="h-3.5 w-3.5" /> {$_('workspaces.recursivePublish')}
+				</Button>
+			{/if}
 			<Button
 				variant={batchMode ? 'brand' : 'outline'}
 				size="sm"

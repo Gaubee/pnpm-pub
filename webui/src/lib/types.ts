@@ -11,6 +11,7 @@ export interface Profile {
 	avatarUrl?: string;
 	ciPreferences?: Record<string, unknown>;
 	authStatus?: 'authenticated' | 'unauthenticated';
+	autoRenew?: boolean;
 }
 
 /**
@@ -115,6 +116,14 @@ export interface PublishContext {
 	branch?: string;
 }
 
+export interface RecursivePublishContext {
+	source: PublishSource;
+	args: string[];
+	/** The packages that will be published (enumerated via `pnpm list -r`). */
+	targets: PublishTarget[];
+	branch?: string;
+}
+
 export interface OidcContext {
 	repo: string;
 	name: string;
@@ -175,7 +184,8 @@ export type EventKind =
 	| 'setup-oidc'
 	| 'create-placeholder'
 	| 'refresh-token'
-	| 'unpublish';
+	| 'unpublish'
+	| 'recursive-publish';
 
 export type EventStatus = 'pending' | 'success' | 'failed' | 'expired' | 'action-required' | 'rejected';
 
@@ -184,7 +194,8 @@ export type EventPayload =
 	| { kind: 'setup-oidc'; data: OidcContext }
 	| { kind: 'create-placeholder'; data: CreatePlaceholderContext }
 	| { kind: 'refresh-token'; data: RefreshTokenContext }
-	| { kind: 'unpublish'; data: UnpublishContext };
+	| { kind: 'unpublish'; data: UnpublishContext }
+	| { kind: 'recursive-publish'; data: RecursivePublishContext };
 
 /** Payload data shape for one concrete Event kind. */
 export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>['data'];
@@ -217,6 +228,8 @@ export interface PubEvent {
 	groupId?: string;
 	/** Packed-tarball file list, cached when the publish runs (dry or real). */
 	tarballSummary?: TarballSummary;
+	/** Per-target tarball summaries for a recursive publish (one per target). */
+	tarballSummaries?: { name: string; version: string; summary: TarballSummary }[];
 }
 
 export interface BackupBundle {
@@ -232,7 +245,7 @@ export type WsServerMessage =
 	| { type: 'event'; event: PubEvent }
 	| { type: 'profiles'; default: string; profiles: Profile[] }
 	| { type: 'workspaces'; workspaces: WorkspaceEntry[] }
-	| { type: 'packages'; root: string; packages: PublishTarget[]; riskyConfirmationToken?: string }
+	| { type: 'packages'; root: string; packages: PublishTarget[]; riskyConfirmationToken?: string; isPnpmWorkspace?: boolean }
 	| { type: 'toast'; level: 'info' | 'success' | 'error' | 'warning'; message: string };
 
 export type WsClientMessage =

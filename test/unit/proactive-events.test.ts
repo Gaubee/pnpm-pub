@@ -16,6 +16,7 @@ import { PublishScheduler } from '../../src/daemon/scheduler.js';
 import { setHomeOverride } from '../../src/shared/paths.js';
 import { configureOidc, publishPackage } from '../../src/daemon/npm-api.js';
 import { packPackage, readPackageTarball, summarizePackageTarball } from '../../src/daemon/packer.js';
+import { publishPackageViaCli, publishRecursiveViaCli, listRecursivePackages, hasPnpm, PnpmNotOnPathError } from '../../src/daemon/publisher.js';
 
 vi.mock('../../src/daemon/npm-api.js', () => ({
   configureOidc: vi.fn(),
@@ -28,12 +29,24 @@ vi.mock('../../src/daemon/packer.js', () => ({
   summarizePackageTarball: vi.fn(),
 }));
 
+vi.mock('../../src/daemon/publisher.js', () => ({
+  publishPackageViaCli: vi.fn(),
+  publishRecursiveViaCli: vi.fn(),
+  listRecursivePackages: vi.fn(),
+  hasPnpm: vi.fn(),
+  PnpmNotOnPathError: class PnpmNotOnPathError extends Error {},
+}));
+
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-proactive-${process.pid}-${Date.now()}`);
 const configureOidcMock = vi.mocked(configureOidc);
 const publishPackageMock = vi.mocked(publishPackage);
 const packPackageMock = vi.mocked(packPackage);
 const readPackageTarballMock = vi.mocked(readPackageTarball);
 const summarizePackageTarballMock = vi.mocked(summarizePackageTarball);
+const publishPackageViaCliMock = vi.mocked(publishPackageViaCli);
+const publishRecursiveViaCliMock = vi.mocked(publishRecursiveViaCli);
+const listRecursivePackagesMock = vi.mocked(listRecursivePackages);
+const hasPnpmMock = vi.mocked(hasPnpm);
 const execFileAsync = promisify(execFile);
 
 function parseMockPackageMetadata(text: string): Record<string, unknown> {
@@ -62,6 +75,13 @@ beforeEach(async () => {
     stdout: '[publish] + reserved-name@0.0.0',
     stderr: '',
   });
+  // Default: pnpm absent from PATH → scheduler falls back to the registry-API
+  // path, so these tests assert against publishPackageMock (the API path) as
+  // before. Individual tests override this to exercise the CLI primary path.
+  publishPackageViaCliMock.mockRejectedValue(new PnpmNotOnPathError());
+  // Default: pnpm absent for recursive enumeration too.
+  hasPnpmMock.mockResolvedValue(false);
+  listRecursivePackagesMock.mockResolvedValue([]);
   packPackageMock.mockImplementation(async (cwd: string) => {
     const metadata = parseMockPackageMetadata(await fsp.readFile(path.join(cwd, 'package.json'), 'utf8'));
     return {
@@ -550,6 +570,156 @@ describe('Feature: WebUI-created proactive events', () => {
       }),
     );
     expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('Scenario: Given a directory publish with pnpm on PATH, When confirmed, Then the CLI primary path is used (not the API fallback)', async () => {
+    const packageDir = path.join(sandbox, 'publish-cli-primary');
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(packageDir, 'package.json'), '{"name":"pkg","version":"1.0.0"}', 'utf8');
+    const exit = vi.fn();
+    const log = vi.fn();
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
+    const scheduler = new PublishScheduler(store);
+
+    // pnpm present → the CLI primary path runs publishPackageViaCli.
+    publishPackageViaCliMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      stdout: '',
+      stderr: '',
+    });
+
+    await scheduler.intercept(
+      { command: 'publish', cwd: packageDir, args: ['--access', 'public'] },
+      { log, exit },
+    );
+    const pending = store.getEvents().find((event) => event.status === 'pending');
+    if (!pending) throw new Error('no pending event');
+
+    await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
+
+    // The CLI executor received the package cwd + forwarded args + credentials.
+    expect(publishPackageViaCliMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: packageDir,
+        registry: 'http://registry.test/',
+        token: 'npm_token',
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      }),
+    );
+    // The API fallback was NOT used.
+    expect(publishPackageMock).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('Scenario: Given a recursive-publish event, When confirmed with pnpm, Then publishRecursiveViaCli is invoked', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-recursive-confirm');
+    const packageDir = path.join(workspaceRoot, 'packages/pkg');
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, 'package.json'), '{"name":"root","version":"1.0.0","private":true}', 'utf8');
+    await fsp.writeFile(path.join(packageDir, 'package.json'), '{"name":"pkg","version":"2.0.0"}', 'utf8');
+    const exit = vi.fn();
+    const log = vi.fn();
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
+    const scheduler = new PublishScheduler(store);
+
+    // intercept with --recursive → enumerates targets via mocked pnpm, creating
+    // a recursive-publish event bound to the real CLI client (so exit is wired).
+    hasPnpmMock.mockResolvedValue(true);
+    listRecursivePackagesMock.mockResolvedValue([
+      { name: 'root', version: '1.0.0', path: workspaceRoot, private: true },
+      { name: 'pkg', version: '2.0.0', path: packageDir, private: false },
+    ]);
+    publishRecursiveViaCliMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      stdout: '',
+      stderr: '',
+    });
+
+    await scheduler.intercept(
+      { command: 'publish', cwd: workspaceRoot, args: ['--recursive', '--no-git-checks'] },
+      { log, exit },
+    );
+    const pending = store.getEvents().find((event) => event.status === 'pending');
+    expect(pending?.payload?.kind).toBe('recursive-publish');
+    if (pending?.payload?.kind !== 'recursive-publish') return;
+
+    await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
+
+    expect(publishRecursiveViaCliMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: workspaceRoot,
+        registry: 'http://registry.test/',
+        token: 'npm_token',
+        totpSecret: 'JBSWY3DPEHPK3PXP',
+      }),
+    );
+    expect(publishPackageMock).not.toHaveBeenCalled();
+    expect(publishPackageViaCliMock).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('Scenario: Given a recursive-publish that fails, When confirmed, Then the full pnpm stderr is persisted in event.result (not just a single line)', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-recursive-stderr');
+    const packageDir = path.join(workspaceRoot, 'packages/pkg');
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, 'package.json'), '{"name":"root","version":"1.0.0","private":true}', 'utf8');
+    await fsp.writeFile(path.join(packageDir, 'package.json'), '{"name":"@scope/pkg","version":"2.0.0"}', 'utf8');
+    const exit = vi.fn();
+    const log = vi.fn();
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    store.setCredentials('alice', { token: 'npm_token', totpSecret: 'JBSWY3DPEHPK3PXP' });
+    const scheduler = new PublishScheduler(store);
+
+    hasPnpmMock.mockResolvedValue(true);
+    listRecursivePackagesMock.mockResolvedValue([
+      { name: 'root', version: '1.0.0', path: workspaceRoot, private: true },
+      { name: '@scope/pkg', version: '2.0.0', path: packageDir, private: false },
+    ]);
+    // Simulate a registry failure with a multi-line stderr body.
+    const fullStderr = [
+      'npm notice Publishing to http://registry.test/',
+      'npm error code E404',
+      'npm error 404 Not Found - PUT http://registry.test/@scope/pkg - Package not found',
+      'npm error A complete log of this run can be found in: /tmp/log',
+    ].join('\n');
+    publishRecursiveViaCliMock.mockResolvedValueOnce({
+      ok: false,
+      status: 1,
+      error: '404 Not Found',
+      stdout: '',
+      stderr: fullStderr,
+    });
+
+    await scheduler.intercept(
+      { command: 'publish', cwd: workspaceRoot, args: ['--recursive', '--no-git-checks', '--access', 'public'] },
+      { log, exit },
+    );
+    const pending = store.getEvents().find((event) => event.status === 'pending');
+    if (pending?.payload?.kind !== 'recursive-publish') throw new Error('expected recursive-publish event');
+
+    await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
+
+    const resolved = store.getEvent(pending.id);
+    expect(resolved?.status).toBe('failed');
+    // The FULL multi-line stderr is persisted — not just the single extracted line.
+    expect(resolved?.result).toBe(fullStderr);
+    expect(resolved?.result).toContain('E404');
+    expect(resolved?.result).toContain('@scope/pkg');
+    expect((resolved?.result?.match(/\n/g) ?? []).length).toBeGreaterThan(0);
+    expect(exit).toHaveBeenCalledWith(1, expect.any(String));
   });
 
   it('Scenario: Given publish args with --registry=value, When confirmed, Then the command registry overrides the profile registry', async () => {
@@ -1261,8 +1431,8 @@ describe('Feature: WebUI-created proactive events', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('Scenario: Given recursive publish args, When confirmed, Then no single-package registry write is performed', async () => {
-    const workspaceRoot = path.join(sandbox, 'publish-recursive-unsupported');
+  it('Scenario: Given recursive publish args without pnpm, When intercepted, Then it is refused before any event is created', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-recursive-no-pnpm');
     const packageDir = path.join(workspaceRoot, 'packages/pkg');
     await fsp.mkdir(packageDir, { recursive: true });
     await fsp.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'workspace-root', version: '9.9.9' }), 'utf8');
@@ -1275,6 +1445,7 @@ describe('Feature: WebUI-created proactive events', () => {
     await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
     const scheduler = new PublishScheduler(store);
 
+    // pnpm absent (the beforeEach default) → recursive publish is refused.
     await scheduler.intercept(
       {
         command: 'publish',
@@ -1283,20 +1454,54 @@ describe('Feature: WebUI-created proactive events', () => {
       },
       { log, exit },
     );
+
+    // No pending event is created; the CLI is exited with an error.
     const pending = store.getEvents().find((event) => event.status === 'pending');
-    expect(pending?.payload?.kind).toBe('publish');
-    if (pending?.payload?.kind !== 'publish') return;
-
-    await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
-
-    const event = store.getEvent(pending.id);
-    expect(event?.status).toBe('failed');
-    expect(event?.result).toBe('Recursive publish is not yet supported by pnpm-pub; no registry write performed.');
+    expect(pending).toBeUndefined();
     expect(packPackageMock).not.toHaveBeenCalled();
     expect(readPackageTarballMock).not.toHaveBeenCalled();
     expect(publishPackageMock).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith('stderr', 'Recursive publish is not yet supported by pnpm-pub; no registry write performed.\n');
-    expect(exit).toHaveBeenCalledWith(1, 'Recursive publish is not yet supported by pnpm-pub; no registry write performed.');
+    expect(publishPackageViaCliMock).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('stderr', 'Recursive publish requires pnpm on PATH; no fallback is available.\n');
+    expect(exit).toHaveBeenCalledWith(1, 'Recursive publish requires pnpm on PATH; no fallback is available.');
+  });
+
+  it('Scenario: Given recursive publish args with pnpm, When intercepted, Then a recursive-publish event is created with enumerated targets', async () => {
+    const workspaceRoot = path.join(sandbox, 'publish-recursive-with-pnpm');
+    const packageDir = path.join(workspaceRoot, 'packages/pkg');
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'workspace-root', version: '9.9.9', private: true }), 'utf8');
+    await fsp.writeFile(path.join(packageDir, 'package.json'), JSON.stringify({ name: 'requested-pkg', version: '1.2.3' }), 'utf8');
+    const exit = vi.fn();
+    const log = vi.fn();
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: 'alice', registry: 'http://registry.test/' });
+    const scheduler = new PublishScheduler(store);
+
+    // pnpm present → enumerate two packages, one private (filtered out).
+    hasPnpmMock.mockResolvedValue(true);
+    listRecursivePackagesMock.mockResolvedValue([
+      { name: 'workspace-root', version: '9.9.9', path: workspaceRoot, private: true },
+      { name: 'requested-pkg', version: '1.2.3', path: packageDir, private: false },
+    ]);
+
+    await scheduler.intercept(
+      {
+        command: 'publish',
+        cwd: workspaceRoot,
+        args: ['--recursive', '--no-git-checks'],
+      },
+      { log, exit },
+    );
+
+    const pending = store.getEvents().find((event) => event.status === 'pending');
+    expect(pending?.payload?.kind).toBe('recursive-publish');
+    if (pending?.payload?.kind !== 'recursive-publish') return;
+    // The private root package is filtered out; only the public package remains.
+    expect(pending.payload.data.targets).toHaveLength(1);
+    expect(pending.payload.data.targets[0]?.name).toBe('requested-pkg');
   });
 
   it('Scenario: Given recursive dry-run publish args, When confirmed, Then workspace packages are packed without registry writes', async () => {

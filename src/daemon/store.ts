@@ -330,7 +330,9 @@ export class DaemonStore extends EventEmitter {
   updateEventArgs(id: string, args: string[]): PubEvent | undefined {
     const evt = this.events.find((e) => e.id === id);
     if (!evt || evt.status !== 'pending') return undefined;
-    if (evt.payload?.kind !== 'publish') return undefined;
+    // Both single-package `publish` and `recursive-publish` carry an editable
+    // `args` array on their payload data.
+    if (evt.payload?.kind !== 'publish' && evt.payload?.kind !== 'recursive-publish') return undefined;
     evt.payload.data.args = args;
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit('event', { type: 'event' as const, event: evt });

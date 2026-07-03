@@ -27,11 +27,13 @@ import type {
   PublishSource,
   PublishTarget,
   PubEvent,
+  RecursivePublishContext,
   RefreshTokenContext,
   UnpublishContext,
 } from '../shared/index.js';
 import type { PackageTarballFile, PackageTarballSummary } from './packer.js';
 import { publishPackage, configureOidc, unpublishVersion } from './npm-api.js';
+import { publishPackageViaCli, publishRecursiveViaCli, listRecursivePackages, hasPnpm, PnpmNotOnPathError } from './publisher.js';
 import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from './oidc-template.js';
 import { promises as fsp } from 'node:fs';
 import { realFs } from './real-fs.js';
@@ -151,6 +153,10 @@ function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload 
       const data = parseUnpublishContext(payload);
       return data ? { kind, data } : null;
     }
+    case 'recursive-publish': {
+      const data = parseRecursivePublishContext(payload);
+      return data ? { kind, data } : null;
+    }
   }
 }
 
@@ -162,6 +168,19 @@ function parsePublishContext(value: unknown): PublishContext | null {
   const rawArgs = value.args;
   const args = Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === 'string') ? rawArgs : [];
   return { source, args, target };
+}
+
+function parseRecursivePublishContext(value: unknown): RecursivePublishContext | null {
+  if (!isRecord(value)) return null;
+  const source = parsePublishSource(value.source);
+  if (!source) return null;
+  const rawArgs = value.args;
+  const args = Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === 'string') ? rawArgs : [];
+  // targets may be empty when created from the WebUI button — they are
+  // enumerated via `pnpm pack -r` immediately after creation.
+  const rawTargets = Array.isArray(value.targets) ? value.targets : [];
+  const targets = rawTargets.map(parsePublishTarget).filter((t): t is PublishTarget => t !== null);
+  return { source, args, targets };
 }
 
 function parsePublishSource(value: unknown): PublishSource | null {
@@ -437,6 +456,18 @@ async function loadPublishSource(
 interface PublishedPackageSummary {
   name: string;
   version: string;
+}
+
+/** Structural type both the CLI path (`CliPublishResult`) and the API path
+ *  (`PublishResult`) satisfy, so `runPublish` can route either uniformly. */
+interface PublishResultLike {
+  ok: boolean;
+  status?: number;
+  error?: string;
+  clockDriftRecovered?: boolean;
+  expired?: boolean;
+  stdout: string;
+  stderr: string;
 }
 
 async function writePublishSummaryFile(summaryDir: string, publishedPackages: readonly PublishedPackageSummary[]): Promise<void> {
@@ -1135,6 +1166,55 @@ export class PublishScheduler {
     }
     await this.collectWorkspaceFromCwd(req.cwd, client);
     const source = await resolvePublishSource(req.cwd, req.args);
+
+    // Recursive non-dry-run publish is its own event kind: it requires pnpm
+    // (no API fallback) and carries multiple targets enumerated via
+    // `pnpm list -r`. Dry-run recursive still uses the single-package event
+    // path (runRecursivePublishDryRun).
+    const isRecursive = isRecursivePublish(req.args);
+    const isDryRun = isDryRunPublish(req.args);
+    if (isRecursive && !isDryRun) {
+      // Recursive publish REQUIRES pnpm — refuse early (no event, no fallback).
+      if (!(await hasPnpm(source.path))) {
+        const msg = 'Recursive publish requires pnpm on PATH; no fallback is available.';
+        client.log('stderr', msg + '\n');
+        client.exit(1, msg);
+        return;
+      }
+      let targets: PublishTarget[];
+      try {
+        targets = await this.enumerateRecursiveTargets(source.path, req.args, client);
+      } catch (error: unknown) {
+        const msg = errorToMessage(error);
+        client.log('stderr', msg + '\n');
+        client.exit(1, msg);
+        return;
+      }
+      if (targets.length === 0) {
+        const msg = 'No publishable packages matched in the workspace.';
+        client.log('stderr', msg + '\n');
+        client.exit(1, msg);
+        return;
+      }
+      const branch = await detectGitBranchSafe(source.path);
+      const event = this.store.createEvent({
+        kind: 'recursive-publish',
+        profile,
+        profileOverride: req.profileOverride,
+        payload: {
+          kind: 'recursive-publish',
+          data: {
+            source,
+            args: req.args,
+            targets,
+            ...(branch ? { branch } : {}),
+          },
+        },
+      });
+      this.pending.set(event.id, { event, client });
+      return;
+    }
+
     const target = await readPublishTarget(source);
     // Detect the current git branch from the source dir to surface a hint for
     // the publish-branch option in the EventCard. The preflight
@@ -1159,6 +1239,38 @@ export class PublishScheduler {
   }
 
   /**
+   * Enumerate the publishable targets a recursive publish would operate on,
+   * via `pnpm list -r`, honoring `--filter` selectors from the args. Private
+   * packages are excluded (pnpm publish -r skips them too).
+   */
+  private async enumerateRecursiveTargets(
+    cwd: string,
+    args: string[],
+    client: PendingClient,
+  ): Promise<PublishTarget[]> {
+    client.log('stdout', 'enumerating workspace packages...\n');
+    const all = await listRecursivePackages(cwd);
+    // Apply --filter selectors if present; otherwise take all non-private.
+    const filters = readRecursiveFilters(args);
+    const publicPkgs = all.filter((p) => !p.private);
+    let selected = publicPkgs;
+    if (filters.length > 0) {
+      const root = await resolveRecursivePublishRoot({ kind: 'directory', path: cwd });
+      const scanned = await scanWorkspace(root, realFs, { root, respectGitignore: true });
+      const matched = await applyRecursiveFilters(scanned, root, filters, readChangedFilesIgnorePatterns(args), cwd);
+      const matchedNames = new Set(matched.map((m) => m.name));
+      selected = publicPkgs.filter((p) => matchedNames.has(p.name));
+    }
+    // Resolve full targets (incl. repository, for the corner github-opener).
+    const targets: PublishTarget[] = [];
+    for (const p of selected) {
+      const meta = await readPublishTarget({ kind: 'directory', path: p.path });
+      targets.push({ ...meta, name: p.name, version: p.version, path: p.path });
+    }
+    return targets;
+  }
+
+  /**
    * GUI-originated actions use the same pending-wall law as CLI publishes:
    * create the Event through the store, then register it in the executable
    * pending map before any confirm action can reach NPM or the filesystem.
@@ -1177,6 +1289,10 @@ export class PublishScheduler {
     // (they carry the user's advanced-option edits).
     if (parsed.kind === 'publish') {
       await this.refreshPublishTarget(parsed);
+    } else if (parsed.kind === 'recursive-publish') {
+      // WebUI button may create the event with empty targets — enumerate them
+      // now via `pnpm list -r` so the card shows what will be published.
+      await this.refreshRecursiveTargets(parsed);
     }
     const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
     this.pending.set(event.id, { event, client: DETACHED_CLIENT });
@@ -1204,6 +1320,26 @@ export class PublishScheduler {
     }
   }
 
+  /**
+   * Enumerate (or re-enumerate) the workspace targets for a recursive-publish
+   * event so the card reflects the current set of publishable packages.
+   * Requires pnpm; on failure the original targets are preserved.
+   */
+  private async refreshRecursiveTargets(payload: { kind: 'recursive-publish'; data: RecursivePublishContext }): Promise<void> {
+    try {
+      if (!(await hasPnpm(payload.data.source.path))) return;
+      // Reuse enumerateRecursiveTargets so targets carry repository (for the
+      // corner git-opener) and respect --filter selectors consistently.
+      payload.data.targets = await this.enumerateRecursiveTargets(
+        payload.data.source.path,
+        payload.data.args,
+        DETACHED_CLIENT,
+      );
+    } catch {
+      // keep the original targets if enumeration fails
+    }
+  }
+
   /** Step 2 (Chapter 3.3.3 / 8.3.8): WebUI confirmed. Execute the write. */
   async confirm(taskId: string): Promise<boolean> {
     const entry = this.pending.get(taskId);
@@ -1221,14 +1357,6 @@ export class PublishScheduler {
     if (event.payload?.kind === 'publish') {
       const recursive = isRecursivePublish(event.payload.data.args);
       const dryRun = isDryRunPublish(event.payload.data.args);
-      if (recursive && !dryRun) {
-        const msg = 'Recursive publish is not yet supported by pnpm-pub; no registry write performed.';
-        this.store.resolveEvent(taskId, 'failed', msg);
-        client.log('stderr', msg + '\n');
-        client.exit(1, msg);
-        this.pending.delete(taskId);
-        return true;
-      }
       const gitCheckPath = recursive
         ? await resolveRecursivePublishRoot(event.payload.data.source)
         : event.payload.data.source.kind === 'directory'
@@ -1244,6 +1372,19 @@ export class PublishScheduler {
       }
       if (recursive && dryRun) {
         await this.runRecursivePublishDryRun(event, client);
+        this.pending.delete(taskId);
+        return true;
+      }
+    }
+
+    if (event.payload?.kind === 'recursive-publish') {
+      // Recursive publish: git-check at the workspace root, then run.
+      const gitCheckPath = await resolveRecursivePublishRoot(event.payload.data.source);
+      const gitCheck = await checkPublishGitState(gitCheckPath, event.payload.data.args);
+      if (!gitCheck.ok) {
+        this.store.resolveEvent(taskId, 'failed', gitCheck.error);
+        client.log('stderr', gitCheck.error + '\n');
+        client.exit(1, gitCheck.error);
         this.pending.delete(taskId);
         return true;
       }
@@ -1285,6 +1426,11 @@ export class PublishScheduler {
       await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === 'unpublish') {
       await this.runUnpublish(event, client, creds.token, creds.totpSecret, profileRegistry);
+    } else if (event.payload?.kind === 'recursive-publish') {
+      const registry = resolvePublishRegistry(event.payload.data.args, profileRegistry);
+      const otp = resolvePublishOtp(event.payload.data.args);
+      const json = isJsonPublish(event.payload.data.args);
+      await this.runRecursivePublish(event, client, creds.token, creds.totpSecret, registry, otp, json);
     }
     this.pending.delete(taskId);
     return true;
@@ -1300,6 +1446,40 @@ export class PublishScheduler {
     client.exit(1, 'Publish canceled by user.');
     this.pending.delete(taskId);
     return true;
+  }
+
+  /**
+   * Route a publish outcome (CLI or API) to the event store + CLI exit. Shared
+   * by single-package and recursive publish so the ok/expired/failed branching
+   * stays in one place (Chapter 6.2.4 expired-token handling included).
+   */
+  private resolvePublishOutcome(
+    event: PubEvent,
+    client: PendingClient,
+    result: PublishResultLike,
+    opts: { successMessage?: string; extra?: Record<string, unknown> } = {},
+  ): void {
+    if (result.ok) {
+      const message = opts.successMessage ?? result.stdout;
+      this.store.resolveEvent(event.id, 'success', message, {
+        clockDriftRecovered: result.clockDriftRecovered,
+        ...opts.extra,
+      });
+      client.exit(0);
+    } else if (result.expired) {
+      const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
+      this.store.resolveEvent(event.id, 'expired', msg, opts.extra);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
+    } else {
+      // Persist the FULL subprocess log (result.stderr carries the complete
+      // pnpm/npm output) so the WebUI's expandable log shows every line —
+      // which package failed, the registry error body, etc. Fall back to the
+      // single-line extracted error only when no stderr was captured.
+      const fullLog = result.stderr?.trim() || result.error;
+      this.store.resolveEvent(event.id, 'failed', fullLog, opts.extra);
+      client.exit(1, result.error);
+    }
   }
 
   private async runPublish(
@@ -1321,50 +1501,90 @@ export class PublishScheduler {
     const version = ctx.target.version;
     const source = ctx.source;
     try {
-      // Build the real tarball via `pnpm pack` (fallback `npm pack`) from the
-      // package directory (Chapter 1.3.1 / 7.1.2). This replaces the previous
-      // Buffer.alloc(0) placeholder with the actual publishable artifact.
-      if (!json) {
-        client.log('stdout', `${source.kind === 'directory' ? 'packing' : 'reading tarball'} ${name}...\n`);
+      // Preview pack: build the tarball once for the WebUI file-tree preview and
+      // the `--json` projection. This is best-effort — a failure here must NOT
+      // block the real publish (the CLI path's `pnpm publish` packs again
+      // internally; the API path reuses this tarball but can also repack).
+      let packed: { tarball: Buffer; metadata: Record<string, unknown> } | undefined;
+      try {
+        if (!json) {
+          client.log('stdout', `${source.kind === 'directory' ? 'packing' : 'reading tarball'} ${name}...\n`);
+        }
+        packed = await loadPublishSource(source, { ignoreScripts });
+        if (!json) client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
+      } catch (previewError) {
+        // Only fatal for the API fallback path (which needs the tarball). The
+        // CLI path will attempt its own pack via `pnpm publish`.
+        if (source.kind === 'tarball') throw previewError;
       }
-      const packed = await loadPublishSource(source, { ignoreScripts });
-      if (!json) {
-        client.log('stdout', `packed ${packed.tarball.length} bytes\n`);
-      }
-      const publishedName = readMetadataString(packed.metadata, 'name') ?? name;
-      const publishedVersion = readMetadataString(packed.metadata, 'version') ?? version;
-
-      // Cache the packed file-tree so the WebUI can preview contents. Best-effort:
-      // a failure here must not block the publish flow.
       const { summarizePackageTarball } = await import('./packer.js');
-      const tarballSummary = await summarizePackageTarball(packed.tarball).catch(() => undefined);
+      const tarballSummary = packed ? await summarizePackageTarball(packed.tarball).catch(() => undefined) : undefined;
+      const publishedName = (packed && readMetadataString(packed.metadata, 'name')) ?? name;
+      const publishedVersion = (packed && readMetadataString(packed.metadata, 'version')) ?? version;
 
-      const result = await publishPackage({
-        registry,
-        token,
-        totpSecret,
-        name: publishedName,
-        version: publishedVersion,
-        tarball: packed.tarball,
-        metadata: packed.metadata,
-        ...(distTag ? { distTag } : {}),
-        ...(access ? { access } : {}),
-        ...(otp ? { otp } : {}),
-      });
-      if (result.stdout && !json) client.log('stdout', result.stdout + '\n');
-      if (result.stderr) client.log('stderr', result.stderr + '\n');
-      if (result.ok) {
+      // Assemble the argv forwarded to `pnpm publish`: the user's original args
+      // (whitelist-validated) carry --access/--tag/--no-git-checks/etc. The
+      // publisher injects --otp (from the TOTP secret) and the registry (via a
+      // temporary .npmrc) itself, stripping any stale --otp/--registry the args
+      // may carry.
+
+      // Primary path: the real `pnpm publish` child process (Chapter 1.3.1).
+      // Falls back to the registry-API path ONLY when pnpm is absent from PATH
+      // (and only for directory sources — tarball sources always use the API).
+      let result: PublishResultLike | undefined;
+      if (source.kind === 'directory') {
+        try {
+          if (!json) client.log('stdout', `publishing ${publishedName}@${publishedVersion} via pnpm...\n`);
+          result = await publishPackageViaCli({
+            cwd: source.path,
+            args: ctx.args,
+            registry,
+            token,
+            totpSecret,
+            ...(otp ? { otp } : {}),
+            sink: { log: (stream, data) => client.log(stream, data) },
+          });
+        } catch (error: unknown) {
+          if (error instanceof PnpmNotOnPathError) {
+            if (!json) client.log('stderr', 'pnpm not found on PATH; falling back to registry API publish.\n');
+          } else {
+            throw error;
+          }
+        }
+      }
+      // Fallback / tarball-source path: the registry API (`safe-npm-sdk`).
+      if (!result) {
+        if (!packed) packed = await loadPublishSource(source, { ignoreScripts });
+        const fallbackResult = await publishPackage({
+          registry,
+          token,
+          totpSecret,
+          name: publishedName,
+          version: publishedVersion,
+          tarball: packed.tarball,
+          metadata: packed.metadata,
+          ...(distTag ? { distTag } : {}),
+          ...(access ? { access } : {}),
+          ...(otp ? { otp } : {}),
+        });
+        if (fallbackResult.stdout && !json) client.log('stdout', fallbackResult.stdout + '\n');
+        if (fallbackResult.stderr) client.log('stderr', fallbackResult.stderr + '\n');
+        result = fallbackResult;
+      }
+      const publishResult: PublishResultLike = result;
+
+      if (publishResult.ok) {
         if (reportSummary) {
           await writePublishSummary(source, publishedName, publishedVersion);
         }
-        const successOutput = json ? await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null) : result.stdout;
-        if (json) client.log('stdout', successOutput);
-        this.store.resolveEvent(event.id, 'success', result.stdout, {
-          clockDriftRecovered: result.clockDriftRecovered,
+        const successOutput = json && packed ? await formatPublishJson(publishedName, publishedVersion, packed.tarball, tarballSummary ?? null) : publishResult.stdout;
+        if (json && packed) client.log('stdout', successOutput);
+        this.store.resolveEvent(event.id, 'success', publishResult.stdout || `+ ${publishedName}@${publishedVersion}`, {
+          clockDriftRecovered: publishResult.clockDriftRecovered,
           ...(tarballSummary ? { tarballSummary } : {}),
         });
         client.exit(0);
-      } else if (result.expired) {
+      } else if (publishResult.expired) {
         // Chapter 6.2.4: token expired/revoked → special Expired event so the
         // UI can prompt for renewal instead of showing a generic failure.
         const msg = `Token for ${event.profile} is expired or revoked. Renew it in the tray.`;
@@ -1372,10 +1592,53 @@ export class PublishScheduler {
         client.log('stderr', msg + '\n');
         client.exit(1, msg);
       } else {
-        this.store.resolveEvent(event.id, 'failed', result.error, tarballSummary ? { tarballSummary } : undefined);
-        client.exit(1, result.error);
+        // Persist the FULL subprocess log so the WebUI's expandable log shows
+        // every line; fall back to the single-line error only when empty.
+        const fullLog = publishResult.stderr?.trim() || publishResult.error;
+        this.store.resolveEvent(event.id, 'failed', fullLog, tarballSummary ? { tarballSummary } : undefined);
+        client.exit(1, publishResult.error);
       }
     } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, 'failed', msg);
+      client.log('stderr', msg + '\n');
+      client.exit(1, msg);
+    }
+  }
+
+  private async runRecursivePublish(
+    event: PubEvent,
+    client: PendingClient,
+    token: string,
+    totpSecret: string,
+    registry: string,
+    otp: string | undefined,
+    json: boolean,
+  ): Promise<void> {
+    if (event.payload?.kind !== 'recursive-publish') return;
+    const ctx = event.payload.data;
+    const source = ctx.source;
+    try {
+      if (!json) {
+        client.log('stdout', `recursively publishing ${ctx.targets.length} package${ctx.targets.length === 1 ? '' : 's'} via pnpm...\n`);
+      }
+      const result = await publishRecursiveViaCli({
+        cwd: source.path,
+        args: ctx.args,
+        registry,
+        token,
+        totpSecret,
+        ...(otp ? { otp } : {}),
+        sink: { log: (stream, data) => client.log(stream, data) },
+      });
+      this.resolvePublishOutcome(event, client, result, {
+        successMessage: `+ recursively published ${ctx.targets.length} package${ctx.targets.length === 1 ? '' : 's'}`,
+      });
+    } catch (error: unknown) {
+      if (error instanceof PnpmNotOnPathError) {
+        this.resolvePublishOutcome(event, client, { ok: false, status: 1, error: 'Recursive publish requires pnpm on PATH; no fallback is available.', stdout: '', stderr: '' });
+        return;
+      }
       const msg = errorToMessage(error);
       this.store.resolveEvent(event.id, 'failed', msg);
       client.log('stderr', msg + '\n');

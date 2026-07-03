@@ -15,7 +15,7 @@ import { acceptWebSocket, WebSocketConnection, type SocketLike } from './ws.js';
 import type { BackupBundle, PubEvent, WsClientMessage, WsServerMessage, TrustedPublisherConfig } from '../shared/index.js';
 import { z } from 'zod';
 import { BackupBundleSchema, WsClientMessageSchema, TrustedPublisherConfigSchema } from '../shared/schemas.js';
-import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot } from './workspace.js';
+import { findProjectRoot, scanWorkspace, isPublishableByProfile, isRiskyRoot, readWorkspacePackages } from './workspace.js';
 import { realFs } from './real-fs.js';
 import { applyToken, verifyCredentials } from './npm-api.js';
 import { getCachedRepoInfo } from './repo-info.js';
@@ -26,6 +26,7 @@ import { setToken, setTotpSecret, getToken, getTotpSecret, deleteToken, deleteTo
 import { exportBundle, importBundle } from './crypto.js';
 import { burnBuffer } from './totp.js';
 import { lookupNpmProfileIdentity } from './avatar.js';
+import { recordTokenCreatedAt } from './auto-renew.js';
 import {
 	listTrustedPublishers,
 	addTrustedPublisher,
@@ -219,6 +220,13 @@ export class WebServer {
         if (url === '/api/renew' && method === 'POST') {
           const result = await this.renewProfile(parseRenewProfileBody(body));
           return json(res, 200, result);
+        }
+        if (url === '/api/profile/auto-renew' && method === 'POST') {
+          const parsed = parseOrThrow(z.object({ username: z.string().min(1), autoRenew: z.boolean() }), body, 'auto-renew body');
+          const existing = this.deps.store.getProfile(parsed.username);
+          if (!existing) return json(res, 404, { ok: false, error: 'Profile not found.' });
+          this.deps.store.upsertProfile({ ...existing, autoRenew: parsed.autoRenew });
+          return json(res, 200, { ok: true });
         }
         if (url === '/api/export' && method === 'POST') {
           const parsed = parseOrThrow(ExportBodySchema, body, 'export body');
@@ -551,13 +559,14 @@ export class WebServer {
         break;
       }
       case 'update-event': {
-        // Edit a pending publish event's args before confirmation. The store
-        // mutates the SAME PubEvent instance the scheduler holds, so the edit
-        // is picked up live at confirm time. We re-detect the git branch from
-        // the publish source on each update so the publish-branch hint stays
-        // fresh (the user may have switched branches while reviewing).
+        // Edit a pending publish / recursive-publish event's args before
+        // confirmation. The store mutates the SAME PubEvent instance the
+        // scheduler holds, so the edit is picked up live at confirm time. We
+        // re-detect the git branch from the publish source on each update so
+        // the publish-branch hint stays fresh (the user may have switched
+        // branches while reviewing).
         const existing = this.deps.store.getEvent(msg.id);
-        if (!existing || existing.status !== 'pending' || existing.payload?.kind !== 'publish') {
+        if (!existing || existing.status !== 'pending' || (existing.payload?.kind !== 'publish' && existing.payload?.kind !== 'recursive-publish')) {
           send({ type: 'toast', level: 'error', message: 'Only pending publish events can be edited.' });
           break;
         }
@@ -622,6 +631,10 @@ export class WebServer {
     await store.addWorkspace({ path: found.root, pinned: false, addedAt: Date.now() });
     // Chapter 5.3.4: honor .gitignore so build/coverage outputs etc. are excluded.
     const pkgs = await scanWorkspace(found.root, realFs, { root: found.root, respectGitignore: true });
+    // Detect a pnpm workspace (pnpm-workspace.yaml present) so the UI can offer
+    // a "Recursive Publish" action that runs `pnpm publish -r`.
+    const workspaceGlobs = await readWorkspacePackages(found.root, realFs);
+    const isPnpmWorkspace = workspaceGlobs !== null;
     send({
       type: 'packages',
       root: found.root,
@@ -634,6 +647,7 @@ export class WebServer {
         ...(p.publishConfig ? { publishConfig: p.publishConfig } : {}),
         publishable: isPublishableByProfile(p, store.getDefault()),
       })),
+      ...(isPnpmWorkspace ? { isPnpmWorkspace } : {}),
     });
   }
 
@@ -830,6 +844,9 @@ export class WebServer {
     }
     this.deps.store.setCredentials(body.username, { token: token!, totpSecret, npmPwd: password });
     this.invalidateAuthProbe(body.username);
+    // Record when this fresh token was minted so the AutoRenew scheduler's
+    // proactive (time-based) strategy knows when the 2h session window closes.
+    recordTokenCreatedAt(this.deps.store, body.username);
     return { ok: true };
   }
 
