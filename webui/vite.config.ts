@@ -143,15 +143,11 @@ function pnpmPubDaemonDev(): Plugin {
         httpServer.on("upgrade", (req, socket, head) => {
           if (isDaemonRoute(req.url ?? "")) proxy.ws(req, socket, head);
         });
-        // The webui URL needs the Vite port, which is only known once the HTTP
-        // server is listening — defer the spawn until then.
-        const launch = (): void => {
-          const addr = httpServer.address();
-          const webuiPort = typeof addr === "object" && addr ? addr.port : 0;
-          spawnDaemon(port, `http://127.0.0.1:${webuiPort}/#token=__PNPM_PUB_WEB_TOKEN__`);
-        };
-        if (httpServer.listening) launch();
-        else httpServer.once("listening", launch);
+        // Spawn the daemon IMMEDIATELY (in parallel with Vite's own boot) rather
+        // than waiting for Vite's HTTP server to finish listening. The webui port
+        // is pinned to 5173 (see the `dev` script) so the banner URL is known up
+        // front.
+        spawnDaemon(port, "http://127.0.0.1:5173/#token=__PNPM_PUB_WEB_TOKEN__");
       });
     },
   };

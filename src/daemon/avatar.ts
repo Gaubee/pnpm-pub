@@ -45,6 +45,47 @@ export function avatarCachePath(username: string): string {
   return path.join(avatarCacheDir(), `${username}.png`);
 }
 
+/**
+ * Resolve the "not found" marker path for a username. A failed avatar lookup
+ * (no resolvable avatar, network error, non-image response) writes a small JSON
+ * marker here so the next boot does NOT repeat the slow network resolution.
+ * Without this, every daemon startup re-runs the multi-second registry/gravatar
+ * probe for profiles whose avatar can't be resolved — the cache only ever
+ * recorded successes.
+ */
+function avatarNegativeCachePath(username: string): string {
+  return path.join(avatarCacheDir(), `${username}.notfound.json`);
+}
+
+/** How long a negative-cache entry suppresses a re-probe (24h). */
+const NEGATIVE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Is a recent "not found" marker present on disk (within TTL)? */
+function hasRecentNegativeCache(username: string): boolean {
+  const file = avatarNegativeCachePath(username);
+  try {
+    if (!fs.existsSync(file)) return false;
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { at?: number };
+    if (typeof parsed.at !== "number") return false;
+    return Date.now() - parsed.at < NEGATIVE_CACHE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+function writeNegativeCache(username: string): void {
+  try {
+    fs.mkdirSync(avatarCacheDir(), { recursive: true });
+    fs.writeFileSync(
+      avatarNegativeCachePath(username),
+      JSON.stringify({ at: Date.now() }),
+      "utf8",
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Is a cached avatar present on disk? */
 export function hasCachedAvatar(username: string): boolean {
   return isCachedAvatarPng(avatarCachePath(username));
@@ -188,26 +229,40 @@ export async function fetchAndCacheAvatar(
   username: string,
   registry = "https://registry.npmjs.org/",
 ): Promise<string | null> {
-  // Fast path: serve from cache.
+  // Fast path: serve a cached avatar PNG.
   const cached = avatarCachePath(username);
   try {
     if (isCachedAvatarPng(cached)) return cached;
   } catch {
     /* ignore */
   }
+  // Fast path: a recent lookup already failed — skip the slow network probe
+  // until the negative-cache TTL expires.
+  if (hasRecentNegativeCache(username)) return null;
 
   try {
     const identity = await lookupNpmProfileIdentity(username, registry);
-    if (!identity.avatarUrl) return null;
+    if (!identity.avatarUrl) {
+      writeNegativeCache(username);
+      return null;
+    }
 
     const imgRes = await fetch(identity.avatarUrl);
-    if (!imgRes.ok) return null;
+    if (!imgRes.ok) {
+      writeNegativeCache(username);
+      return null;
+    }
     const buf = Buffer.from(await imgRes.arrayBuffer());
-    if (!isPngBuffer(buf)) return null;
+    if (!isPngBuffer(buf)) {
+      writeNegativeCache(username);
+      return null;
+    }
     fs.mkdirSync(avatarCacheDir(), { recursive: true });
     fs.writeFileSync(cached, buf);
     return cached;
   } catch {
+    // Network errors are transient — don't poison the negative cache for them,
+    // but they're still swallowed (avatars are cosmetic).
     return null;
   }
 }

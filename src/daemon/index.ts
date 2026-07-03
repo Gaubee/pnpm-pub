@@ -17,6 +17,7 @@ import { TrayHost, type OpentrayTray, type OpentrayWindow } from "./tray-host.js
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createResolverByRootFile } from "@gaubee/node/path";
 import type { IpcStatusFrame } from "../shared/index.js";
 import { daemonLogPath } from "../shared/paths.js";
 import { trayIconForProfile } from "./avatar.js";
@@ -139,6 +140,7 @@ function resolveWebuiDir(override?: string): string {
 export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | null> {
   const store = new DaemonStore();
   await store.load();
+  console.log(0.1,new Date(),'zzz')
 
   // Never let an async opentray/broker rejection (e.g. a webview command the
   // broker rejects mid-session, a stale SINGLE_SESSION) crash the daemon. Log
@@ -205,12 +207,17 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   if (opts.withTray !== false) {
     // Chapter 1.3.2 / 4.3: pre-fetch the active profile's avatar so the tray
     // icon is the NPM-logo + user-avatar merge (best-effort, cosmetic).
+    // Fire-and-forget: this is a network call to the registry and must NOT
+    // block daemon startup (it can take seconds / vary with network). The tray
+    // icon is re-applied via applyTrayIcon() below on every store event, so the
+    // avatar lands whenever it resolves.
     const defaultProfile = store.getDefault();
     activeProfileRef = defaultProfile;
     if (defaultProfile) {
       const registry = store.getProfile(defaultProfile)?.registry ?? "https://registry.npmjs.org/";
-      const { fetchAndCacheAvatar } = await import("./avatar.js");
-      await fetchAndCacheAvatar(defaultProfile, registry);
+      void import("./avatar.js").then(({ fetchAndCacheAvatar }) =>
+        fetchAndCacheAvatar(defaultProfile, registry),
+      );
     }
     const mounted = await tryCreateTray(
       resolveWebviewUrl(opts.webviewUrl, web.webUiUrl(port), webToken),
@@ -225,13 +232,26 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     trayHost = new TrayHost(store, mounted.tray, mounted.window, {
       title: "pnpm-pub",
       log: (line) => log(line),
-      openItemId: 1,
+      openItemId: MENU_OPEN_ID,
+      quitItemId: MENU_QUIT_ID,
       initialVisible: mounted.window !== null,
       // Project pin/countdown frames to every connected WebUI client.
       onPinFrame: (pinned, countdown) => web.broadcast({ type: "pin", pinned, countdown }),
+      // Quit menu → graceful daemon shutdown. stop() is declared below; the
+      // closure is only invoked on a later tray menu click, by which time stop
+      // is assigned, so the forward reference is safe.
+      onQuit: () => void stop(),
+    });
+    // Reflect pending-event state on the tray icon: ≥1 pending event → the
+    // color (active) icon; otherwise the default mono template. We push the
+    // initial frame and re-apply on every store event mutation.
+    const applyTrayIcon = () => trayHost?.setIcon(iconProjection(store.getEvents().length > 0));
+    applyTrayIcon();
+    store.on("event", () => {
+      applyTrayIcon();
     });
     // The WebServer is constructed before the tray exists (and may stay null in
-    // dev/headless); attach it now so WS messages can drive the host.
+    // dev/headless); attach it now so WebUI projections can include tray state.
     web.attachTray(trayHost);
     stopPlacement = mounted.stopPlacement;
   }
@@ -370,6 +390,7 @@ async function tryCreateTray(
   let panel: OpentrayWindow | null = null;
   let stopPlacement: (() => void) | undefined;
   try {
+    console.log(1,new Date(),'zzz')
     // opentray 0.10 tray-first model: createTray() is the public creation
     // entrypoint and owns local-broker transport selection. pnpm-pub only
     // declares the tray atom and runtime identity.
@@ -381,10 +402,16 @@ async function tryCreateTray(
     const trayOptions: Parameters<typeof opentray.createTray>[0] = {
       id: "pnpm-pub",
       tooltip: { title: "pnpm-pub", description: "pnpm publish companion" },
-      menu: { items: [{ type: "item", id: 1, title: "Open pnpm-pub", primaryEvent: true }] },
+      menu: {
+        items: [
+          { type: "item", id: MENU_OPEN_ID, title: "Open pnpm-pub", primaryEvent: true },
+          { type: "separator" },
+          { type: "item", id: MENU_QUIT_ID, title: "Quit pnpm-pub" },
+        ],
+      },
     };
-    const icon = iconPath();
-    if (icon && fs.existsSync(icon)) trayOptions.icon = { type: "file", path: icon };
+    const icon = iconProjection();
+    if (icon) trayOptions.icon = icon;
 
     baseTray = await opentray.createTray(trayOptions, {
       packageVersion,
@@ -392,6 +419,7 @@ async function tryCreateTray(
       appName: "pnpm-pub",
     });
     tray = baseTray.extend(ext.WebviewExt);
+    console.log(2,new Date(),'zzz')
 
     // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
     // the OS control cluster while the page owns the titlebar drag area; the
@@ -416,6 +444,7 @@ async function tryCreateTray(
     // Initial show so the window is visible on first tray mount (the panel is
     // created hidden; subsequent toggles go through tray-host show/hide).
     await panel.show();
+    console.log(3,new Date(),'zzz')
     log("tray window shown on mount");
 
     // Anchor the panel to the tray after the native window exists. Placement is
@@ -441,6 +470,10 @@ async function tryCreateTray(
 /** Tray panel geometry (logical desktop pixels). */
 const WINDOW_WIDTH = 380;
 const WINDOW_HEIGHT = 560;
+
+/** Tray menu item ids — the primaryEvent item + a Quit affordance. */
+const MENU_OPEN_ID = 1;
+const MENU_QUIT_ID = 2;
 
 /**
  * Anchor a webview panel to the tray via WebviewPlacementKit. Returns a
@@ -603,46 +636,88 @@ async function destroyMountedTray({
 }
 
 /**
- * Resolve the tray icon.
- *
- * macOS menubar items render as single-color "template" images, so we ship a
- * pure-black-on-transparent silhouette of the npm mark (`icon-macos.png`) that
- * composites correctly in either a light or dark menubar — its "n" is a real
- * alpha-0 cutout, not a white fill. Windows tray items are full-color, so we
- * ship the official npm red (`#c12127`) square (`icon-windows.png`). Both are
- * rasterized from the SVG source-of-truth in assets/ by `pnpm gen:icons`
- * (scripts/gen-icons.mjs, @resvg/resvg-js) into 64×64 rgba PNGs — opentray's
- * required icon format (@opentray/spec `Icon` type, `rgba`).
- *
- * A `pending` variant (same mark + a corner badge dot) signals an
- * awaiting-confirmation publish WITHOUT touching the title — opentray has no
- * native badge API, so we swap the icon file itself.
- *
- * If a cached user avatar exists it takes precedence for the base icon.
+ * Project-root path resolver — walks up from this module to the nearest
+ * `package.json` (the project root) and resolves paths against it. Computed
+ * once at module load so repeated asset lookups are cheap.
  */
-function iconPath(pending = false): string | null {
-  // Prefer a cached user avatar when present (base icon only; the avatar has no
-  // badge variant, so pending still falls back to the npm mark + dot).
-  if (!pending) {
-    const profile = activeProfileRef;
-    if (profile) {
-      const avatar = trayIconForProfile(profile);
-      if (avatar) return avatar;
-    }
-  }
-  const plat = process.platform === "darwin" ? "macos" : "windows";
-  const name = pending ? `icon-${plat}-pending.png` : `icon-${plat}.png`;
+const rootResolver = createResolverByRootFile(import.meta.url);
+
+/**
+ * Resolve a bundled icon asset by name. Priority:
+ *   1. `PNPM_PUB_ICON_DIR` (dev): the vite plugin rasterizes icons into a
+ *      content-hash cache and points the daemon here, so dev always uses fresh
+ *      icons without touching the working-tree assets/.
+ *   2. project root `assets/` (rootResolver): the committed SVG sources +
+ *      `pnpm gen:icons` output, found from source AND from an install (the
+ *      package.json the resolver anchors to ships in the published package).
+ *   3. `dist/assets` (bundled release): when the daemon is bundled, assets are
+ *      emitted next to the compiled file under dist/assets.
+ * Returns the first existing file path, or null when none is on disk.
+ */
+function resolveAsset(name: string): string | null {
   const candidates = [
-    // Dev: the vite plugin rasterizes icons into a content-hash cache dir and
-    // publishes it here, so the tray always uses fresh icons without touching
-    // the working-tree assets/.
     process.env.PNPM_PUB_ICON_DIR ? path.join(process.env.PNPM_PUB_ICON_DIR, name) : null,
+    rootResolver("assets", name),
     path.join(__dirname, "assets", name), // dist/assets (bundled)
-    path.join(__dirname, "..", "assets", name), // dev: src/daemon → <root>/assets
-    path.join(process.cwd(), "assets", name),
   ];
   return candidates.find((c) => c !== null && fs.existsSync(c)) ?? null;
 }
 
-/** Set by bootDaemon so the module-level iconPath() knows the active profile. */
+// The two icon atoms (rasterized from assets/ by `pnpm gen:icons`):
+//   COLOR  — icon-windows.png : the official npm red (#c12127) square. The
+//            "active" mark, shown when there are pending events (or whenever a
+//            template can't convey state, e.g. on Windows/Linux).
+//   MONO   — icon-macos.png   : a pure-black-on-transparent silhouette of the
+//            npm mark, declared as a Darwin TEMPLATE image so macOS renders it
+//            as a single-color menubar item that adapts to light/dark appearance.
+const ICON_COLOR_FILE = "icon-windows.png";
+const ICON_MONO_FILE = "icon-macos.png";
+
+/**
+ * Resolve the tray icon projection (@opentray/spec `Icon`).
+ *
+ * Two-icon model driven by pending-event state:
+ *   - DEFAULT (no pending events): macOS shows the mono TEMPLATE silhouette
+ *     (`darwin-icon-only` with `isTemplate: true`, so it composites correctly
+ *     in either a light or dark menubar); other platforms fall back to the
+ *     color icon via the generic `icon-only` candidate.
+ *   - ACTIVE (≥1 pending event): the color icon everywhere — a template image
+ *     can't convey "active", so we use the npm-red mark on every platform.
+ *
+ * opentray's resolver picks the current-OS candidate before the generic one, so
+ * declaring `darwin-icon-only` + `icon-only` lets the native layer select per
+ * platform without us branching on `process.platform` in JS.
+ *
+ * When a cached user avatar exists and there are no pending events, it takes
+ * precedence as a full-color generic fallback (it is not a template image).
+ */
+function iconProjection(
+  hasPending = false,
+): NonNullable<Parameters<typeof import("opentray").createTray>[0]["icon"]> | undefined {
+  console.log("QAQ",'iconProjection',hasPending)
+  // Active state: color everywhere (a template can't show "active").
+  if (hasPending) {
+    const color = resolveAsset(ICON_COLOR_FILE);
+    return color ? { "icon-only": { type: "file", path: color } } : undefined;
+  }
+  // Default: prefer a cached avatar (full-color generic fallback) when present.
+  const profile = activeProfileRef;
+  if (profile) {
+    const avatar = trayIconForProfile(profile);
+    if (avatar) return { type: "file", path: avatar };
+  }
+  // Default npm mark: mono template on Darwin, color elsewhere.
+  const mono = resolveAsset(ICON_MONO_FILE);
+  const color = resolveAsset(ICON_COLOR_FILE);
+  if (!mono && !color) return undefined;
+  const icon: {
+    "darwin-icon-only"?: { type: "file"; path: string; isTemplate?: boolean };
+    "icon-only"?: { type: "file"; path: string };
+  } = {};
+  if (mono) icon["darwin-icon-only"] = { type: "file", path: mono, isTemplate: true };
+  if (color) icon["icon-only"] = { type: "file", path: color };
+  return icon;
+}
+
+/** Set by bootDaemon so the module-level iconProjection() knows the active profile. */
 let activeProfileRef: string | undefined;
