@@ -4,10 +4,9 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execa, type ResultPromise } from "execa";
 import net from "node:net";
 import path from "node:path";
-import { readFileSync } from "node:fs";
 import type { ServerOptions } from "vite-plus";
 
 // Anchor module resolution at the repo root so `tsx` (a root devDep, not in
@@ -75,14 +74,12 @@ function pnpmPubDaemonDev(): Plugin {
       const portPromise = process.env.PNPM_PUB_DEV_DAEMON_PORT
         ? Promise.resolve(Number(process.env.PNPM_PUB_DEV_DAEMON_PORT))
         : allocateRandomPort();
-      let daemon: ChildProcess | null = null;
+      let daemon: ResultPromise | null = null;
       let shuttingDown = false;
 
-      // Shut down the whole dev session. The daemon polls PNPM_PUB_DEV_SUPERVISOR_PID
-      // (this process) and exits on its own when we disappear — so we do NOT
-      // signal it here. Signalling the daemon races its own SIGINT handler
-      // against its supervisor-watch and can leave it orphaned. Our job is just
-      // to stop the Vite server and exit; the daemon's watch cleans it up.
+      // Shut down the whole dev session (Vite included). Called when the daemon
+      // exits — without it the UI has nothing to talk to, so there's no point
+      // keeping Vite alive. Mirrors the old src/dev.ts supervisor contract.
       const shutdown = async (reason: string): Promise<void> => {
         if (shuttingDown) return;
         shuttingDown = true;
@@ -91,53 +88,31 @@ function pnpmPubDaemonDev(): Plugin {
         process.exit(0);
       };
 
-      // Best-effort hard kill of the daemon — used ONLY as a synchronous
-      // last-resort orphan guard in the exit handler below (where no async
-      // work is allowed). The daemon's own supervisor-watch is the primary
-      // teardown path.
-      const killDaemon = (): void => {
-        if (!daemon) return;
-        const child = daemon;
-        daemon = null;
-        if (child.killed) return;
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      };
-
       const spawnDaemon = (port: number, webuiUrl: string): void => {
-        // Spawn node directly with tsx's ESM loader (no `pnpm exec` wrapper
-        // chain) so `daemon` holds the real process and its `exit` event fires
-        // reliably — a wrapper process can swallow the child's exit.
+        // Run the daemon via node + tsx's ESM loader (no `pnpm exec` wrapper
+        // chain). execa handles everything we used to hand-roll:
+        //   - cleanup (default): the daemon is killed when this process exits,
+        //     so it can never be orphaned — no SIGKILL exit handler needed.
+        //   - signal forwarding: SIGINT/SIGTERM to this process propagate to
+        //     the daemon, so no ancestor-PID / supervisor-watch gymnastics.
         const entry = path.resolve(repoRoot(), "src/daemon/dev.ts");
-        // Watch BOTH this (vite) process and its outermost surviving ancestor
-        // (the `pnpm dev` / `pnpm --dir webui exec` wrapper). On Ctrl-C the
-        // outer wrapper often dies before vite does, so watching the ancestor
-        // lets the daemon detect teardown even when vite is momentarily orphaned.
-        const supervisorPids = [String(outermostAncestorPid()), String(process.pid)]
-          .filter((p, i, arr) => arr.indexOf(p) === i)
-          .join(",");
-        daemon = spawn(process.execPath, ["--import", tsxLoader, entry], {
-            stdio: "inherit",
-            env: {
-              ...process.env,
-              PNPM_PUB_DEV_DAEMON_PORT: String(port),
-              // webviewUrl carries the token placeholder the daemon substitutes
-              // with its real webToken before printing the banner.
-              PNPM_PUB_DEV_WEBVIEW_URL: webuiUrl,
-              // Comma-separated supervisor PIDs the daemon polls; if ANY dies
-              // the daemon tears itself down so it never outlives the dev session.
-              PNPM_PUB_DEV_SUPERVISOR_PID: supervisorPids,
-            },
+        daemon = execa(process.execPath, ["--import", tsxLoader, entry], {
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            PNPM_PUB_DEV_DAEMON_PORT: String(port),
+            // webviewUrl carries the token placeholder the daemon substitutes
+            // with its real webToken before printing the banner.
+            PNPM_PUB_DEV_WEBVIEW_URL: webuiUrl,
+            // Let the daemon watch this (the Vite) process for orphan cleanup.
+            PNPM_PUB_DEV_SUPERVISOR_PID: String(process.pid),
           },
-        );
-        daemon.once("exit", (code, signal) => {
+        });
+        daemon.on("exit", (code, signal) => {
           console.error(
             `[dev] daemon child exit: code=${String(code)} signal=${String(signal)}`,
           );
-          shutdown(`daemon exited (code=${String(code)} signal=${String(signal)})`);
+          void shutdown(`daemon exited (code=${String(code)} signal=${String(signal)})`);
         });
       };
 
@@ -154,25 +129,6 @@ function pnpmPubDaemonDev(): Plugin {
         if (httpServer.listening) launch();
         else httpServer.once("listening", launch);
       });
-
-      // Ctrl-C / SIGTERM on this process → tear the whole session down,
-      // waiting for the daemon to exit first so it is never orphaned.
-      const onSignal = (signal: NodeJS.Signals): void => {
-        void shutdown(`received ${signal}`);
-      };
-      process.once("SIGINT", onSignal);
-      process.once("SIGTERM", onSignal);
-      // If Vite closes the HTTP server on its own (e.g. :q in some setups),
-      // treat it the same as a signal. `shuttingDown` guards re-entry.
-      httpServer.on("close", () => {
-        void shutdown("Vite server closed");
-      });
-      // Last-resort orphan guard: when this process is about to exit for ANY
-      // reason (incl. the parent pnpm wrapper dying without forwarding the
-      // signal), synchronously SIGKILL the daemon so it can't outlive the dev
-      // session. Synchronous-only — no async work allowed in an exit handler.
-      // (The daemon's own supervisor-watch is the primary path; this is backup.)
-      process.once("exit", killDaemon);
     },
   };
 }
@@ -180,34 +136,6 @@ function pnpmPubDaemonDev(): Plugin {
 function repoRoot(): string {
   // webui/ is one level below the repo root.
   return path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
-}
-
-/**
- * Walk the parent-PID chain to its root and return the outermost non-init
- * ancestor. Used as a supervisor PID for the daemon so that Ctrl-C — which
- * often kills an outer `pnpm`/shell wrapper before the vite process — is
- * detected even if vite is momentarily orphaned.
- */
-function outermostAncestorPid(): number {
-  let pid = process.pid;
-  // Stop at PID 1 (init/launchd) — its death is not a meaningful teardown
-  // signal and polling it would be noisy.
-  while (true) {
-    let ppid: number;
-    try {
-      const parts = readFileSync(`/proc/${pid}/status`, "utf8")
-        .split("\n")
-        .find((l) => l.startsWith("PPid:"));
-      ppid = parts ? Number.parseInt(parts.split(":")[1].trim(), 10) : 0;
-    } catch {
-      // /proc is Linux-only; on macOS fall back to process.ppid (one level up),
-      // which is the immediate pnpm wrapper and dies early enough in practice.
-      ppid = process.ppid;
-    }
-    if (!Number.isSafeInteger(ppid) || ppid <= 1 || ppid === pid) break;
-    pid = ppid;
-  }
-  return pid;
 }
 
 function allocateRandomPort(): Promise<number> {

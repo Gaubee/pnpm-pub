@@ -108,24 +108,13 @@ main().catch((err) => {
 function watchDevSupervisor(
   handles: NonNullable<Awaited<ReturnType<typeof bootDaemon>>>,
 ): () => void {
-  // Accept a comma-separated list of PIDs (any of them dying is fatal) for
-  // robustness across invocation chains: e.g. `pnpm dev` → pnpm wrapper →
-  // vite. The wrapper may die on Ctrl-C before vite does, so watching both
-  // catches the teardown regardless of which link dies first. A single PID
-  // (the legacy form) is still supported.
-  const raw = process.env.PNPM_PUB_DEV_SUPERVISOR_PID;
-  if (!raw) return () => {};
-  const pids = raw
-    .split(",")
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter((pid) => Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid);
-  if (pids.length === 0) return () => {};
+  const rawPid = process.env.PNPM_PUB_DEV_SUPERVISOR_PID;
+  if (!rawPid) return () => {};
+  const pid = Number.parseInt(rawPid, 10);
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) return () => {};
 
   const timer = setInterval(() => {
-    // Keep running only while EVERY watched supervisor is alive; exit as soon
-    // as ANY one disappears (covers the case where an outer pnpm wrapper dies
-    // before the inner vite process on Ctrl-C).
-    if (pids.every((pid) => isProcessAlive(pid))) return;
+    if (isProcessAlive(pid)) return;
     clearInterval(timer);
     const forceExit = setTimeout(() => process.exit(0), 2_000);
     forceExit.unref?.();
