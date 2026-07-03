@@ -1,5 +1,6 @@
 node_modules
 dist
+.svelte-kit
 webui/build
 webui/.svelte-kit
 webui/node_modules

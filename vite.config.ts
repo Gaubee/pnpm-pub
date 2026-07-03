@@ -2,7 +2,8 @@
  * Unified Vite+ configuration (root).
  *
  * Consolidates the former split tooling:
- *   - `tsdown.config.ts` build pipeline  → `pack:` block below
+ *   - `tsdown.config.ts` build pipeline → `pack:` block below
+ *   - 3× `vitest*.config.ts`            → `test.projects` block below
  *   - format / lint / staged-hook config → `fmt:`, `lint:`, `staged:` blocks
  *
  * Build pipeline (Chapter 9) outputs two standalone entrypoints into `dist/`:
@@ -12,8 +13,14 @@
  * matching keytar package surface into dist/prebuilds/keytar/. `opentray` is
  * declared external (Chapter 9.2.1) so the host package manager installs its
  * native bits normally.
+ *
+ * NOTE on the two `Plugin` types: the `pack:` block uses Rolldown/tsdown
+ * plugins (`closeBundle`, `apply`) from `vite-plus/pack`, while the test
+ * projects use Vite plugins (`resolveId`, `enforce`) from `vite-plus`. They
+ * are distinct shapes and are kept separate below.
  */
-import { defineConfig, type Plugin } from "vite-plus/pack";
+import { defineConfig, defineProject, type Plugin as VitePlugin } from "vite-plus";
+import { type Plugin as PackPlugin } from "vite-plus/pack";
 import path from "node:path";
 import {
   existsSync,
@@ -27,7 +34,7 @@ import {
 const TARGET_PLATFORMS = ["win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64"];
 
 /** Copy @github/keytar prebuilds (native .node) AND its JS shim into the bundle (Chapter 9.2). */
-function copyKeytarPrebuilds(): Plugin {
+function copyKeytarPrebuilds(): PackPlugin {
   return {
     name: "pnpm-pub/keytar-prebuilds",
     apply: () => "build",
@@ -93,7 +100,7 @@ function copyKeytarPrebuilds(): Plugin {
  * This makes `gen:icons` optional in the build pipeline: copyAssets is
  * self-contained and produces the PNGs on demand.
  */
-function copyAssets(): Plugin {
+function copyAssets(): PackPlugin {
   return {
     name: "pnpm-pub/assets",
     apply: () => "build",
@@ -125,6 +132,66 @@ function copyAssets(): Plugin {
   };
 }
 
+/**
+ * Build the SvelteKit WebUI and stage it under dist/webui (Chapter 4.4.1).
+ *
+ * The WebUI is a separate Vite root (webui/vite.config.ts — SvelteKit +
+ * adapter-static) so it cannot be bundled by the same `pack:` step. This plugin
+ * shells out to its build, waits for it, then copies webui/build → dist/webui.
+ * Run order is guaranteed by `closeBundle` firing after the core cli/daemon
+ * chunks are written, so a single `vp pack` produces the full dist/.
+ */
+function buildWebui(): PackPlugin {
+  return {
+    name: "pnpm-pub/build-webui",
+    apply: () => "build",
+    async closeBundle() {
+      const { execa } = await import("execa");
+      console.log("[build] building WebUI (webui/ via vp build)…");
+      await execa("pnpm", ["--filter", "./webui", "run", "build"], {
+        cwd: process.cwd(),
+        stdio: "inherit",
+      });
+      const src = path.resolve(process.cwd(), "webui", "build");
+      const dest = path.resolve(process.cwd(), "dist", "webui");
+      if (!existsSync(src)) {
+        throw new Error(`[build] WebUI build output not found: ${src}`);
+      }
+      // Mirror the former `copy:webui` script: rm -rf dist/webui, copy fresh.
+      await execa("rm", ["-rf", dest]);
+      await execa("cp", ["-r", src, dest]);
+      console.log(`[build] WebUI staged → ${path.relative(process.cwd(), dest)}`);
+    },
+  };
+}
+
+/**
+ * Rewrite relative `.js`/`.mjs` import specifiers to their `.ts` source so the
+ * daemon's ESM-style imports (e.g. `from '../../shared/index.js'`) resolve
+ * under vitest where only the `.ts` file exists.
+ *
+ * Shared by the `unit` and `e2e` test projects below (formerly duplicated
+ * across vitest.config.ts and vitest.e2e.config.ts).
+ */
+function tsSourceExtensionPlugin(): VitePlugin {
+  return {
+    name: "rewrite-js-to-ts",
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (!importer) return null;
+      if (!source.startsWith(".")) return null;
+      // Only rewrite explicit .js/.mjs specifiers — never .ts or extensionless.
+      if (!/\.(js|mjs)$/.test(source)) return null;
+      const dir = path.dirname(importer);
+      const withoutExt = source.replace(/\.(js|mjs)$/, "");
+      const candidate = path.resolve(dir, `${withoutExt}.ts`);
+      // Only redirect when the .ts source actually exists.
+      if (!existsSync(candidate)) return null;
+      return candidate;
+    },
+  };
+}
+
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
@@ -134,6 +201,58 @@ export default defineConfig({
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
     options: { typeAware: true, typeCheck: true },
+  },
+  // Test config — 3 lanes consolidated from the former vitest.config.ts,
+  // vitest.browser.config.ts, vitest.e2e.config.ts. `vp test` discovers them;
+  // select with `--project unit|browser|e2e`.
+  test: {
+    projects: [
+      // Unit lane — the default. Shared alias map + the .js→.ts rewrite plugin.
+      defineProject({
+        plugins: [tsSourceExtensionPlugin()],
+        resolve: {
+          alias: {
+            "@pnpm-pub/shared": path.resolve(__dirname, "src/shared/index.ts"),
+            // Allow webui tests to import $shared/schemas.js → src/shared/schemas.ts
+            $shared: path.resolve(__dirname, "src/shared/"),
+            // svelte-i18n lives in webui/node_modules; resolve it for daemon-side
+            // tests that import webui modules which transitively use svelte-i18n.
+            "svelte-i18n": path.resolve(__dirname, "webui/node_modules/svelte-i18n/dist/runtime.js"),
+          },
+        },
+        test: {
+          name: "unit",
+          environment: "node",
+          include: ["test/**/*.test.ts"],
+          exclude: ["test/e2e/**", "test/browser/**"],
+          globals: false,
+          testTimeout: 15_000,
+        },
+      }),
+      // Browser lane — WebUI regressions that drive a real browser; lives
+      // outside the unit lane because they may start dev servers.
+      defineProject({
+        test: {
+          name: "browser",
+          environment: "node",
+          include: ["test/browser/**/*.test.ts"],
+          testTimeout: 120_000,
+          hookTimeout: 60_000,
+        },
+      }),
+      // E2E lane — full interception loop against a mock registry; separate so
+      // unit tests run without the heavier setup.
+      defineProject({
+        plugins: [tsSourceExtensionPlugin()],
+        test: {
+          name: "e2e",
+          environment: "node",
+          include: ["test/e2e/**/*.test.ts"],
+          testTimeout: 60_000,
+          hookTimeout: 60_000,
+        },
+      }),
+    ],
   },
   pack: {
     entry: {
@@ -150,7 +269,7 @@ export default defineConfig({
     deps: {
       neverBundle: ["opentray", "@opentray/ext-webview"],
     },
-    plugins: [copyKeytarPrebuilds(), copyAssets()],
+    plugins: [copyKeytarPrebuilds(), copyAssets(), buildWebui()],
     unbundle: false,
     minify: false,
     clean: true,
