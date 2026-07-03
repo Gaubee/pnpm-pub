@@ -30,24 +30,24 @@ function makeWindow(): OpentrayWindow & {
   fireFocus(): void;
 } {
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
-  return {
+  const win = {
     visible: false,
     keepOnTop: false,
     async show() {
-      this.visible = true;
+      win.visible = true;
     },
     async hide() {
-      this.visible = false;
+      win.visible = false;
     },
     async setStyle(style: { keepOnTop?: boolean }) {
       if (style.keepOnTop !== undefined) {
-        this.keepOnTop = style.keepOnTop;
+        win.keepOnTop = style.keepOnTop;
       }
     },
-    listen(event, handler) {
+    listen(event: unknown, handler: (payload: unknown) => void) {
       const key = typeof event === "string" ? event : (event as string);
       const arr = listeners.get(key) ?? [];
-      arr.push(handler as (payload: unknown) => void);
+      arr.push(handler);
       listeners.set(key, arr);
       return () => {
         const cur = listeners.get(key);
@@ -65,7 +65,8 @@ function makeWindow(): OpentrayWindow & {
     fireFocus() {
       for (const h of listeners.get("focus") ?? []) h({});
     },
-  } as OpentrayWindow & {
+  };
+  return win as unknown as OpentrayWindow & {
     visible: boolean;
     keepOnTop: boolean;
     fireBlur(): void;
@@ -78,19 +79,21 @@ function makeWindow(): OpentrayWindow & {
  */
 function makeTray(): OpentrayTray & { fireClick(itemId?: number): void } {
   let click: ((e: { itemId: number }) => void) | undefined;
-  return {
-    onMenuClick(handler) {
+  const tray = {
+    onMenuClick(handler: (e: { itemId: number }) => void) {
       click = handler;
       return () => {
         click = undefined;
       };
     },
     async setIcon() {},
+    async setMenu() {},
     async destroy() {},
     fireClick(itemId = 1) {
       click?.({ itemId });
     },
-  } as OpentrayTray & { fireClick(itemId?: number): void };
+  };
+  return tray as unknown as OpentrayTray & { fireClick(itemId?: number): void };
 }
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-tray-${process.pid}-${Date.now()}`);
@@ -272,6 +275,105 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     tray.fireClick(1);
     expect(window.visible).toBe(true);
     expect(host.getVisibility()).toBe("shown");
+    await host.destroy();
+  });
+
+  it("Quit menu item invokes onQuit and does NOT toggle the window", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const tray = makeTray();
+    let quitCalls = 0;
+    const host = new TrayHost(store, tray, window, {
+      title: "pnpm-pub",
+      openItemId: 1,
+      quitItemId: 2,
+      onQuit: () => {
+        quitCalls++;
+      },
+    });
+    host.show();
+    expect(window.visible).toBe(true);
+
+    // Picking the Quit item must call onQuit once and leave the window visible
+    // (process teardown is the caller's job, not the host's).
+    tray.fireClick(2);
+    expect(quitCalls).toBe(1);
+    expect(window.visible).toBe(true);
+
+    // The Open item still toggles as before.
+    tray.fireClick(1);
+    expect(window.visible).toBe(false);
+    await host.destroy();
+  });
+
+  it("onQuit failures are logged, not thrown", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const tray = makeTray();
+    const lines: string[] = [];
+    const host = new TrayHost(store, tray, window, {
+      title: "pnpm-pub",
+      openItemId: 1,
+      quitItemId: 2,
+      log: (line) => lines.push(line),
+      onQuit: () => {
+        throw new Error("shutdown boom");
+      },
+    });
+    // Must not throw — the failure is swallowed + logged.
+    expect(() => tray.fireClick(2)).not.toThrow();
+    expect(lines.some((l) => l.includes("onQuit failed: shutdown boom"))).toBe(true);
+    await host.destroy();
+  });
+
+  it("setIcon forwards the projection to the tray handle", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const tray = makeTray();
+    const received: unknown[] = [];
+    tray.setIcon = async (icon: unknown) => {
+      received.push(icon);
+    };
+    const host = new TrayHost(store, tray, makeWindow(), { title: "pnpm-pub" });
+    const colorIcon = { "icon-only": { type: "file" as const, path: "/x.png" } };
+    host.setIcon(colorIcon);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(received).toEqual([colorIcon]);
+    // undefined is a no-op (no asset resolved).
+    host.setIcon(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(received).toHaveLength(1);
+    await host.destroy();
+  });
+
+  it("relables the primary menu item to Show/Hide window on visibility change", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const tray = makeTray();
+    const pushedMenus: Array<{ items: Array<{ type: string; id?: number; title?: string }> }> = [];
+    tray.setMenu = async (menu: unknown) => {
+      pushedMenus.push(menu as { items: Array<{ type: string; id?: number; title?: string }> });
+    };
+    const host = new TrayHost(store, tray, makeWindow(), {
+      title: "pnpm-pub",
+      openItemId: 1,
+      quitItemId: 2,
+      initialVisible: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Initial (shown): primary item reads "Hide window", plus a separator + Quit.
+    const last = () => pushedMenus[pushedMenus.length - 1];
+    expect(last().items.map((i) => i.title)).toEqual(["Hide window", undefined, "Quit"]);
+
+    host.hide();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(last().items.map((i) => i.title)).toEqual(["Show window", undefined, "Quit"]);
+
+    host.show();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(last().items.map((i) => i.title)).toEqual(["Hide window", undefined, "Quit"]);
     await host.destroy();
   });
 

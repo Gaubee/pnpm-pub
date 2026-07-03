@@ -141,7 +141,6 @@ function resolveWebuiDir(override?: string): string {
 export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | null> {
   const store = new DaemonStore();
   await store.load();
-  console.log(0.1,new Date(),'zzz')
 
   // Never let an async opentray/broker rejection (e.g. a webview command the
   // broker rejects mid-session, a stale SINGLE_SESSION) crash the daemon. Log
@@ -400,7 +399,6 @@ async function tryCreateTray(
   let panel: OpentrayWindow | null = null;
   let stopPlacement: (() => void) | undefined;
   try {
-    console.log(1,new Date(),'zzz')
     // opentray 0.10 tray-first model: createTray() is the public creation
     // entrypoint and owns local-broker transport selection. pnpm-pub only
     // declares the tray atom and runtime identity.
@@ -414,9 +412,9 @@ async function tryCreateTray(
       tooltip: { title: "pnpm-pub", description: "pnpm publish companion" },
       menu: {
         items: [
-          { type: "item", id: MENU_OPEN_ID, title: "Open pnpm-pub", primaryEvent: true },
+          { type: "item", id: MENU_OPEN_ID, title: "Hide window", primaryEvent: true },
           { type: "separator" },
-          { type: "item", id: MENU_QUIT_ID, title: "Quit pnpm-pub" },
+          { type: "item", id: MENU_QUIT_ID, title: "Quit" },
         ],
       },
     };
@@ -429,7 +427,6 @@ async function tryCreateTray(
       appName: "pnpm-pub",
     });
     tray = baseTray.extend(ext.WebviewExt);
-    console.log(2,new Date(),'zzz')
 
     // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
     // the OS control cluster while the page owns the titlebar drag area; the
@@ -454,7 +451,6 @@ async function tryCreateTray(
     // Initial show so the window is visible on first tray mount (the panel is
     // created hidden; subsequent toggles go through tray-host show/hide).
     await panel.show();
-    console.log(3,new Date(),'zzz')
     log("tray window shown on mount");
 
     // Anchor the panel to the tray after the native window exists. Placement is
@@ -701,10 +697,7 @@ const ICON_MONO_FILE = "icon-macos.png";
  * When a cached user avatar exists and there are no pending events, it takes
  * precedence as a full-color generic fallback (it is not a template image).
  */
-function iconProjection(
-  hasPending = false,
-): TrayIcon | undefined {
-  console.log("QAQ",'iconProjection',hasPending)
+function iconProjection(hasPending = false): TrayIcon | undefined {
   // Active state: color everywhere (a template can't show "active").
   if (hasPending) {
     const color = resolveAsset(ICON_COLOR_FILE);

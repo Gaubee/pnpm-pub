@@ -30,7 +30,7 @@
  *   - The OS close button only hides the window (orderOut/SW_HIDE); the handle
  *     stays alive and `show()` resurrects it — no re-creation needed.
  */
-import type { EventfulTrayHandle } from "opentray";
+import type { EventfulTrayHandle, Menu, TrayIcon as OpentrayTrayIcon } from "opentray";
 import type { WebviewTrayCapability, WebviewWindowHandle } from "@opentray/ext-webview";
 import type { DaemonStore } from "./store.js";
 
@@ -43,6 +43,12 @@ export type OpentrayTray = EventfulTrayHandle & WebviewTrayCapability;
 
 export type OpentrayWindow = WebviewWindowHandle;
 
+/**
+ * The tray icon projection shape from opentray's public app-facing type.
+ * Carries OS-scoped candidates + `isTemplate` metadata.
+ */
+export type TrayIcon = OpentrayTrayIcon;
+
 export interface TrayHostOptions {
   /** Tray title (kept static). */
   title?: string;
@@ -50,6 +56,14 @@ export interface TrayHostOptions {
   log?: (line: string) => void;
   /** Menu item id that opens the window (primaryEvent). */
   openItemId?: number;
+  /** Menu item id for the Quit affordance. */
+  quitItemId?: number;
+  /** Tray menu label for the show action (window currently hidden). */
+  showLabel?: string;
+  /** Tray menu label for the hide action (window currently shown). */
+  hideLabel?: string;
+  /** Tray menu label for the Quit action. */
+  quitLabel?: string;
   /** Initial native window visibility when TrayHost takes ownership. */
   initialVisible?: boolean;
   /**
@@ -58,6 +72,12 @@ export interface TrayHostOptions {
    * number while a blur auto-hide is pending, or null when idle.
    */
   onPinFrame?: (pinned: boolean, countdown: number | null) => void;
+  /**
+   * Invoked when the user picks the tray "Quit" menu item. The host calls this
+   * (best-effort) and lets the caller tear the daemon down — TrayHost itself
+   * only owns window/tray visibility, not process lifecycle.
+   */
+  onQuit?: () => void;
   /**
    * Override the blur auto-hide cadence (ms). The sequence is: blur → show 3 →
    * every `tickMs` decrement to 2/1/0 → after one more tick, hide. Defaults to
@@ -97,6 +117,9 @@ export class TrayHost {
     // created with this same value at mount time, so no setStyle is needed.
     this.pinned = store.getPreferences().keepOnTop;
     this.wireUp();
+    // Sync the native menu to the initial visibility (createTray ships a static
+    // menu; this relabels the primary item to match the real state).
+    this.pushMenu();
   }
 
   private log(line: string): void {
@@ -132,11 +155,21 @@ export class TrayHost {
 
   private wireUp(): void {
     const openId = this.opts.openItemId ?? 1;
-    // Skill scenario: tray click toggles the SAME panel handle.
+    const quitId = this.opts.quitItemId;
+    // Skill scenario: tray click toggles the SAME panel handle. The Quit item
+    // delegates to the caller's onQuit (process teardown lives outside the host).
     if (this.tray) {
       const off = this.tray.onMenuClick(({ itemId }) => {
         this.log(`menu click received: itemId=${itemId}`);
         if (itemId === openId) this.toggle();
+        else if (quitId !== undefined && itemId === quitId) {
+          this.log("quit requested");
+          try {
+            this.opts.onQuit?.();
+          } catch (error) {
+            this.log(`onQuit failed: ${errorToLogMessage(error)}`);
+          }
+        }
       });
       this.unsubs.push(off);
     }
@@ -153,6 +186,16 @@ export class TrayHost {
       });
       this.unsubs.push(offFocus);
     }
+  }
+
+  /**
+   * Swap the tray icon projection. Best-effort: opentray rejections are logged,
+   * never thrown. Used to flip between the default mono template and the active
+   * color icon as pending-event state changes.
+   */
+  setIcon(icon: TrayIcon | undefined): void {
+    if (!icon) return;
+    this.safeCall("setIcon", this.tray?.setIcon(icon));
   }
 
   /**
@@ -207,17 +250,47 @@ export class TrayHost {
     // on show so a freshly-resurrected window is still on top.
     this.applyKeepOnTop(showP);
     this.visibility = "shown";
+    this.pushMenu();
     this.log("show");
   }
 
   /** Re-apply the permanent keepOnTop style, chaining after show() if needed. */
   private applyKeepOnTop(showP: Promise<unknown> | undefined): void {
-    const apply = () => this.safeCall("setStyle(keepOnTop)", this.window?.setStyle({ keepOnTop: true }));
+    const apply = () =>
+      this.safeCall("setStyle(keepOnTop)", this.window?.setStyle({ keepOnTop: true }));
     if (showP && typeof showP.then === "function") {
       showP.then(apply, () => {});
     } else {
       apply();
     }
+  }
+
+  /**
+   * Build the tray menu for the current visibility. The primary item relabels
+   * to the action it will perform: "Show window" when hidden, "Hide window"
+   * when shown — so the user always sees what clicking does.
+   */
+  private buildMenu(): Menu {
+    const openId = this.opts.openItemId ?? 1;
+    const quitId = this.opts.quitItemId;
+    const actionTitle =
+      this.visibility === "shown"
+        ? (this.opts.hideLabel ?? "Hide window")
+        : (this.opts.showLabel ?? "Show window");
+    const items: Menu["items"] = [
+      { type: "item", id: openId, title: actionTitle, primaryEvent: true },
+    ];
+    if (quitId !== undefined) {
+      items.push({ type: "separator" });
+      items.push({ type: "item", id: quitId, title: this.opts.quitLabel ?? "Quit" });
+    }
+    return { items };
+  }
+
+  /** Push the current menu to the native tray (best-effort). */
+  private pushMenu(): void {
+    if (!this.tray) return;
+    this.safeCall("setMenu", this.tray.setMenu(this.buildMenu()));
   }
 
   /** Primary tray click behavior for a tray-owned panel. */
@@ -230,6 +303,7 @@ export class TrayHost {
   hide(): void {
     this.safeCall("hide", this.window?.hide());
     this.visibility = "hidden";
+    this.pushMenu();
     this.log("hide");
   }
 
@@ -243,6 +317,7 @@ export class TrayHost {
   markHidden(): void {
     this.cancelCountdown();
     this.visibility = "hidden";
+    this.pushMenu();
   }
 
   /**
