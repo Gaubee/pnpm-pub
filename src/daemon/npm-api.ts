@@ -104,10 +104,16 @@ function errorToMessage(error: unknown): string {
   return bodyToText(error);
 }
 
-const OTP_FAILED_PATTERNS = [
+/**
+ * Substrings the npm registry (and pnpm/npm CLI) emit when an OTP is rejected.
+ * Shared between the API path (HTTP body) and the CLI path (stderr text) so the
+ * clock-drift self-healing (Chapter 8.4) works identically in both.
+ */
+export const OTP_FAILED_PATTERNS = [
   /otp validation failed/i,
   /one-time pass/i,
   /otp required/i,
+  /this operation requires a one-time password/i,
 ];
 
 function isOtpFailure(body: unknown, status: number): boolean {
@@ -116,6 +122,30 @@ function isOtpFailure(body: unknown, status: number): boolean {
     return OTP_FAILED_PATTERNS.some((re) => re.test(text));
   }
   return false;
+}
+
+/**
+ * Detect an OTP failure from raw CLI stderr text (no HTTP status available on the
+ * `pnpm publish` child-process path). The CLI wraps registry errors as
+ * `npm error code EOTP` / `EONETIME` / `403` lines, so match on the patterns
+ * above plus the conventional npm error codes.
+ */
+export function isOtpFailureText(text: string): boolean {
+  if (!text) return false;
+  if (/\bEOTP\b|\bEONETIME\b/.test(text)) return true;
+  return OTP_FAILED_PATTERNS.some((re) => re.test(text));
+}
+
+/**
+ * Detect an expired/invalid/revoked auth token from raw CLI stderr text.
+ * Mirrors {@link isExpiredToken} but for the child-process path: pnpm/npm emit
+ * `npm error code E401` / `ENEEDAUTH` and a human message for bad tokens.
+ */
+export function isExpiredTokenText(text: string): boolean {
+  if (!text) return false;
+  if (/\bE401\b/.test(text) && !isOtpFailureText(text)) return true;
+  if (/\bENEEDAUTH\b/.test(text) && !isOtpFailureText(text)) return true;
+  return /token.*(expired|invalid|revoked)|unauthor/i.test(text) && !isOtpFailureText(text);
 }
 
 // ---------------------------------------------------------------------------
