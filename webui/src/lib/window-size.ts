@@ -13,7 +13,7 @@
  */
 
 /** Home / Events hub — 16:9 landscape. Fits the `max-w-2xl` content rail. */
-export const HOME_WINDOW_SIZE = { width: 680, height: 560 } as const;
+export const HOME_WINDOW_SIZE = { width: 680, height: 800 } as const;
 /** First-profile onboarding — near-square form surface. */
 export const ADD_PROFILE_WINDOW_SIZE = { width: 450, height: 464 } as const;
 
