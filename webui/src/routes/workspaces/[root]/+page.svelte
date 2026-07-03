@@ -15,12 +15,10 @@
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
-	import { daemon, actions } from '$lib/store.js';
+	import { daemon, actions, getRpcClient } from '$lib/store.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import { parseTrustListResponse } from '$lib/rest-response.js';
 	import OidcDialog from '$lib/components/oidc-dialog.svelte';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconScan from '@lucide/svelte/icons/scan-search';
@@ -101,10 +99,17 @@
 		const cached = oidcState[name];
 		if (cached && Date.now() - cached.fetchedAt < OIDC_TTL) return;
 		oidcInFlight = new Set(oidcInFlight).add(name);
-		apiFetch(`/api/oidc/trust?package=${encodeURIComponent(name)}`)
-			.then((r) => r.json())
-			.then((raw) => {
-				const json = parseTrustListResponse(raw);
+		const client = getRpcClient();
+		if (!client) {
+			oidcState = { ...oidcState, [name]: { configs: [], fetchedAt: Date.now() } };
+			const next = new Set(oidcInFlight);
+			next.delete(name);
+			oidcInFlight = next;
+			return;
+		}
+		client.oidc
+			.listTrust({ package: name })
+			.then((json) => {
 				if (json?.ok && json.configs) {
 					oidcState = { ...oidcState, [name]: { configs: json.configs, fetchedAt: Date.now() } };
 				} else {

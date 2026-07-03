@@ -9,7 +9,7 @@
  *   - `label|secret` / `label,secret` shorthand lines
  *
  * The output is always a single normalized, Base32-validated secret string
- * suitable for `POST /api/add-profile { totpSecret }`.
+ * suitable for `profile.add({ totpSecret })`.
  */
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";

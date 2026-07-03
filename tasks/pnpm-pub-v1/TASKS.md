@@ -5561,3 +5561,76 @@ Status: complete
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, single-package `--config.*` warnings, and CLI terminal-only publish intents, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
+
+## Milestone 228 — WebUI oRPC WebSocket transport and package SWR round
+
+Status: complete
+
+### Delivered
+
+- Added the shared `webRpcContract` as the WebUI/daemon protocol law and mounted it on `/ws/rpc` with pre-upgrade WebToken rejection.
+- Migrated WebUI runtime actions and reads from REST/custom WebSocket messages to a single oRPC WebSocket client and `state.subscribe` projection stream.
+- Replaced package listing with an oRPC event iterator that emits a local daemon KV snapshot first, then registry truth, applying the same filter/sort/page projection to both frames.
+- Removed the obsolete frontend REST fetch/response-decoder atom and pruned the unreachable daemon REST/custom-WS dispatch branch so `/api/*` now has one explicit 404 boundary.
+- Removed the old hand-rolled WebSocket frame atom and `WsClientMessage` ontology; client actions are now represented by the oRPC contract only.
+- Migrated transport-facing unit coverage to the oRPC client helper, including renew/add/delete/import/export, auth-status/profile-detail, state subscription, invalid input rejection, and package SWR local-then-registry frames.
+
+### Verification
+
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec vitest run test/unit/web-server-renew.test.ts test/unit/ws-profile-authstatus.test.ts test/unit/resolve-trust-auth.test.ts test/unit/orpc-websocket.test.ts`
+- `pnpm exec vitest run test/unit/web-server-renew.test.ts test/unit/ws-profile-authstatus.test.ts test/unit/resolve-trust-auth.test.ts test/unit/orpc-websocket.test.ts test/unit/webui-protocol-types.test.ts`
+- `pnpm exec vitest run test/unit/orpc-websocket.test.ts`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+
+### Residuals
+
+- none
+
+## Milestone 229 — Publish CLI drift diagnostic recovery round
+
+Status: complete
+
+### Delivered
+
+- Fixed the `pnpm publish` subprocess classifier so OTP/expired-token detection reads the full diagnostic stream instead of stderr only.
+- Preserved the existing success event projection while allowing stdout-only failure diagnostics to drive clock-drift retry.
+- Tightened the publish interception e2e selector to bind confirmations to the package event created by the test, not the first pending store projection.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/233-publish-cli-stdout-otp-diagnostics.md`.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/publisher.test.ts test/e2e/publish-intercept.test.ts -t "publish subprocess diagnostics|records clockDriftRecovered" --reporter=verbose`
+- `pnpm exec vitest run test/e2e/publish-intercept.test.ts --reporter=verbose`
+- `pnpm exec vp fmt src/daemon/subprocess-runner.ts test/unit/publisher.test.ts test/e2e/publish-intercept.test.ts tasks/pnpm-pub-v1/TASKS.md tasks/pnpm-pub-v1/.issues/closed/233-publish-cli-stdout-otp-diagnostics.md`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+- `pnpm exec vitest run test/unit/web-server-renew.test.ts test/unit/ws-profile-authstatus.test.ts test/unit/resolve-trust-auth.test.ts test/unit/orpc-websocket.test.ts test/unit/webui-protocol-types.test.ts --reporter=verbose`
+- `pnpm exec vitest run test/unit/publisher.test.ts test/e2e/publish-intercept.test.ts --reporter=verbose`
+
+### Residuals
+
+- none
+
+## Milestone 230 — oRPC residual audit and tombstone coverage round
+
+Status: complete
+
+### Delivered
+
+- Audited active runtime, WebUI, tests, and specs for stale REST/custom-WebSocket protocol references.
+- Updated active specs and code comments to describe `/ws/rpc` oRPC WebSocket, `state.subscribe`, and the `/api/*` tombstone boundary.
+- Added a direct oRPC transport regression proving obsolete `/api/*` WebUI calls return the tombstone 404 instead of reintroducing HTTP API behavior.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/234-orpc-residual-contract-text.md`.
+
+### Verification
+
+- `rg -n "api-fetch|rest-response|ws-message|WsClientMessage|confirm-event|reject-event|ACTION_CONFIRM_PUBLISH|POST /api|/api/publish|token-scoped JSON API|REST endpoint|REST call|WS messages|WS initial snapshot|WS / REST protocol|custom WebSocket|raw WS" src webui test spec README.md --glob '!tasks/**'`
+- `pnpm exec vitest run test/unit/orpc-websocket.test.ts --reporter=verbose`
+
+### Residuals
+
+- none

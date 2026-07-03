@@ -26,8 +26,7 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
-	import { parseOkResponse } from '$lib/rest-response.js';
-	import { apiFetch } from '$lib/api-fetch.js';
+	import { getRpcClient } from '$lib/store.js';
 	import type {
 		TrustedPublisherConfig,
 		TrustedPublisherPermission,
@@ -317,12 +316,7 @@
 	}
 
 	async function postConfig(pkg: string, cfg: TrustedPublisherConfig): Promise<boolean> {
-		const res = await apiFetch('/api/oidc/trust', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ package: pkg, config: cfg }),
-		});
-		const json = parseOkResponse(await res.json());
+		const json = await getRpcClient()?.oidc.addTrust({ package: pkg, config: cfg });
 		if (!json) throw new Error('Invalid daemon response.');
 		if (!json.ok) throw new Error('Failed to configure trusted publisher.');
 		return true;
@@ -360,12 +354,10 @@
 		busy = true;
 		error = null;
 		try {
-			const res = await apiFetch('/api/oidc/trust', {
-				method: 'DELETE',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ package: packageName.trim(), uuid: configId }),
+			const json = await getRpcClient()?.oidc.removeTrust({
+				package: packageName.trim(),
+				uuid: configId,
 			});
-			const json = parseOkResponse(await res.json());
 			if (!json) { error = 'Invalid daemon response.'; return; }
 			if (json.ok) { onChanged(); open = false; }
 			else { error = 'Failed to remove trusted publisher.'; }

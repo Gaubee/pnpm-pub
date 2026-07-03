@@ -439,13 +439,13 @@ const zh: Messages = mapMessages(en, {
   },
   titlebar: {
     windowTitlebar: "窗口标题栏",
-		themeSystem: "主题：系统",
-		themeLight: "主题：浅色",
-		themeDark: "主题：深色",
-		keepOpen: "保持打开 — 失焦时不自动隐藏",
-		keepOpenOff: "点击保持打开（失焦自动隐藏）",
-		pinCountdownHint: "点击保持打开（即将自动隐藏…）",
-	},
+    themeSystem: "主题：系统",
+    themeLight: "主题：浅色",
+    themeDark: "主题：深色",
+    keepOpen: "保持打开 — 失焦时不自动隐藏",
+    keepOpenOff: "点击保持打开（失焦自动隐藏）",
+    pinCountdownHint: "点击保持打开（即将自动隐藏…）",
+  },
   sidebar: {
     events: "事件",
     activeEvents: "进行中",
@@ -2567,7 +2567,7 @@ export function initI18n(): void {
   for (const lang of locales) {
     addMessages(lang, dictionaries[lang]);
   }
-  init({
+  void init({
     fallbackLocale: defaultLocale,
     initialLocale,
   });
@@ -2577,7 +2577,7 @@ export function initI18n(): void {
 
 export function setAppLocale(value: AppLocale): void {
   if (browser) localStorage.setItem(localeStorageKey, value);
-  locale.set(value);
+  void locale.set(value);
   applyDocumentLocale(value);
 }
 

@@ -10,10 +10,8 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '$lib/components/ui/card/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
-	import { parseTokenApplyResponse } from '$lib/rest-response.js';
 	import { getRenewProjection, toRenewReason } from '$lib/renew-projection.js';
-	import { activeProfile } from '$lib/store.js';
-	import { apiFetch } from '$lib/api-fetch.js';
+	import { activeProfile, getRpcClient } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -36,17 +34,12 @@
 		error = null;
 		needsManual = false;
 		try {
-			const res = await apiFetch('/api/renew', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					username,
-					password,
-					manualToken: manualToken || undefined,
-					totpSecret: totpSecret || undefined,
-				}),
+			const json = await getRpcClient()?.profile.renew({
+				username,
+				password,
+				manualToken: manualToken || undefined,
+				totpSecret: totpSecret || undefined,
 			});
-			const json = parseTokenApplyResponse(await res.json());
 			if (!json) {
 				error = $_('renew.invalidDaemon');
 				return;

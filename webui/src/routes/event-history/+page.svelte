@@ -2,11 +2,10 @@
 	/**
 	 * Event History — the full, paginated, filterable event log.
 	 *
-	 * Data is fetched from the daemon via REST (GET /api/events) with server-side
+	 * Data is fetched from the daemon via `events.query` with server-side
 	 * pagination + filtering, so large logs don't load entirely into memory.
-	 * Live new events arrive over the existing WS 'event' push; while the user
-	 * is browsing a page, a sticky "N new" tip appears and clicking it reloads
-	 * from page 1.
+	 * Live new events arrive over `state.subscribe`; while the user is browsing
+	 * a page, a sticky "N new" tip appears and clicking it reloads from page 1.
 	 *
 	 * History cards render in compact mode (single-line log → horizontal scroll).
 	 * Events sharing a groupId collapse to the latest member + a "+N more" toggle.
@@ -15,8 +14,7 @@
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import { daemon } from '$lib/store.js';
+	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -71,15 +69,14 @@
 
 	async function fetchEvents(): Promise<void> {
 		loading = true;
-		const params = new URLSearchParams({
-			scope: 'history',
-			page: String(page),
-			limit: String(PAGE_SIZE),
-		});
-		if (filterText.trim()) params.set('q', filterText.trim());
 		try {
-			const res = await apiFetch(`/api/events?${params}`);
-			const json = (await res.json()) as { rows: PubEvent[]; total: number };
+			const json = await getRpcClient()?.events.query({
+				scope: 'history',
+				page,
+				limit: PAGE_SIZE,
+				q: filterText.trim(),
+			});
+			if (!json) throw new Error('events unavailable');
 			groups = buildGroups(json.rows);
 			total = json.total;
 			// Mark the newest visible event as "seen".

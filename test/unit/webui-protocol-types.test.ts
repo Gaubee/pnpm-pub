@@ -10,7 +10,6 @@ import type {
   PubEvent as SharedPubEvent,
   PublishTarget as SharedPublishTarget,
   WorkspaceEntry as SharedWorkspaceEntry,
-  WsClientMessage as SharedWsClientMessage,
   WsServerMessage as SharedWsServerMessage,
 } from "../../src/shared/index.js";
 import type {
@@ -21,7 +20,6 @@ import type {
   PubEvent as WebPubEvent,
   PublishTarget as WebPublishTarget,
   WorkspaceEntry as WebWorkspaceEntry,
-  WsClientMessage as WebWsClientMessage,
   WsServerMessage as WebWsServerMessage,
 } from "../../webui/src/lib/types.js";
 
@@ -49,11 +47,10 @@ const protocolMirrorIsExact: [
   >,
   AssertEqual<WebEventPayloadData<"refresh-token">, SharedEventPayloadData<"refresh-token">>,
   AssertEqual<WebWsServerMessage, SharedWsServerMessage>,
-  AssertEqual<WebWsClientMessage, SharedWsClientMessage>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true, true];
 
 describe("WebUI protocol type mirror", () => {
   it("Scenario: Given the WebUI mirrors daemon protocol types, When typechecking, Then the contracts stay exactly aligned", () => {
-    expect(protocolMirrorIsExact).toHaveLength(12);
+    expect(protocolMirrorIsExact).toHaveLength(11);
   });
 });

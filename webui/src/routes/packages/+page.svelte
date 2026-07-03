@@ -2,19 +2,16 @@
 	/**
 	 * Packages — the active profile's published packages on the npm registry.
 	 *
-	 * Backed by `GET /api/packages` (daemon walks `/-/v1/search?text=maintainer:…`
-	 * and caches the full list). The daemon performs the filter / sort / paginate
-	 * server-side. This page:
-	 *   - shows cached (stale) results instantly, then swaps in fresh data when
-	 *     the response arrives (stale-while-revalidate), so re-visits / re-queries
-	 *     never flash a blank list,
+	 * Backed by the `packages.list` oRPC event iterator. The daemon first emits
+	 * a local snapshot projection, then registry truth, with server-side
+	 * filter / sort / paginate applied to both frames. This page:
+	 *   - shows local stale data instantly, then swaps in fresh registry data,
 	 *   - animates list changes with `flip` + `fade` for smooth reordering,
 	 *   - links each card to the in-app PackageDetail page,
 	 *   - surfaces per-card Trusted Publishing (OIDC) status + a Configure button.
 	 */
-	import { activeProfile } from '$lib/store.js';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import { parsePackagesResponse } from '$lib/rest-response.js';
+	import { activeProfile, getRpcClient } from '$lib/store.js';
+	import { consumeEventIterator } from '@orpc/client';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -52,11 +49,7 @@
 	let refreshing = $state(false);
 	let error = $state<string | null>(null);
 
-	// Stale-while-revalidate memo, keyed by `q::sort::page`. A cache hit is
-	// rendered immediately (no spinner) while a background refresh swaps in the
-	// fresh response. Lives for the SPA session (module-local, in-memory).
-	const cache = new Map<string, PackagesData>();
-	const cacheKey = (q: string, s: Sort, p: number) => `${q}::${s}::${p}`;
+	let stopPackagesStream: (() => Promise<void>) | null = null;
 
 	// Debounce the free-text query so each keystroke doesn't fire a request.
 	let debouncedQuery = $state('');
@@ -90,53 +83,53 @@
 	});
 
 	async function fetchPackages(): Promise<void> {
-		const params = new URLSearchParams({
-			q: debouncedQuery.trim(),
-			sort,
-			page: String(page),
-			pageSize: String(PAGE_SIZE),
-		});
-		const key = cacheKey(debouncedQuery.trim(), sort, page);
-		const stale = cache.get(key);
-		if (stale) {
-			// Instant paint of the cached page; refresh quietly in the background.
-			data = stale;
-			error = null;
-			loading = false;
-		} else {
+		await stopPackagesStream?.();
+		stopPackagesStream = null;
+		const client = getRpcClient();
+		if (!client) {
 			loading = true;
+			refreshing = false;
+			return;
 		}
+		loading = !data;
 		refreshing = true;
 		error = null;
-		try {
-			const res = await apiFetch(`/api/packages?${params}`);
-			const json = parsePackagesResponse(await res.json());
-			if (json?.ok) {
-				const next: PackagesData = {
-					items: json.items ?? [],
-					total: json.total ?? 0,
-					page: json.page ?? page,
-					pageSize: json.pageSize ?? PAGE_SIZE,
-				};
-				data = next;
-				cache.set(key, next);
-			} else {
-				// Keep showing stale data if we have it; only surface the error when
-				// there's nothing cached for this key.
-				if (!stale) {
-					error = json?.error ?? $_('packages.error');
-					data = null;
-				}
+		stopPackagesStream = consumeEventIterator(
+			client.packages.list({
+				q: debouncedQuery.trim(),
+				sort,
+				page,
+				pageSize: PAGE_SIZE,
+			}),
+			{
+				onEvent(frame) {
+					if (frame.ok) {
+						data = {
+							items: frame.items,
+							total: frame.total,
+							page: frame.page,
+							pageSize: frame.pageSize,
+						};
+						error = null;
+						loading = false;
+						if (frame.source === 'registry') refreshing = false;
+					} else if (!data) {
+						error = frame.error || $_('packages.error');
+						loading = false;
+						refreshing = false;
+					}
+				},
+				onError() {
+					if (!data) error = $_('packages.error');
+					loading = false;
+					refreshing = false;
+				},
+				onFinish() {
+					loading = false;
+					refreshing = false;
+				},
 			}
-		} catch {
-			if (!stale) {
-				error = $_('packages.error');
-				data = null;
-			}
-		} finally {
-			loading = false;
-			refreshing = false;
-		}
+		);
 	}
 
 	const totalPages = $derived(Math.max(1, Math.ceil((data?.total ?? 0) / PAGE_SIZE)));

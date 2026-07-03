@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { actions, daemon, closeAddProfile } from '$lib/store.js';
+	import { actions, daemon, closeAddProfile, getRpcClient } from '$lib/store.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -35,13 +35,6 @@
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconMail from '@lucide/svelte/icons/mail';
 	import IconLink from '@lucide/svelte/icons/globe';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import {
-		parseProfileTokenResponse,
-		parseProfilePasswordResponse,
-		parseProfileDetailResponse,
-		parseTokenApplyResponse,
-	} from '$lib/rest-response.js';
 	import type { ProfileDetail } from '$lib/types.js';
 	import { _ } from 'svelte-i18n';
 	import { untrack } from 'svelte';
@@ -122,8 +115,7 @@
 		tokenLoading = true;
 		tokenError = null;
 		try {
-			const res = await apiFetch(`/api/profile-token?username=${encodeURIComponent(username)}`);
-			const json = parseProfileTokenResponse(await res.json());
+			const json = await getRpcClient()?.profile.token({ username });
 			if (json?.ok && json.token) {
 				token = json.token;
 				showToken = true;
@@ -206,10 +198,8 @@
 		}
 		detailError = null;
 		try {
-			const res = await apiFetch('/api/profile-detail');
+			const json = await getRpcClient()?.profile.detail();
 			// Stale response guard: a newer request superseded this one.
-			if (reqId !== activeDetailReq) return;
-			const json = parseProfileDetailResponse(await res.json());
 			if (reqId !== activeDetailReq) return;
 			if (json?.ok && json.detail) {
 				detail = json.detail;
@@ -271,8 +261,7 @@
 
 	async function loadStoredPassword(): Promise<void> {
 		try {
-			const res = await apiFetch(`/api/profile-password?username=${encodeURIComponent(username)}`);
-			const json = parseProfilePasswordResponse(await res.json());
+			const json = await getRpcClient()?.profile.password({ username });
 			if (json?.ok && json.password) reauthPassword = json.password;
 		} catch {
 			/* leave empty — user types it */
@@ -302,16 +291,11 @@
 		reauthBusy = true;
 		reauthError = null;
 		try {
-			const res = await apiFetch('/api/renew', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					username,
-					password: reauthPhase === 'manual' ? undefined : reauthPassword,
-					manualToken: reauthPhase === 'manual' ? manualToken.trim() || undefined : undefined,
-				}),
+			const json = await getRpcClient()?.profile.renew({
+				username,
+				password: reauthPhase === 'manual' ? undefined : reauthPassword,
+				manualToken: reauthPhase === 'manual' ? manualToken.trim() || undefined : undefined,
 			});
-			const json = parseTokenApplyResponse(await res.json());
 			if (json?.ok) {
 				// Success: daemon flipped authStatus → 'authenticated' and broadcast a
 				// fresh profiles frame (new token persisted). The cached npm_token +
@@ -352,12 +336,7 @@
 		if (autoRenewBusy || !profile) return;
 		autoRenewBusy = true;
 		try {
-			const res = await apiFetch('/api/profile/auto-renew', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ username, autoRenew: next }),
-			});
-			const json = await res.json();
+			const json = await getRpcClient()?.profile.setAutoRenew({ username, autoRenew: next });
 			if (!json?.ok) throw new Error('toggle failed');
 			// The daemon broadcasts a fresh profiles frame; the derived `profile`
 			// reflows and the switch reflects the persisted state.

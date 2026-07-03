@@ -7,15 +7,18 @@
  * ONLY place that produces those PNGs — they are build artifacts and are
  * git-ignored (see .gitignore), so never hand-edit a tray *.png.
  *
- * Source SVGs (single source of truth):
- *   assets/icon.svg            red npm square  (#c12127) — Windows tray + favicon + sidebar
- *   assets/icon-mono.svg       black silhouette, transparent bg — macOS template tray
- *   assets/icon-pending.svg    red square + blue pending badge dot — Windows pending
- *   assets/icon-mono-pending.svg black silhouette + badge dot — macOS pending
+ * Two-icon model (event-driven selection lives in the daemon, not here):
+ *   assets/icon.svg        red npm square  (#c12127) — the COLOR icon: shown
+ *                          when there are pending events, and as the generic
+ *                          fallback on Windows/Linux. Also the favicon/sidebar
+ *                          source.
+ *   assets/icon-mono.svg   black silhouette, transparent bg — the MONO icon:
+ *                          declared as a Darwin TEMPLATE image so macOS renders
+ *                          it as a single-color menubar item (default state).
  *
  * Outputs (64×64 rgba PNG, the size opentray expects for crisp menubar/dpi rendering):
- *   <outDir>/icon-windows.png / icon-windows-pending.png
- *   <outDir>/icon-macos.png   / icon-macos-pending.png
+ *   <outDir>/icon-windows.png   (color)
+ *   <outDir>/icon-macos.png     (mono template)
  *
  * Two entry modes:
  *   - `node scripts/gen-icons.mjs`              → writes into assets/ (legacy, build step)
@@ -37,9 +40,7 @@ const SIZE = 64;
 /** SVG source → output PNG file name. */
 export const ICON_TARGETS = [
   { svg: "icon.svg", png: "icon-windows.png" },
-  { svg: "icon-pending.svg", png: "icon-windows-pending.png" },
   { svg: "icon-mono.svg", png: "icon-macos.png" },
-  { svg: "icon-mono-pending.svg", png: "icon-macos-pending.png" },
 ];
 
 /**

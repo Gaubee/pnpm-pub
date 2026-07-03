@@ -12,11 +12,12 @@ import {
   configureTrustedPublisher,
   deleteTrustedPublisher,
   type NpmClient,
-  type TrustedPublisherConfigCreate,
+  TrustedPublisherConfigCreateSchema,
 } from "safe-npm-sdk";
 import { generateTotp } from "./totp.js";
 import { TrustedPublisherConfigSchema } from "../shared/schemas.js";
 import type { TrustedPublisherConfig } from "../shared/index.js";
+import type { TrustedPublisherCreateConfig } from "../shared/orpc-contract.js";
 
 /** Credentials needed to construct a one-shot SDK client + OTP. */
 export interface TrustAuth {
@@ -74,10 +75,11 @@ export async function listTrustedPublishers(
 export async function addTrustedPublisher(
   auth: TrustAuth,
   name: string,
-  config: TrustedPublisherConfigCreate,
+  config: TrustedPublisherCreateConfig,
 ): Promise<TrustResult> {
   const client = makeClient(auth);
-  const result = await configureTrustedPublisher(name, config, { otp: otp(auth) }, client);
+  const createConfig = TrustedPublisherConfigCreateSchema.parse(config);
+  const result = await configureTrustedPublisher(name, createConfig, { otp: otp(auth) }, client);
   return {
     ok: result.ok,
     status: result.ok ? 200 : result.error.status,

@@ -11,7 +11,7 @@
  *                  and broadcast, so the WebUI routes to re-auth)
  *   `ok`         — token + TOTP + registry, ready to use
  *
- * These tests drive it end-to-end via the real HTTP layer (`/api/profile-detail`
+ * These tests drive it end-to-end via the WebUI oRPC layer (`profile.detail`
  * is the simplest caller): they assert the three states surface correctly and
  * that an `expired` token flips + broadcasts `authStatus`.
  */
@@ -23,7 +23,7 @@ import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { WebServer } from "../../src/daemon/web-server.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
-import type { WsServerMessage } from "../../src/shared/index.js";
+import { openRpcClient } from "./orpc-test-client.js";
 
 const mocks = vi.hoisted(() => ({
   verifyCredentialsMock: vi.fn(),
@@ -65,12 +65,6 @@ vi.mock("../../src/daemon/npm-profile-client.js", () => ({
 }));
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-resolve-${process.pid}-${Date.now()}`);
-
-function isProfilesFrame(value: unknown): value is Extract<WsServerMessage, { type: "profiles" }> {
-  return (
-    typeof value === "object" && value !== null && (value as { type?: string }).type === "profiles"
-  );
-}
 
 describe("resolveTrustAuth three-state liveness probe", () => {
   let store: DaemonStore;
@@ -122,18 +116,19 @@ describe("resolveTrustAuth three-state liveness probe", () => {
     await fsp.rm(sandbox, { recursive: true, force: true });
   });
 
-  async function fetchProfileDetail(): Promise<Response> {
-    return fetch(`http://127.0.0.1:${port}/api/profile-detail`, {
-      headers: { authorization: "Bearer webtoken" },
-    });
+  async function getProfileDetail() {
+    const conn = await openRpcClient(port, "webtoken");
+    try {
+      return await conn.client.profile.detail();
+    } finally {
+      conn.close();
+    }
   }
 
   it("Scenario: Given a valid token, When probing, Then detail loads (status ok)", async () => {
-    const res = await fetchProfileDetail();
-    expect(res.status).toBe(200);
-    const json = await res.json();
+    const json = await getProfileDetail();
     expect(json.ok).toBe(true);
-    expect(json.detail.name).toBe("alice");
+    expect(json.detail?.name).toBe("alice");
     // The probe ran with the stored token.
     expect(mocks.verifyCredentialsMock).toHaveBeenCalledWith(
       expect.objectContaining({ token: "tok", registry: "https://registry.npmjs.org/" }),
@@ -154,9 +149,7 @@ describe("resolveTrustAuth three-state liveness probe", () => {
       },
     });
 
-    const res = await fetchProfileDetail();
-    expect(res.status).toBe(401);
-    const json = await res.json();
+    const json = await getProfileDetail();
     expect(json.ok).toBe(false);
     expect(json.needsReauth).toBe(true);
     // readProfileDetail must NOT have been called (blocked before the registry GET).
@@ -165,27 +158,25 @@ describe("resolveTrustAuth three-state liveness probe", () => {
     expect(store.getProfile("alice")?.authStatus).toBe("unauthenticated");
   });
 
-  it("Scenario: Given no default profile, When probing, Then it returns 401 without needsReauth", async () => {
+  it("Scenario: Given no default profile, When probing, Then it returns a reauth-required failure without probing", async () => {
     // Remove the only profile so there is no default.
     await store.removeProfile("alice");
 
-    const res = await fetchProfileDetail();
-    expect(res.status).toBe(401);
-    const json = await res.json();
+    const json = await getProfileDetail();
     expect(json.ok).toBe(false);
-    expect(json.needsReauth).toBeUndefined();
+    expect(json.needsReauth).toBe(true);
     // No probe should run when there is no profile to probe.
     expect(mocks.verifyCredentialsMock).not.toHaveBeenCalled();
   });
 
   it("Scenario: Given a cached valid verdict, When probing again, Then it skips a second registry probe", async () => {
     // First call probes; the 60s cache means the second call must NOT probe.
-    const res1 = await fetchProfileDetail();
-    expect(res1.status).toBe(200);
+    const res1 = await getProfileDetail();
+    expect(res1.ok).toBe(true);
     expect(mocks.verifyCredentialsMock).toHaveBeenCalledTimes(1);
 
-    const res2 = await fetchProfileDetail();
-    expect(res2.status).toBe(200);
+    const res2 = await getProfileDetail();
+    expect(res2.ok).toBe(true);
     // Still only one probe — the second was served from cache.
     expect(mocks.verifyCredentialsMock).toHaveBeenCalledTimes(1);
   });
@@ -204,9 +195,9 @@ describe("resolveTrustAuth three-state liveness probe", () => {
         check: { authValid: true, requires2FA: false, otpValid: true, message: "valid" },
       });
 
-    const res1 = await fetchProfileDetail();
-    expect(res1.status).toBe(401);
-    expect((await res1.json()).needsReauth).toBe(true);
+    const res1 = await getProfileDetail();
+    expect(res1.ok).toBe(false);
+    expect(res1.needsReauth).toBe(true);
     expect(store.getProfile("alice")?.authStatus).toBe("unauthenticated");
 
     // Simulate a successful renew: credentials refreshed + probe cache cleared
@@ -217,8 +208,8 @@ describe("resolveTrustAuth three-state liveness probe", () => {
     // public renew endpoint, but here we directly re-probe by waiting out cache
     // is unnecessary since renew invalidates — covered by renew tests.)
 
-    const res2 = await fetchProfileDetail();
+    const res2 = await getProfileDetail();
     // Still expired from cache (renew didn't run here, so cache holds).
-    expect(res2.status).toBe(401);
+    expect(res2.ok).toBe(false);
   });
 });

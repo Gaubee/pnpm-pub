@@ -15,7 +15,7 @@ import {
   PnpmNotOnPathError,
 } from "../../src/daemon/publisher.js";
 import { withTempNpmrc } from "../../src/daemon/npmrc-auth.js";
-import { extractNpmError } from "../../src/daemon/subprocess-runner.js";
+import { combinePublishDiagnostics, extractNpmError } from "../../src/daemon/subprocess-runner.js";
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-pub-${process.pid}-${Date.now()}`);
 
@@ -243,6 +243,14 @@ describe("Feature: extractNpmError from pnpm/npm stderr", () => {
 
   it("Scenario: Given empty stderr, When extracting, Then undefined is returned", () => {
     expect(extractNpmError("")).toBeUndefined();
+  });
+});
+
+describe("Feature: publish subprocess diagnostics", () => {
+  it("Scenario: Given pnpm writes failure text to stdout, When combining diagnostics, Then OTP classification can still see it", () => {
+    expect(
+      combinePublishDiagnostics("", "npm error code EOTP\nnpm error OTP validation failed"),
+    ).toBe("npm error code EOTP\nnpm error OTP validation failed");
   });
 });
 

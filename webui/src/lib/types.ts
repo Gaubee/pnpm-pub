@@ -255,14 +255,3 @@ export type WsServerMessage =
     }
   | { type: "toast"; level: "info" | "success" | "error" | "warning"; message: string }
   | { type: "pin"; pinned: boolean; countdown: number | null };
-
-export type WsClientMessage =
-  | { type: "auth"; webToken: string }
-  | { type: "select-profile"; username: string }
-  | { type: "confirm-event"; id: string }
-  | { type: "reject-event"; id: string }
-  | { type: "scan-workspace"; root: string }
-  | { type: "create-event"; kind: EventKind; payload: unknown; groupId?: string }
-  | { type: "update-event"; id: string; args: string[] }
-  | { type: "set-pin"; pinned: boolean }
-  | { type: "window-hidden" };

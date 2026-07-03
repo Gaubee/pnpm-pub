@@ -14,8 +14,7 @@
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { pendingEvents } from '$lib/store.js';
-	import { daemon } from '$lib/store.js';
-	import { apiFetch } from '$lib/api-fetch.js';
+	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -104,7 +103,7 @@
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	});
 
-	// Preview-history: the latest few events, fetched from the daemon (REST).
+	// Preview-history: the latest few events, fetched from the daemon via oRPC.
 	const PREVIEW_COUNT = 5;
 	let previewEvents = $state<PubEvent[]>([]);
 	let previewLoading = $state(true);
@@ -112,8 +111,13 @@
 	async function fetchPreview(): Promise<void> {
 		previewLoading = true;
 		try {
-			const res = await apiFetch(`/api/events?scope=history&page=0&limit=${PREVIEW_COUNT}`);
-			const json = (await res.json()) as { rows: PubEvent[] };
+			const json = await getRpcClient()?.events.query({
+				scope: 'history',
+				page: 0,
+				limit: PREVIEW_COUNT,
+				q: '',
+			});
+			if (!json) throw new Error('events unavailable');
 			previewEvents = json.rows;
 		} catch {
 			previewEvents = [];

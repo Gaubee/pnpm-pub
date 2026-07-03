@@ -2,30 +2,29 @@
  * WebUI HTTP + WebSocket server (Chapter 3.2.2, 5.2.2, 5.2.3).
  *
  * Serves the SvelteKit SPA from `dist/webui` and upgrades WebSocket connections
- * carrying the daemon's per-process WebToken. All NPM write intents are
- * funnelled through the WS bridge into the scheduler.
+ * carrying the daemon's per-process WebToken. WebUI actions are funneled
+ * through the shared oRPC contract into the scheduler.
  */
 import http from "node:http";
 import path from "node:path";
 import { promises as fsp, existsSync } from "node:fs";
 import { Buffer } from "node:buffer";
+import { EventEmitter } from "node:events";
+import type { Duplex } from "node:stream";
+import { RPCHandler } from "@orpc/server/ws";
+import { implement } from "@orpc/server";
+import { WebSocketServer } from "ws";
 import type { DaemonStore } from "./store.js";
 import type { PublishScheduler } from "./scheduler.js";
 import type { TrayHost } from "./tray-host.js";
-import { acceptWebSocket, WebSocketConnection, type SocketLike } from "./ws.js";
 import type {
   BackupBundle,
   PubEvent,
-  WsClientMessage,
   WsServerMessage,
   TrustedPublisherConfig,
 } from "../shared/index.js";
 import { z } from "zod";
-import {
-  BackupBundleSchema,
-  WsClientMessageSchema,
-  TrustedPublisherConfigSchema,
-} from "../shared/schemas.js";
+import { WsServerMessageSchema } from "../shared/schemas.js";
 import {
   findProjectRoot,
   scanWorkspace,
@@ -38,12 +37,15 @@ import { applyToken, verifyCredentials } from "./npm-api.js";
 import { getCachedRepoInfo } from "./repo-info.js";
 import { listMaintainerPackages, type NpmPackage } from "./npm-packages.js";
 import { fetchPackageDetail, type PackageDetailResult } from "./npm-package-detail.js";
+import {
+  webRpcContract,
+  type PackagesListFrame,
+  type PackagesQuery,
+} from "../shared/orpc-contract.js";
 import { readProfileDetail } from "./npm-profile-client.js";
 import {
   setToken,
   setTotpSecret,
-  getToken,
-  getTotpSecret,
   deleteToken,
   deleteTotpSecret,
   getProfileSecrets,
@@ -51,7 +53,6 @@ import {
   type ProfileSecrets,
 } from "./keychain.js";
 import { exportBundle, importBundle } from "./crypto.js";
-import { burnBuffer } from "./totp.js";
 import { lookupNpmProfileIdentity } from "./avatar.js";
 import { recordTokenCreatedAt } from "./auto-renew.js";
 import {
@@ -59,6 +60,7 @@ import {
   addTrustedPublisher,
   removeTrustedPublisher,
 } from "./oidc-trust.js";
+import { kvGet, kvSet } from "./event-db.js";
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -84,7 +86,21 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
 };
 
-type JsonObject = Record<string, unknown>;
+const PackageSnapshotSchema = z.object({
+  items: z.array(
+    z.object({
+      name: z.string(),
+      version: z.string(),
+      description: z.string().nullable(),
+      repository: z.string().nullable(),
+      date: z.string().nullable(),
+      scope: z.string().nullable(),
+      keywords: z.array(z.string()),
+      score: z.number(),
+    }),
+  ),
+  updatedAt: z.number().int().nonnegative(),
+});
 
 /**
  * Result of {@link WebServer.resolveTrustAuth}: the active profile's token is
@@ -98,8 +114,9 @@ type ResolvedAuth =
 
 export class WebServer {
   private server?: http.Server;
-  private sockets = new Set<WebSocketConnection>();
-  private authedSockets = new WeakSet<WebSocketConnection>();
+  private readonly rpcEvents = new EventEmitter();
+  private readonly rpcHandler: RPCHandler<Record<never, never>>;
+  private readonly rpcWsServer = new WebSocketServer({ noServer: true });
 
   /**
    * Trusted-publisher lookup cache (Chapter 8.5). npm's `/trust` list is a
@@ -119,6 +136,7 @@ export class WebServer {
    */
   private packagesCache = new Map<string, { promise: Promise<NpmPackage[]>; expiresAt: number }>();
   private static readonly PACKAGES_CACHE_TTL_MS = 60_000;
+  private static readonly PACKAGES_SNAPSHOT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
   /**
    * Per-package detail projection cache (PackageDetail page). The packument +
@@ -146,19 +164,20 @@ export class WebServer {
 
   /**
    * The tray host, attached after construction (it's built later than the
-   * WebServer and may stay null in dev/headless). Drives set-pin / window-hidden
-   * WS messages and provides the initial pin snapshot sent on connect.
+   * WebServer and may stay null in dev/headless). Tray state is exposed as
+   * typed WebUI projection frames.
    */
   private trayHost: TrayHost | null = null;
 
   constructor(private deps: WebServerDeps) {
+    this.rpcHandler = new RPCHandler(this.createRpcRouter());
     // Relay store events to every authed WebUI client.
     this.deps.store.on("event", (msg) => this.broadcast(msg));
     this.deps.store.on("profiles", (msg) => this.broadcast(msg));
     this.deps.store.on("workspaces", (msg) => this.broadcast(msg));
   }
 
-  /** Attach the tray host so WS pin/hide messages can drive it. */
+  /** Attach the tray host so WebUI projection frames can include tray state. */
   attachTray(trayHost: TrayHost): void {
     this.trayHost = trayHost;
   }
@@ -166,7 +185,7 @@ export class WebServer {
   async start(port = 0): Promise<number> {
     return new Promise<number>((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleHttp(req, res));
-      server.on("upgrade", (req, socket) => this.handleUpgrade(req, socket));
+      server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
       server.on("error", reject);
       server.listen(port, "127.0.0.1", () => {
         this.server = server;
@@ -177,352 +196,19 @@ export class WebServer {
   }
 
   async stop(): Promise<void> {
-    for (const s of this.sockets) {
-      try {
-        s.write({ type: "toast", level: "info", message: "Daemon shutting down." });
-      } catch {
-        /* ignore */
-      }
-    }
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
     });
   }
 
-  // ----- HTTP: SPA + token-scoped JSON API -----
+  // ----- HTTP: SPA + obsolete API tombstone -----
 
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = (req.url ?? "/").split("?")[0]!;
-    const method = req.method ?? "GET";
 
-    // JSON API endpoints — all token-guarded (Chapter 3.2.2 强鉴权).
     if (url.startsWith("/api/")) {
-      if (!this.checkAuth(req)) {
-        this.deps.log?.(`[api] 401 ${method} ${url} (auth failed — no/bad Bearer)`);
-        return json(res, 401, { ok: false, error: "Unauthorized" });
-      }
-      try {
-        const body = method !== "GET" ? await readJson(req) : {};
-        if (url === "/api/npm-profile" && method === "GET") {
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const username = query.get("username");
-          if (!username) throw new Error("Invalid or missing username.");
-          const result = await lookupNpmProfileIdentity(
-            username,
-            query.get("registry") ?? "https://registry.npmjs.org/",
-          );
-          return json(res, 200, { ok: true, profile: result });
-        }
-        if (url === "/api/profile-token" && method === "GET") {
-          // Resolve the profile's npm_token from the in-memory credential pool
-          // first, falling back to the merged keychain item (one read). The
-          // WebUI uses this for the Profile "show / copy npm_token" affordance.
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const username = query.get("username");
-          if (!username) throw new Error("Invalid or missing username.");
-          let token = this.deps.store.getCredentials(username)?.token ?? null;
-          if (!token) {
-            const secrets = await getProfileSecrets(username);
-            token = secrets?.npm_token ?? null;
-          }
-          return json(
-            res,
-            200,
-            token ? { ok: true, token } : { ok: false, error: "No token stored for this profile." },
-          );
-        }
-        if (url === "/api/profile-password" && method === "GET") {
-          // Resolve the stored npm password from the in-memory credential pool
-          // first, falling back to the merged keychain item (one read). The WebUI
-          // pre-fills the re-auth password field with it (the user may overwrite
-          // it if the stored password is stale). Never persisted client-side.
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const username = query.get("username");
-          if (!username) throw new Error("Invalid or missing username.");
-          let password = this.deps.store.getCredentials(username)?.npmPwd ?? null;
-          if (!password) {
-            const secrets = await getProfileSecrets(username);
-            password = secrets?.npm_pwd ?? null;
-          }
-          return json(
-            res,
-            200,
-            password
-              ? { ok: true, password }
-              : { ok: false, error: "No password stored for this profile." },
-          );
-        }
-        if (url === "/api/profile-detail" && method === "GET") {
-          // Live authenticated profile detail (name/email/social/2FA/created).
-          // Resolved from the active profile's token; never persisted — these
-          // fields are projections of the registry, not config.
-          const username = this.deps.store.getDefault();
-          if (!username) return json(res, 401, { ok: false, error: "No active profile." });
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
-          try {
-            const detail = await readProfileDetail(auth.token, auth.registry);
-            return json(res, 200, { ok: true, detail });
-          } catch (err: unknown) {
-            return json(res, 502, { ok: false, error: errorToMessage(err) });
-          }
-        }
-        if (url === "/api/add-profile" && method === "POST") {
-          const result = await this.addProfile(parseAddProfileBody(body));
-          return json(res, 200, result);
-        }
-        if (url === "/api/renew" && method === "POST") {
-          const result = await this.renewProfile(parseRenewProfileBody(body));
-          return json(res, 200, result);
-        }
-        if (url === "/api/profile/auto-renew" && method === "POST") {
-          const parsed = parseOrThrow(
-            z.object({ username: z.string().min(1), autoRenew: z.boolean() }),
-            body,
-            "auto-renew body",
-          );
-          const existing = this.deps.store.getProfile(parsed.username);
-          if (!existing) return json(res, 404, { ok: false, error: "Profile not found." });
-          this.deps.store.upsertProfile({ ...existing, autoRenew: parsed.autoRenew });
-          return json(res, 200, { ok: true });
-        }
-        if (url === "/api/export" && method === "POST") {
-          const parsed = parseOrThrow(ExportBodySchema, body, "export body");
-          const result = await this.exportBundle(parsed.password);
-          return json(res, 200, result);
-        }
-        if (url === "/api/import" && method === "POST") {
-          let parsed;
-          try {
-            parsed = parseOrThrow(ImportBodySchema, body, "import body");
-          } catch {
-            return json(res, 400, { ok: false, error: "Invalid backup bundle." });
-          }
-          const result = await this.importBundle(parsed.bundle, parsed.password, parsed.usernames);
-          return json(res, 200, result);
-        }
-        if (url === "/api/packages" && method === "GET") {
-          // Packages hub — list the active profile's published packages from the
-          // npm registry, with server-side search / sort / pagination.
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const parsed = parseOrThrow(
-            PackagesQuerySchema,
-            {
-              q: query.get("q") ?? query.get("query") ?? "",
-              sort: query.get("sort") ?? "date",
-              page: query.get("page") ?? "0",
-              pageSize: query.get("pageSize") ?? query.get("per_page") ?? "25",
-            },
-            "packages query",
-          );
-          const result = await this.listPackages(
-            parsed.q,
-            parsed.sort,
-            parsed.page,
-            parsed.pageSize,
-          );
-          return json(res, result.ok ? 200 : result.status, result);
-        }
-        // PackageDetail page — GET /api/packages/<name>/detail. The dispatcher is
-        // exact-string, so the path param is parsed via regex here. Scoped names
-        // are URL-encoded (`@scope%2Fpkg`, no bare `/`) so the capture is safe.
-        const detailMatch = url.match(/^\/api\/packages\/([^/]+)\/detail$/);
-        if (detailMatch && method === "GET") {
-          const name = decodeURIComponent(detailMatch[1]!);
-          if (!name) throw new Error("Invalid or missing package name.");
-          const result = await this.listPackageDetailCached(name);
-          this.deps.log?.(
-            `[packages] detail ${name}: ${result.ok ? "ok" : `fail ${result.status}`}`,
-          );
-          return json(
-            res,
-            result.ok ? 200 : result.status,
-            result.ok ? { ok: true, detail: result.detail } : { ok: false, error: result.error },
-          );
-        }
-        if (url === "/api/events" && method === "GET") {
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const parsed = parseOrThrow(
-            EventsQuerySchema,
-            {
-              scope: query.get("scope") ?? "history",
-              name: query.get("name") ?? undefined,
-              q: query.get("q") ?? "",
-              group: query.get("group") ?? undefined,
-              page: query.get("page") ?? "0",
-              limit: query.get("limit") ?? "20",
-            },
-            "events query",
-          );
-          // Parse `name:pkg keywords` syntax out of the free-text q.
-          let name = parsed.name;
-          const keywords: string[] = [];
-          for (const tok of parsed.q.split(/\s+/).filter(Boolean)) {
-            const m = tok.match(/^name:(.+)$/i);
-            if (m) name = m[1];
-            else keywords.push(tok);
-          }
-          const result = this.deps.store.queryEvents({
-            status: parsed.scope,
-            ...(name ? { name } : {}),
-            ...(keywords.length ? { keywords } : {}),
-            ...(parsed.group ? { groupId: parsed.group } : {}),
-            page: parsed.page,
-            limit: parsed.limit,
-          });
-          return json(res, 200, result);
-        }
-        if (url === "/api/repo-info" && method === "GET") {
-          // Resolve a repository string (slug or URL) into a display descriptor
-          // (host/shortName/browseUrl/faviconUrl/brand), backed by the TTL KV
-          // cache. Known forges return an inline-SVG brand; unknown hosts fall
-          // back to a third-party favicon service.
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const repo = query.get("repo");
-          if (!repo) throw new Error("Invalid or missing repo.");
-          const info = getCachedRepoInfo(this.deps.store.getEventDb(), repo);
-          return json(res, 200, { ok: true, info });
-        }
-        if (url === "/api/open-path" && method === "POST") {
-          // Open a local path in the OS file manager (Finder/Explorer/…).
-          // Shells out to the platform opener; only directory opens are honored.
-          const parsed = parseOrThrow(
-            z.object({ path: z.string().min(1) }),
-            body,
-            "open-path body",
-          );
-          const target = path.resolve(parsed.path);
-          const cmd =
-            process.platform === "win32"
-              ? "start"
-              : process.platform === "darwin"
-                ? "open"
-                : "xdg-open";
-          const args = process.platform === "win32" ? ["", target] : [target];
-          try {
-            const { execFile } = await import("node:child_process");
-            const { promisify } = await import("node:util");
-            await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
-            return json(res, 200, { ok: true });
-          } catch (err) {
-            return json(res, 500, { ok: false, error: errorToMessage(err) });
-          }
-        }
-        if (url === "/api/open-url" && method === "POST") {
-          // Open a URL in the OS default browser. Inside the opentray webview,
-          // <a target="_blank"> is intercepted/not forwarded to the system
-          // browser, so the page calls this endpoint to shell out to the opener.
-          const parsed = parseOrThrow(z.object({ url: z.string().min(1) }), body, "open-url body");
-          const target = parsed.url;
-          const cmd =
-            process.platform === "win32"
-              ? "start"
-              : process.platform === "darwin"
-                ? "open"
-                : "xdg-open";
-          const args = process.platform === "win32" ? ["", target] : [target];
-          try {
-            const { execFile } = await import("node:child_process");
-            const { promisify } = await import("node:util");
-            await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
-            return json(res, 200, { ok: true });
-          } catch (err) {
-            return json(res, 500, { ok: false, error: errorToMessage(err) });
-          }
-        }
-        if (url === "/api/profiles" && method === "DELETE") {
-          const username = parseOrThrow(
-            z.object({ username: z.string().min(1) }),
-            body,
-            "username",
-          ).username;
-          const ok = await this.deps.store.removeProfile(username);
-          return json(
-            res,
-            ok ? 200 : 404,
-            ok ? { ok: true } : { ok: false, error: `Profile ${username} not found.` },
-          );
-        }
-        if (url === "/api/workspace/pin" && method === "POST") {
-          const parsed = parseOrThrow(PinWorkspaceBodySchema, body, "pin body");
-          await this.deps.store.pinWorkspace(parsed.path, parsed.pinned);
-          return json(res, 200, { ok: true });
-        }
-        if (url === "/api/workspace/remove" && method === "POST") {
-          const parsed = parseOrThrow(
-            z.object({ path: z.string().min(1) }),
-            body,
-            "remove workspace body",
-          );
-          const ok = await this.deps.store.removeWorkspace(parsed.path);
-          return json(res, ok ? 200 : 404, { ok });
-        }
-        if (url === "/api/workspace/confirm" && method === "POST") {
-          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, "token").token;
-          const ok = await this.deps.store.confirmRiskyWorkspace(token);
-          return json(res, ok ? 200 : 404, { ok });
-        }
-        if (url === "/api/workspace/cancel" && method === "POST") {
-          const token = parseOrThrow(z.object({ token: z.string().min(1) }), body, "token").token;
-          this.deps.store.cancelRiskyWorkspace(token);
-          return json(res, 200, { ok: true });
-        }
-        // ----- Trusted Publishing (OIDC) — Chapter 8.5 -----
-        if (url === "/api/oidc/trust" && method === "GET") {
-          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
-          const pkg = query.get("package");
-          if (!pkg) throw new Error("Invalid or missing package.");
-          this.deps.log?.(`[oidc] GET trust: package=${pkg}`);
-          const result = await this.listTrustCached(pkg);
-          this.deps.log?.(
-            `[oidc] GET trust: ${result.ok ? `ok (${result.configs.length} configs)` : `fail ${result.status} ${result.error}`}`,
-          );
-          return json(
-            res,
-            result.ok ? 200 : result.status,
-            result.ok
-              ? { ok: true, configs: result.configs }
-              : { ok: false, error: result.error, needsReauth: result.needsReauth },
-          );
-        }
-        if (url === "/api/oidc/trust" && method === "POST") {
-          const parsed = parseOrThrow(OidcTrustPostBodySchema, body, "oidc trust body");
-          this.deps.log?.(
-            `[oidc] POST trust: package=${parsed.package} type=${parsed.config.type}`,
-          );
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
-          const result = await addTrustedPublisher(
-            auth,
-            parsed.package,
-            parsed.config as import("safe-npm-sdk").TrustedPublisherConfigCreate,
-          );
-          this.deps.log?.(
-            `[oidc] POST trust: ${result.ok ? "ok" : `fail ${result.status} ${result.error}`}`,
-          );
-          this.invalidateTrust(parsed.package);
-          return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
-        }
-        if (url === "/api/oidc/trust" && method === "DELETE") {
-          const parsed = parseOrThrow(OidcTrustDeleteBodySchema, body, "oidc trust delete body");
-          this.deps.log?.(`[oidc] DELETE trust: package=${parsed.package} uuid=${parsed.uuid}`);
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return json(res, 401, authDeniedBody(auth));
-          const result = await removeTrustedPublisher(auth, parsed.package, parsed.uuid);
-          this.deps.log?.(
-            `[oidc] DELETE trust: ${result.ok ? "ok" : `fail ${result.status} ${result.error}`}`,
-          );
-          this.invalidateTrust(parsed.package);
-          return json(res, result.ok ? 200 : result.status, { ok: result.ok, error: result.error });
-        }
-        return json(res, 404, { ok: false, error: "not found" });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error.";
-        const status =
-          message.startsWith("Invalid ") || message === "Invalid backup bundle." ? 400 : 500;
-        return json(res, status, { ok: false, error: message });
-      }
+      return json(res, 404, { ok: false, error: "The WebUI API is served over /ws/rpc." });
     }
 
     // Token delivery endpoint (Chapter 3.2.2 — URL hash injection at opentray
@@ -572,16 +258,15 @@ export class WebServer {
 
   // ----- WebSocket upgrade -----
 
-  private handleUpgrade(req: http.IncomingMessage, socket: SocketLike): void {
-    const accept = acceptWebSocket(req);
-    if (!accept) {
+  private handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+    const url = (req.url ?? "/").split("?")[0]!;
+    if (url !== "/ws/rpc") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
-    // Chapter 3.2.2 "瞬间拦截": the WebToken MUST be present in the upgrade
-    // request (query string). Without it we refuse the handshake entirely — no
-    // 101, no socket, no data. This is the transport-layer gate; the per-message
-    // auth check in onMessage is the defense-in-depth backstop.
+    // Chapter 3.2.2 "instant interception": the WebToken must be present in
+    // the upgrade request. Unauthorized clients never receive a 101 response.
     const q = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
     const token = q.get("token") ?? "";
     if (token !== this.deps.webToken) {
@@ -589,142 +274,255 @@ export class WebServer {
       socket.destroy();
       return;
     }
-    socket.write(
-      "HTTP/1.1 101 Switching Protocols\r\n" +
-        "Upgrade: websocket\r\n" +
-        "Connection: Upgrade\r\n" +
-        `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
-    );
-    const ws = new WebSocketConnection(socket, {
-      onOpen: (send) => {
-        // Token already validated at upgrade time — mark authed immediately so
-        // the eager state snapshot (events/profiles/workspaces) is only ever
-        // sent to an authenticated client (Chapter 3.1 — never leak to unauthed).
-        this.authedSockets.add(ws);
-        send({ type: "hello", webTokenRequired: true });
-        send({ type: "events", events: this.deps.store.getEvents() });
-        send({
-          type: "profiles",
-          default: this.deps.store.getDefault(),
-          profiles: this.deps.store.getProfiles(),
-        });
-        send({ type: "workspaces", workspaces: this.deps.store.getWorkspaces() });
-        // Project the current pin/countdown so the WebUI renders the right
-        // button state immediately (trayHost is null in dev/headless).
-        if (this.trayHost) {
-          const { pinned, countdown } = this.trayHost.getPinState();
-          send({ type: "pin", pinned, countdown });
-        }
-      },
-      onMessage: (msg, send) => {
-        void this.handleClientMessage(msg, ws, send).catch((error: unknown) => {
-          const message = errorToMessage(error);
-          this.deps.log?.(`[ws] action failed: ${message}`);
-          send({ type: "toast", level: "error", message });
-        });
-      },
-      onClose: () => {
-        this.sockets.delete(ws);
-        this.authedSockets.delete(ws);
-      },
+    this.rpcWsServer.handleUpgrade(req, socket, head, (ws) => {
+      void this.rpcHandler.upgrade(ws, { context: {} }).catch((error: unknown) => {
+        this.deps.log?.(`[orpc] websocket upgrade failed: ${errorToMessage(error)}`);
+        ws.close();
+      });
     });
-    this.sockets.add(ws);
-    ws.ready();
   }
 
-  private async handleClientMessage(
-    msg: unknown,
-    ws: WebSocketConnection,
-    send: (data: unknown) => void,
-  ): Promise<void> {
-    if (!isWsClientMessage(msg)) {
-      send({ type: "toast", level: "error", message: "Invalid WebSocket message." });
-      return;
+  private createRpcRouter() {
+    const rpc = implement(webRpcContract);
+    return rpc.router({
+      state: {
+        subscribe: rpc.state.subscribe.handler(() => this.subscribeState()),
+      },
+      profile: {
+        select: rpc.profile.select.handler(async ({ input }) => {
+          const selected = await this.deps.store.setDefault(input.username);
+          if (!selected) return { ok: false, error: `Profile "${input.username}" not found.` };
+          this.broadcast({ type: "workspaces", workspaces: this.deps.store.getWorkspaces() });
+          return { ok: true };
+        }),
+        lookupNpm: rpc.profile.lookupNpm.handler(async ({ input }) => {
+          try {
+            const profile = await lookupNpmProfileIdentity(
+              input.username,
+              input.registry ?? "https://registry.npmjs.org/",
+            );
+            return { ok: true, profile };
+          } catch (error: unknown) {
+            return { ok: false, error: errorToMessage(error) };
+          }
+        }),
+        token: rpc.profile.token.handler(async ({ input }) => {
+          let token = this.deps.store.getCredentials(input.username)?.token ?? null;
+          if (!token) {
+            const secrets = await getProfileSecrets(input.username);
+            token = secrets?.npm_token ?? null;
+          }
+          return token
+            ? { ok: true, token }
+            : { ok: false, error: "No token stored for this profile." };
+        }),
+        password: rpc.profile.password.handler(async ({ input }) => {
+          let password = this.deps.store.getCredentials(input.username)?.npmPwd ?? null;
+          if (!password) {
+            const secrets = await getProfileSecrets(input.username);
+            password = secrets?.npm_pwd ?? null;
+          }
+          return password
+            ? { ok: true, password }
+            : { ok: false, error: "No password stored for this profile." };
+        }),
+        detail: rpc.profile.detail.handler(async () => {
+          const username = this.deps.store.getDefault();
+          if (!username) return { ok: false, error: "No active profile.", needsReauth: true };
+          const auth = await this.resolveTrustAuth();
+          if (!authIsOk(auth)) return authDeniedBody(auth);
+          try {
+            const detail = await readProfileDetail(auth.token, auth.registry);
+            return { ok: true, detail };
+          } catch (error: unknown) {
+            return { ok: false, error: errorToMessage(error) };
+          }
+        }),
+        add: rpc.profile.add.handler(({ input }) => this.addProfile(input)),
+        renew: rpc.profile.renew.handler(({ input }) => this.renewProfile(input)),
+        setAutoRenew: rpc.profile.setAutoRenew.handler(async ({ input }) => {
+          const existing = this.deps.store.getProfile(input.username);
+          if (!existing) return { ok: false, error: "Profile not found." };
+          await this.deps.store.upsertProfile({ ...existing, autoRenew: input.autoRenew });
+          return { ok: true };
+        }),
+        delete: rpc.profile.delete.handler(async ({ input }) => {
+          const ok = await this.deps.store.removeProfile(input.username);
+          return ok ? { ok: true } : { ok: false, error: `Profile ${input.username} not found.` };
+        }),
+      },
+      backup: {
+        export: rpc.backup.export.handler(({ input }) => this.exportBundle(input.password)),
+        import: rpc.backup.import.handler(({ input }) =>
+          this.importBundle(input.bundle, input.password, input.usernames),
+        ),
+      },
+      packages: {
+        list: rpc.packages.list.handler(({ input }) => this.listPackagesSWR(input)),
+        detail: rpc.packages.detail.handler(async ({ input }) => {
+          const result = await this.listPackageDetailCached(input.name);
+          return result.ok
+            ? { ok: true, detail: result.detail }
+            : { ok: false, error: result.error };
+        }),
+      },
+      events: {
+        query: rpc.events.query.handler(({ input }) => this.queryEvents(input)),
+        confirm: rpc.events.confirm.handler(async ({ input }) => {
+          const ok = await this.deps.scheduler.confirm(input.id);
+          return ok ? { ok: true } : { ok: false, error: "No such pending event." };
+        }),
+        reject: rpc.events.reject.handler(({ input }) => {
+          const ok = this.deps.scheduler.reject(input.id);
+          return ok ? { ok: true } : { ok: false, error: "No such pending event." };
+        }),
+        update: rpc.events.update.handler(async ({ input }) => {
+          const existing = this.deps.store.getEvent(input.id);
+          if (
+            !existing ||
+            existing.status !== "pending" ||
+            (existing.payload?.kind !== "publish" && existing.payload?.kind !== "recursive-publish")
+          ) {
+            return { ok: false, error: "Only pending publish events can be edited." };
+          }
+          const srcDir =
+            existing.payload.data.source.kind === "directory"
+              ? existing.payload.data.source.path
+              : path.dirname(existing.payload.data.source.path);
+          existing.payload.data.branch = await this.detectGitBranch(srcDir);
+          const updated = this.deps.store.updateEventArgs(input.id, input.args);
+          return updated ? { ok: true } : { ok: false, error: "No such pending event." };
+        }),
+        create: rpc.events.create.handler(async ({ input }) => ({
+          messages: await this.collectMessages((send) =>
+            this.createProactiveEvent(input.kind, input.payload, send, input.groupId),
+          ),
+        })),
+      },
+      workspace: {
+        scan: rpc.workspace.scan.handler(async ({ input }) => ({
+          messages: await this.collectMessages((send) => this.scanWorkspace(input.root, send)),
+        })),
+        pin: rpc.workspace.pin.handler(async ({ input }) => {
+          await this.deps.store.pinWorkspace(input.path, input.pinned);
+          return { ok: true };
+        }),
+        remove: rpc.workspace.remove.handler(async ({ input }) => {
+          const ok = await this.deps.store.removeWorkspace(input.path);
+          return { ok };
+        }),
+        confirmRisky: rpc.workspace.confirmRisky.handler(async ({ input }) => {
+          const ok = await this.deps.store.confirmRiskyWorkspace(input.token);
+          return { ok };
+        }),
+        cancelRisky: rpc.workspace.cancelRisky.handler(({ input }) => {
+          this.deps.store.cancelRiskyWorkspace(input.token);
+          return { ok: true };
+        }),
+      },
+      repo: {
+        info: rpc.repo.info.handler(({ input }) => ({
+          ok: true,
+          info: getCachedRepoInfo(this.deps.store.getEventDb(), input.repo),
+        })),
+        openPath: rpc.repo.openPath.handler(({ input }) => this.openExternal(input.path)),
+        openUrl: rpc.repo.openUrl.handler(({ input }) => this.openExternal(input.url)),
+      },
+      oidc: {
+        listTrust: rpc.oidc.listTrust.handler(async ({ input }) => {
+          const result = await this.listTrustCached(input.package);
+          return result.ok
+            ? { ok: true, configs: result.configs }
+            : { ok: false, error: result.error, needsReauth: result.needsReauth };
+        }),
+        addTrust: rpc.oidc.addTrust.handler(async ({ input }) => {
+          const auth = await this.resolveTrustAuth();
+          if (!authIsOk(auth)) return authDeniedBody(auth);
+          const result = await addTrustedPublisher(auth, input.package, input.config);
+          this.invalidateTrust(input.package);
+          return { ok: result.ok, error: result.error };
+        }),
+        removeTrust: rpc.oidc.removeTrust.handler(async ({ input }) => {
+          const auth = await this.resolveTrustAuth();
+          if (!authIsOk(auth)) return authDeniedBody(auth);
+          const result = await removeTrustedPublisher(auth, input.package, input.uuid);
+          this.invalidateTrust(input.package);
+          return { ok: result.ok, error: result.error };
+        }),
+      },
+      tray: {
+        setPin: rpc.tray.setPin.handler(async ({ input }) => {
+          if (this.trayHost) await this.trayHost.setPin(input.pinned);
+          return { ok: true };
+        }),
+        windowHidden: rpc.tray.windowHidden.handler(() => {
+          this.trayHost?.markHidden();
+          return { ok: true };
+        }),
+      },
+    });
+  }
+
+  private async *subscribeState(): AsyncGenerator<WsServerMessage, void, void> {
+    const queue: WsServerMessage[] = [
+      { type: "hello", webTokenRequired: true },
+      { type: "events", events: this.deps.store.getEvents() },
+      {
+        type: "profiles",
+        default: this.deps.store.getDefault(),
+        profiles: this.deps.store.getProfiles(),
+      },
+      { type: "workspaces", workspaces: this.deps.store.getWorkspaces() },
+    ];
+    if (this.trayHost) {
+      const { pinned, countdown } = this.trayHost.getPinState();
+      queue.push({ type: "pin", pinned, countdown });
     }
-    // Every action requires the WebToken (Chapter 3.2.2 强鉴权).
-    if (msg.type === "auth") {
-      if (msg.webToken === this.deps.webToken) {
-        this.authedSockets.add(ws);
-        send({ type: "toast", level: "success", message: "Authenticated." });
-      } else {
-        send({ type: "toast", level: "error", message: "Invalid WebToken." });
+
+    let wake: (() => void) | null = null;
+    const onMessage = (msg: WsServerMessage): void => {
+      queue.push(msg);
+      wake?.();
+      wake = null;
+    };
+    this.rpcEvents.on("message", onMessage);
+    try {
+      while (true) {
+        while (queue.length > 0) {
+          const msg = queue.shift();
+          if (msg) yield msg;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
       }
-      return;
+    } finally {
+      this.rpcEvents.off("message", onMessage);
     }
-    if (!this.authedSockets.has(ws)) {
-      send({ type: "toast", level: "error", message: "Unauthorized — send your WebToken first." });
-      return;
-    }
-    switch (msg.type) {
-      case "select-profile": {
-        const selected = await this.deps.store.setDefault(msg.username);
-        if (!selected) {
-          send({ type: "toast", level: "error", message: `Profile "${msg.username}" not found.` });
-          return;
-        }
-        this.broadcast({ type: "workspaces", workspaces: this.deps.store.getWorkspaces() });
-        break;
-      }
-      case "confirm-event": {
-        const ok = await this.deps.scheduler.confirm(msg.id);
-        if (!ok) send({ type: "toast", level: "error", message: "No such pending event." });
-        break;
-      }
-      case "reject-event": {
-        const ok = this.deps.scheduler.reject(msg.id);
-        if (!ok) send({ type: "toast", level: "error", message: "No such pending event." });
-        break;
-      }
-      case "scan-workspace": {
-        await this.scanWorkspace(msg.root, send);
-        break;
-      }
-      case "create-event": {
-        this.createProactiveEvent(msg.kind, msg.payload, send, msg.groupId);
-        break;
-      }
-      case "update-event": {
-        // Edit a pending publish / recursive-publish event's args before
-        // confirmation. The store mutates the SAME PubEvent instance the
-        // scheduler holds, so the edit is picked up live at confirm time. We
-        // re-detect the git branch from the publish source on each update so
-        // the publish-branch hint stays fresh (the user may have switched
-        // branches while reviewing).
-        const existing = this.deps.store.getEvent(msg.id);
-        if (
-          !existing ||
-          existing.status !== "pending" ||
-          (existing.payload?.kind !== "publish" && existing.payload?.kind !== "recursive-publish")
-        ) {
-          send({
-            type: "toast",
-            level: "error",
-            message: "Only pending publish events can be edited.",
-          });
-          break;
-        }
-        const srcDir =
-          existing.payload.data.source.kind === "directory"
-            ? existing.payload.data.source.path
-            : path.dirname(existing.payload.data.source.path);
-        existing.payload.data.branch = await this.detectGitBranch(srcDir);
-        this.deps.store.updateEventArgs(msg.id, msg.args);
-        break;
-      }
-      case "set-pin": {
-        // Toggle the tray window's keepOnTop pin. TrayHost persists it, applies
-        // the native style, and broadcasts the new frame via onPinFrame.
-        if (this.trayHost) {
-          await this.trayHost.setPin(msg.pinned);
-        }
-        break;
-      }
-      case "window-hidden": {
-        // The WebUI reports an out-of-band hide (OS close X / host hide that
-        // emitted no lifecycle event) so the next tray click re-shows in one go.
-        this.trayHost?.markHidden();
-        break;
-      }
+  }
+
+  private async collectMessages(
+    action: (send: (data: unknown) => void) => Promise<void> | void,
+  ): Promise<WsServerMessage[]> {
+    const messages: WsServerMessage[] = [];
+    await action((data) => {
+      const parsed = WsServerMessageSchema.safeParse(data);
+      if (parsed.success) messages.push(parsed.data);
+    });
+    return messages;
+  }
+
+  private async openExternal(target: string): Promise<{ ok: boolean; error?: string }> {
+    const cmd =
+      process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
+    const args = process.platform === "win32" ? ["", target] : [target];
+    try {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      await promisify(execFile)(cmd, args, { maxBuffer: 1024 });
+      return { ok: true };
+    } catch (error: unknown) {
+      return { ok: false, error: errorToMessage(error) };
     }
   }
 
@@ -756,7 +554,7 @@ export class WebServer {
     // Chapter 5.3.2 risk-boundary state machine. If no project marker is found,
     // or the resolved root is a broad/system directory, we DO NOT persist it.
     // Instead we stage it and surface a confirmation request; only an explicit
-    // `/api/workspace/confirm` call writes it to workspaces.json.
+    // `workspace.confirmRisky` RPC call writes it to workspaces.json.
     if (!found.root || isRiskyRoot(found.root, realFs)) {
       const target = found.root ?? root;
       const token = store.stageRiskyWorkspace({ path: target, pinned: false, addedAt: Date.now() });
@@ -838,12 +636,9 @@ export class WebServer {
     });
   }
 
-  /** Broadcast a server message to every authed socket. */
-  /** Broadcast a server message to every authed WebUI client. */
+  /** Broadcast a typed projection frame to every WebUI oRPC subscriber. */
   broadcast(msg: WsServerMessage): void {
-    for (const ws of this.sockets) {
-      if (this.authedSockets.has(ws)) ws.write(msg);
-    }
+    this.rpcEvents.emit("message", msg);
   }
 
   /** URL hash the opentray host should load to inject the WebToken (Chapter 3.2.2). */
@@ -1160,47 +955,75 @@ export class WebServer {
     this.trustCache.delete(name);
   }
 
-  /**
-   * Resolve the active profile's full published-package list (cached ~60s +
-   * in-flight dedup), then apply a case-insensitive substring filter, a sort,
-   * and pagination. The registry walk is the network-bound part; once cached,
-   * filter/sort/slice are cheap so the WebUI can re-query freely.
-   */
-  private async listPackages(
-    query: string,
-    sort: "date" | "name",
-    page: number,
-    pageSize: number,
-  ): Promise<
-    | { ok: true; items: NpmPackage[]; total: number; page: number; pageSize: number }
-    | { ok: false; status: number; error: string }
-  > {
-    const username = this.deps.store.getDefault();
-    if (!username) return { ok: false, status: 401, error: "No active profile." };
-    const profile = this.deps.store.getProfile(username);
-    const registry = profile?.registry ?? "https://registry.npmjs.org/";
+  private queryEvents(input: {
+    scope: "pending" | "history";
+    name?: string;
+    q: string;
+    group?: string;
+    page: number;
+    limit: number;
+  }) {
+    let name = input.name;
+    const keywords: string[] = [];
+    for (const tok of input.q.split(/\s+/).filter(Boolean)) {
+      const m = tok.match(/^name:(.+)$/i);
+      if (m) name = m[1];
+      else keywords.push(tok);
+    }
+    return this.deps.store.queryEvents({
+      status: input.scope,
+      ...(name ? { name } : {}),
+      ...(keywords.length ? { keywords } : {}),
+      ...(input.group ? { groupId: input.group } : {}),
+      page: input.page,
+      limit: input.limit,
+    });
+  }
 
-    const cacheKey = `${username.toLowerCase()}@${registry}`;
+  private packagesSnapshotKey(username: string, registry: string): string {
+    return `packages:${username.toLowerCase()}@${registry}`;
+  }
+
+  private readPackagesSnapshot(
+    key: string,
+  ): { items: NpmPackage[]; updatedAt: number } | undefined {
+    const db = this.deps.store.getEventDb();
+    if (!db) return undefined;
+    const parsed = PackageSnapshotSchema.safeParse(kvGet(db, key));
+    return parsed.success ? parsed.data : undefined;
+  }
+
+  private writePackagesSnapshot(key: string, items: NpmPackage[]): void {
+    const db = this.deps.store.getEventDb();
+    if (!db) return;
+    kvSet(db, key, { items, updatedAt: Date.now() }, WebServer.PACKAGES_SNAPSHOT_TTL_MS);
+  }
+
+  private async fetchMaintainerPackagesCached(
+    username: string,
+    registry: string,
+  ): Promise<NpmPackage[]> {
+    const cacheKey = this.packagesSnapshotKey(username, registry);
     const now = Date.now();
     let entry = this.packagesCache.get(cacheKey);
     if (!entry || entry.expiresAt <= now) {
       const promise = listMaintainerPackages(username, registry).catch((err: unknown) => {
-        // A failed walk shouldn't poison the cache slot for 60s.
         this.packagesCache.delete(cacheKey);
         throw err;
       });
       entry = { promise, expiresAt: now + WebServer.PACKAGES_CACHE_TTL_MS };
       this.packagesCache.set(cacheKey, entry);
     }
-    let all: NpmPackage[];
-    try {
-      all = await entry.promise;
-    } catch (err: unknown) {
-      return { ok: false, status: 502, error: errorToMessage(err) };
-    }
+    return entry.promise;
+  }
 
-    // Filter (case-insensitive substring across name / description / keywords).
-    const q = query.trim().toLowerCase();
+  private projectPackages(
+    all: NpmPackage[],
+    input: PackagesQuery,
+    source: "local" | "registry",
+    updatedAt: number,
+  ): Extract<PackagesListFrame, { ok: true }> {
+    const q = input.q.trim().toLowerCase();
     const filtered = q
       ? all.filter((p) => {
           if (p.name.toLowerCase().includes(q)) return true;
@@ -1210,26 +1033,57 @@ export class WebServer {
         })
       : all;
 
-    // Sort. `date` is newest-first (ISO-8601 sorts lexically); `name` ascends.
     const sorted =
-      sort === "name"
+      input.sort === "name"
         ? [...filtered].sort((a, b) => a.name.localeCompare(b.name))
         : [...filtered].sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
 
-    const safePageSize = Math.max(1, Math.min(pageSize, 100));
-    const safePage = Math.max(
-      0,
-      Math.min(page, Math.floor(sorted.length / Math.max(1, safePageSize))),
-    );
+    const safePageSize = Math.max(1, Math.min(input.pageSize, 100));
+    const maxPage = Math.max(0, Math.ceil(sorted.length / safePageSize) - 1);
+    const safePage = Math.max(0, Math.min(input.page, maxPage));
     const start = safePage * safePageSize;
     const items = sorted.slice(start, start + safePageSize);
-    return { ok: true, items, total: sorted.length, page: safePage, pageSize: safePageSize };
+    return {
+      ok: true,
+      source,
+      items,
+      total: sorted.length,
+      page: safePage,
+      pageSize: safePageSize,
+      updatedAt,
+    };
+  }
+
+  private async *listPackagesSWR(
+    input: PackagesQuery,
+  ): AsyncGenerator<PackagesListFrame, void, void> {
+    const username = this.deps.store.getDefault();
+    if (!username) {
+      yield { ok: false, source: "registry", status: 401, error: "No active profile." };
+      return;
+    }
+    const profile = this.deps.store.getProfile(username);
+    const registry = profile?.registry ?? "https://registry.npmjs.org/";
+    const cacheKey = this.packagesSnapshotKey(username, registry);
+
+    const snapshot = this.readPackagesSnapshot(cacheKey);
+    if (snapshot) {
+      yield this.projectPackages(snapshot.items, input, "local", snapshot.updatedAt);
+    }
+
+    try {
+      const all = await this.fetchMaintainerPackagesCached(username, registry);
+      this.writePackagesSnapshot(cacheKey, all);
+      yield this.projectPackages(all, input, "registry", Date.now());
+    } catch (error: unknown) {
+      yield { ok: false, source: "registry", status: 502, error: errorToMessage(error) };
+    }
   }
 
   /**
    * Resolve a single package's detail projection (packument + collaborators +
    * downloads), with ~60s caching + in-flight dedup keyed by `name@registry`.
-   * Mirrors {@link listPackages}'s cache discipline: share one promise while
+   * Mirrors {@link fetchMaintainerPackagesCached}'s cache discipline: share one promise while
    * fresh, delete the slot on rejection so a transient failure isn't sticky.
    */
   private async listPackageDetailCached(name: string): Promise<PackageDetailResult> {
@@ -1377,115 +1231,6 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req: http.IncomingMessage): Promise<JsonObject> {
-  const chunks: Buffer[] = [];
-  let bodyBuf: Buffer | null = null;
-  try {
-    for await (const chunk of req) {
-      if (typeof chunk === "string") {
-        chunks.push(Buffer.from(chunk));
-        continue;
-      }
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    if (chunks.length === 0) return {};
-    bodyBuf = Buffer.concat(chunks);
-    const parsed: unknown = JSON.parse(bodyBuf.toString("utf8"));
-    return isJsonObject(parsed) ? parsed : {};
-  } catch {
-    return {};
-  } finally {
-    if (bodyBuf) burnBuffer(bodyBuf);
-    for (const chunk of chunks) burnBuffer(chunk);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Zod-backed REST body + WS message parsers (replaces all hand-written read*/is* helpers)
-// ---------------------------------------------------------------------------
-
-const AddProfileBodySchema = z.object({
-  username: z.string().min(1),
-  password: z.string().min(1),
-  totpSecret: z.string().min(1),
-  registry: z.string().optional(),
-  manualToken: z.string().optional(),
-});
-
-const RenewProfileBodySchema = z.object({
-  username: z.string().min(1),
-  // password is OPTIONAL — when omitted, renewProfile uses the stored npm_pwd.
-  password: z.string().optional(),
-  registry: z.string().optional(),
-  manualToken: z.string().optional(),
-  totpSecret: z.string().optional(),
-});
-
-const ExportBodySchema = z.object({
-  password: z.string().min(1),
-});
-
-const ImportBodySchema = z.object({
-  bundle: BackupBundleSchema,
-  password: z.string().min(1),
-  usernames: z.array(z.string().min(1)),
-});
-
-const PinWorkspaceBodySchema = z.object({
-  path: z.string().min(1),
-  pinned: z.boolean(),
-});
-
-const PackagesQuerySchema = z.object({
-  q: z.string().default(""),
-  sort: z.enum(["date", "name"]).default("date"),
-  page: z.coerce.number().int().nonnegative().default(0),
-  pageSize: z.coerce.number().int().positive().default(25),
-});
-
-const EventsQuerySchema = z.object({
-  scope: z.enum(["pending", "history"]).default("history"),
-  name: z.string().optional(),
-  q: z.string().default(""),
-  group: z.string().optional(),
-  page: z.coerce.number().int().nonnegative().default(0),
-  limit: z.coerce.number().int().positive().max(100).default(20),
-});
-
-const OidcTrustPostBodySchema = z.object({
-  package: z.string().min(1),
-  // POST (create) uses the SDK's create schema (different from GET response).
-  config: z.record(z.string(), z.unknown()),
-});
-
-const OidcTrustDeleteBodySchema = z.object({
-  package: z.string().min(1),
-  uuid: z.string().min(1),
-});
-
-function parseAddProfileBody(body: unknown): z.infer<typeof AddProfileBodySchema> {
-  return parseOrThrow(AddProfileBodySchema, body, "add-profile body");
-}
-
-function parseRenewProfileBody(body: unknown): z.infer<typeof RenewProfileBodySchema> {
-  return parseOrThrow(RenewProfileBodySchema, body, "renew body");
-}
-
-/** Validate with a Zod schema or throw an Error with a readable message. */
-function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    const first = result.error.issues[0];
-    const path = first?.path.join(".") ?? "?";
-    throw new Error(`Invalid or missing ${label}: ${path} ${first?.message ?? ""}`);
-  }
-  return result.data;
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function contentTypeFor(filePath: string): string {
   return MIME[path.extname(filePath)] ?? "application/octet-stream";
 }
@@ -1518,8 +1263,4 @@ function authDeniedBody(auth: ResolvedAuth): { ok: false; error: string; needsRe
   if (auth.status === "expired")
     return { ok: false, error: "Token expired or no longer valid.", needsReauth: true };
   return { ok: false, error: "No active profile credentials for this operation." };
-}
-
-function isWsClientMessage(value: unknown): value is WsClientMessage {
-  return WsClientMessageSchema.safeParse(value).success;
 }

@@ -11,8 +11,7 @@
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { parseBackupBundleJson } from '$lib/backup-bundle.js';
 	import { errorToMessage } from '$lib/error-projection.js';
-	import { parseExportResponse, parseImportResponse } from '$lib/rest-response.js';
-	import { apiFetch } from '$lib/api-fetch.js';
+	import { getRpcClient } from '$lib/store.js';
 	import IconDownload from '@lucide/svelte/icons/download';
 	import IconUpload from '@lucide/svelte/icons/upload';
 	import { _ } from 'svelte-i18n';
@@ -34,12 +33,7 @@
 		exportError = null;
 		exportResult = null;
 		try {
-			const res = await apiFetch('/api/export', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ password: exportPassword }),
-			});
-			const json = parseExportResponse(await res.json());
+			const json = await getRpcClient()?.backup.export({ password: exportPassword });
 			exportPassword = '';
 			if (!json) {
 				exportError = $_('backup.invalidDaemon');
@@ -85,12 +79,11 @@
 		}
 		try {
 			const bundle = parsed.bundle;
-			const res = await apiFetch('/api/import', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ bundle, password: importPassword, usernames: [...importSelected] }),
+			const json = await getRpcClient()?.backup.import({
+				bundle,
+				password: importPassword,
+				usernames: [...importSelected],
 			});
-			const json = parseImportResponse(await res.json());
 			importPassword = '';
 			if (!json) {
 				importError = $_('backup.invalidDaemon');

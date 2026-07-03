@@ -5,13 +5,12 @@
  * (`oidcState` + `maybeFetchOidc` + `onOidcChanged`), lifted into a factory so
  * the Packages list and PackageDetail pages can share the same discipline:
  *   - 30s TTL per package (errors are cached too, to avoid retry storms),
- *   - in-flight dedup (one GET /api/oidc/trust per package at a time),
+ *   - in-flight dedup (one oidc.listTrust call per package at a time),
  *   - explicit invalidation after a config add/remove.
  *
  * Must live in a `.svelte.ts` module — it relies on Svelte 5 runes (`$state`).
  */
-import { apiFetch } from "../api-fetch.js";
-import { parseTrustListResponse } from "../rest-response.js";
+import { getRpcClient } from "../store.js";
 import type { TrustedPublisherConfig } from "../types.js";
 
 const OIDC_TTL = 30_000;
@@ -44,10 +43,17 @@ export function createOidcStatus() {
     const cached = state[name];
     if (cached && Date.now() - cached.fetchedAt < OIDC_TTL) return;
     inFlight = new Set(inFlight).add(name);
-    apiFetch(`/api/oidc/trust?package=${encodeURIComponent(name)}`)
-      .then((r) => r.json())
-      .then((raw) => {
-        const json = parseTrustListResponse(raw);
+    const client = getRpcClient();
+    if (!client) {
+      state = { ...state, [name]: { configs: [], fetchedAt: Date.now() } };
+      const next = new Set(inFlight);
+      next.delete(name);
+      inFlight = next;
+      return;
+    }
+    client.oidc
+      .listTrust({ package: name })
+      .then((json) => {
         state = {
           ...state,
           [name]: { configs: json?.ok && json.configs ? json.configs : [], fetchedAt: Date.now() },

@@ -74,6 +74,8 @@ interface RunPublishSubprocessOpts {
 
 interface SubprocessOutcome {
   exitCode: number;
+  /** Accumulated stdout; some pnpm failures render diagnostics here. */
+  stdout: string;
   /** Accumulated stderr (for OTP / expired detection). */
   stderr: string;
 }
@@ -111,6 +113,7 @@ async function runPublishSubprocess(opts: RunPublishSubprocessOpts): Promise<Sub
       reject: false,
       buffer: false,
     });
+    let stdout = "";
     let stderr = "";
     const drain = async (
       stream: NodeJS.ReadableStream | AsyncIterable<unknown> | null,
@@ -124,13 +127,14 @@ async function runPublishSubprocess(opts: RunPublishSubprocessOpts): Promise<Sub
       for await (const chunk of stream as AsyncIterable<unknown>) {
         const text =
           typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf8");
+        if (tag === "stdout") stdout += text;
         if (tag === "stderr") stderr += text;
         opts.sink.log(tag, text);
       }
     };
     await Promise.all([drain(subprocess.stdout, "stdout"), drain(subprocess.stderr, "stderr")]);
     const result = await subprocess;
-    return classifyOutcome(result, stderr, opts.sink);
+    return classifyOutcome(result, stdout, stderr, opts.sink);
   });
 }
 
@@ -145,6 +149,7 @@ type ExecaResult = Awaited<ReturnType<typeof execa>>;
  */
 function classifyOutcome(
   result: ExecaResult,
+  capturedStdout: string,
   capturedStderr: string,
   sink: PublishLogSink,
 ): SubprocessOutcome {
@@ -156,7 +161,11 @@ function classifyOutcome(
       : "pnpm publish terminated unexpectedly.";
     sink.log("stderr", stderr + "\n");
   }
-  return { exitCode, stderr };
+  return { exitCode, stdout: capturedStdout, stderr };
+}
+
+export function combinePublishDiagnostics(stderr: string, stdout: string): string {
+  return [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
 }
 
 /** Build the final result from a subprocess outcome. */
@@ -164,32 +173,32 @@ function outcomeToResult(outcome: SubprocessOutcome, explicitOtp: boolean): CliP
   if (outcome.exitCode === 0) {
     return { ok: true, status: 200, stdout: "", stderr: outcome.stderr };
   }
-  const stderr = outcome.stderr;
-  if (isExpiredTokenText(stderr)) {
+  const diagnostics = combinePublishDiagnostics(outcome.stderr, outcome.stdout);
+  if (isExpiredTokenText(diagnostics)) {
     return {
       ok: false,
       status: 401,
       expired: true,
-      error: extractNpmError(stderr),
+      error: extractNpmError(diagnostics),
       stdout: "",
-      stderr,
+      stderr: diagnostics,
     };
   }
-  if (isOtpFailureText(stderr) && !explicitOtp) {
+  if (isOtpFailureText(diagnostics) && !explicitOtp) {
     return {
       ok: false,
       status: 403,
-      error: extractNpmError(stderr) ?? "OTP validation failed",
+      error: extractNpmError(diagnostics) ?? "OTP validation failed",
       stdout: "",
-      stderr,
+      stderr: diagnostics,
     };
   }
   return {
     ok: false,
     status: 1,
-    error: extractNpmError(stderr) ?? `pnpm publish failed (exit ${outcome.exitCode})`,
+    error: extractNpmError(diagnostics) ?? `pnpm publish failed (exit ${outcome.exitCode})`,
     stdout: "",
-    stderr,
+    stderr: diagnostics,
   };
 }
 

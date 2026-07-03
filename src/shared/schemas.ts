@@ -1,6 +1,6 @@
 /**
  * Zod schemas — the single source of truth for every type that crosses a
- * serialization boundary (config files, WS protocol, REST bodies/responses,
+ * serialization boundary (config files, oRPC/WebSocket frames,
  * keychain items, backup bundles, npm API responses).
  *
  * Types are derived via `z.infer<typeof Schema>` and re-exported from
@@ -10,7 +10,7 @@
  * Convention:
  *   - Config files (profiles.json, workspaces.json): `.strict()` — reject
  *     unknown fields so a typo doesn't silently create a broken profile.
- *   - WS / REST protocol: `.passthrough()` — forward-compatible so a newer
+ *   - oRPC/WebSocket protocol: `.passthrough()` — forward-compatible so a newer
  *     daemon adding a field doesn't break an older webui.
  */
 import { z } from "zod";
@@ -432,34 +432,6 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type WsServerMessage = z.infer<typeof WsServerMessageSchema>;
-
-export const WsClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("auth"), webToken: z.string() }),
-  z.object({ type: z.literal("select-profile"), username: z.string() }),
-  z.object({ type: z.literal("confirm-event"), id: z.string() }),
-  z.object({ type: z.literal("reject-event"), id: z.string() }),
-  z.object({ type: z.literal("scan-workspace"), root: z.string() }),
-  z.object({
-    type: z.literal("create-event"),
-    kind: EventKindSchema,
-    payload: z.unknown(),
-    groupId: z.string().optional(),
-  }),
-  /** Edit a pending publish event's CLI args before confirmation. Only honored
-   *  for publish events still in `pending`; the scheduler re-reads args live at
-   *  confirm time, so an in-place mutation takes effect immediately. */
-  z.object({ type: z.literal("update-event"), id: z.string(), args: z.array(z.string()) }),
-  /** Toggle the tray window's keepOnTop pin (persisted + applied immediately). */
-  z.object({ type: z.literal("set-pin"), pinned: z.boolean() }),
-  /**
-   * Notify the daemon that the tray window was hidden out-of-band (OS close X
-   * or host hide() — neither emits a dedicated lifecycle event). Lets the
-   * TrayHost keep its in-memory visibility in sync so the next tray click
-   * re-shows in a single click instead of two. Idempotent.
-   */
-  z.object({ type: z.literal("window-hidden") }),
-]);
-export type WsClientMessage = z.infer<typeof WsClientMessageSchema>;
 
 // ---------------------------------------------------------------------------
 // Keychain: merged profile-auth item

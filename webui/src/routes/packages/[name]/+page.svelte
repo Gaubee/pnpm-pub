@@ -2,7 +2,7 @@
 	/**
 	 * PackageDetail — the npmjs.com-style detail page for a registry package.
 	 *
-	 * Backed by `GET /api/packages/<name>/detail` (daemon merges the registry
+	 * Backed by the `packages.detail` oRPC procedure (daemon merges the registry
 	 * packument, collaborators, and weekly downloads). Renders the README via
 	 * marked → safeSetHTML (DOM Sanitizer API), a metadata sidebar, a
 	 * collaborators row, and a Trusted Publishing (OIDC) config card — the same
@@ -10,8 +10,7 @@
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { apiFetch } from '$lib/api-fetch.js';
-	import { parsePackageDetailResponse } from '$lib/rest-response.js';
+	import { getRpcClient } from '$lib/store.js';
 	import { safeSetHtml } from '$lib/safe-html.js';
 	import { createOidcStatus } from '$lib/hooks/use-oidc.svelte.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -74,14 +73,7 @@
 			loading = true;
 		}
 		try {
-			const res = await apiFetch(`/api/packages/${encodeURIComponent(n)}/detail`);
-			if (res.status === 404) {
-				if (reqId !== activeReq) return;
-				notFound = true;
-				detail = null;
-				return;
-			}
-			const json = parsePackageDetailResponse(await res.json());
+			const json = await getRpcClient()?.packages.detail({ name: n });
 			if (reqId !== activeReq) return;
 			if (json?.ok && json.detail) {
 				detail = json.detail;
@@ -90,6 +82,7 @@
 				notFound = false;
 			} else {
 				if (!stale) detail = null;
+				notFound = json?.error === 'Not Found';
 				error = json?.error ?? $_('packageDetail.error');
 			}
 		} catch {

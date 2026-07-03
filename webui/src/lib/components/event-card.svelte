@@ -271,8 +271,7 @@
 	}
 
 	/** Create a pending unpublish event for this package@version. The user then
-	 *  confirms/rejects on the new EventCard, exactly like publish — we no longer
-	 *  fire-and-forget a destructive REST call from an inline confirmation card. */
+	 *  confirms/rejects on the new EventCard, exactly like publish. */
 	function doUnpublish(): void {
 		if (!publishData) return;
 		actions.createEvent('unpublish', {

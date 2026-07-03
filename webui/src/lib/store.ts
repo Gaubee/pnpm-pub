@@ -8,9 +8,9 @@
  */
 import { writable, derived, get } from "svelte/store";
 import { browser } from "$app/environment";
+import { consumeEventIterator } from "@orpc/client";
 import type {
   WsServerMessage,
-  WsClientMessage,
   PubEvent,
   Profile,
   WorkspaceEntry,
@@ -20,9 +20,7 @@ import type {
 } from "./types";
 import type { RepoInfo } from "./components/repo-info-types.js";
 import { filterVisibleEvents, sortEvents } from "./event-projection.js";
-import { parseOkResponse } from "./rest-response.js";
-import { apiFetch } from "./api-fetch.js";
-import { parseWsServerMessage } from "./ws-message.js";
+import { createWebRpcClient, type WebRpcClient } from "./orpc-client.js";
 
 /**
  * Read the WebUI auth token. On first load the token arrives in the URL hash
@@ -44,7 +42,7 @@ function captureTokenFromHash(): void {
   }
 }
 
-/** Exposed so pages can build authenticated REST requests (Chapter 3.2.2). */
+/** Read the bearer used to open the authenticated oRPC WebSocket. */
 export function readWebToken(): string {
   if (!browser) return "";
   captureTokenFromHash(); // idempotent — only captures if hash is present
@@ -127,13 +125,9 @@ export function closeAddProfile(force = false): void {
 }
 
 let socket: WebSocket | null = null;
+let rpc: WebRpcClient | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-function send(msg: WsClientMessage): void {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(msg));
-  }
-}
+let stopStateSubscription: (() => Promise<void>) | null = null;
 
 /** Open (or reopen) the daemon WebSocket and authenticate with the WebToken. */
 export function connect(): void {
@@ -148,29 +142,24 @@ export function connect(): void {
   const token = readWebToken();
   const port = derivePort();
   const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  // /ws is a dedicated upgrade path so the vite dev server can proxy it to the
-  // daemon without colliding with the SPA's root route. The daemon validates by
-  // ?token= query, not path, so it accepts /ws unchanged.
-  const url = `${proto}://${window.location.hostname}:${port}/ws?token=${encodeURIComponent(token)}`;
+  const url = `${proto}://${window.location.hostname}:${port}/ws/rpc?token=${encodeURIComponent(token)}`;
   try {
     socket = new WebSocket(url);
+    rpc = createWebRpcClient(socket);
   } catch {
     scheduleReconnect();
     return;
   }
   socket.onopen = () => {
-    daemon.update((s) => ({ ...s, connected: true }));
-    // Immediately authenticate so the daemon will honour action verbs.
-    send({ type: "auth", webToken: token });
-  };
-  socket.onmessage = (ev) => {
-    const msg = parseWsServerMessage(ev.data);
-    if (!msg) return;
-    handleServerMessage(msg);
+    daemon.update((s) => ({ ...s, connected: true, authed: true }));
+    startStateSubscription();
   };
   socket.onclose = () => {
+    void stopStateSubscription?.();
+    stopStateSubscription = null;
     daemon.update((s) => ({ ...s, connected: false, authed: false }));
     socket = null;
+    rpc = null;
     scheduleReconnect();
   };
   socket.onerror = () => {
@@ -182,12 +171,27 @@ export function connect(): void {
   };
 }
 
+export function getRpcClient(): WebRpcClient | null {
+  return rpc;
+}
+
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connect();
   }, 1500);
+}
+
+function startStateSubscription(): void {
+  if (!rpc || stopStateSubscription) return;
+  stopStateSubscription = consumeEventIterator(rpc.state.subscribe(), {
+    onEvent: handleServerMessage,
+    onError: () => {
+      daemon.update((s) => ({ ...s, connected: false, authed: false }));
+      scheduleReconnect();
+    },
+  });
 }
 
 /**
@@ -215,7 +219,7 @@ function scheduleReconnect(): void {
  */
 let hideReporterInstalled = false;
 function reportHidden(): void {
-  send({ type: "window-hidden" });
+  void rpc?.tray.windowHidden();
 }
 function installHideReporter(): void {
   if (!browser || hideReporterInstalled) return;
@@ -278,6 +282,14 @@ function handleServerMessage(msg: WsServerMessage): void {
   }
 }
 
+function dispatchMessages(messages: WsServerMessage[]): void {
+  for (const msg of messages) handleServerMessage(msg);
+}
+
+function pushToast(level: "info" | "success" | "error" | "warning", message: string): void {
+  handleServerMessage({ type: "toast", level, message });
+}
+
 // ----- Derived selectors -----
 
 export const visibleEvents = derived(daemon, ($d) =>
@@ -338,28 +350,31 @@ export const actions = {
       scannedRoot: null,
       riskyConfirmationToken: null,
     }));
-    send({ type: "select-profile", username });
+    void rpc?.profile.select({ username }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
   },
   async deleteProfile(username: string): Promise<boolean> {
-    const res = await apiFetch("/api/profiles", {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username }),
-    });
-    const json = parseOkResponse(await res.json());
-    return json?.ok ?? false;
+    const res = await rpc?.profile.delete({ username });
+    return res?.ok ?? false;
   },
   confirm(id: string): void {
-    send({ type: "confirm-event", id });
+    void rpc?.events.confirm({ id }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
   },
   reject(id: string): void {
-    send({ type: "reject-event", id });
+    void rpc?.events.reject({ id }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
   },
   /** Edit a pending publish event's CLI args before confirmation. The daemon
    *  mutates the event in place and re-broadcasts it; the scheduler re-reads
    *  args live at confirm time, so the edit takes effect on the next confirm. */
   updateEvent(id: string, args: string[]): void {
-    send({ type: "update-event", id, args });
+    void rpc?.events.update({ id, args }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
   },
   /**
    * Toggle the tray window's keepOnTop pin (Chapter 6.4). The daemon persists
@@ -367,38 +382,32 @@ export const actions = {
    * the new frame back via the `pin` server message.
    */
   setPin(pinned: boolean): void {
-    send({ type: "set-pin", pinned });
+    void rpc?.tray.setPin({ pinned });
   },
   scanWorkspace(root: string): void {
-    send({ type: "scan-workspace", root });
+    void rpc?.workspace.scan({ root }).then((res) => dispatchMessages(res.messages));
   },
   /** Confirm a staged risky-workspace add (Chapter 5.3.2). */
   async confirmRiskyWorkspace(token: string): Promise<boolean> {
-    const res = await apiFetch("/api/workspace/confirm", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    const json = parseOkResponse(await res.json());
-    if (json?.ok) daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
-    return json?.ok ?? false;
+    const res = await rpc?.workspace.confirmRisky({ token });
+    if (res?.ok) daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
+    return res?.ok ?? false;
   },
   /** Cancel a staged risky-workspace add (Chapter 5.3.2). */
   cancelRiskyWorkspace(token: string): Promise<void> {
     daemon.update((s) => ({ ...s, riskyConfirmationToken: null }));
-    return apiFetch("/api/workspace/cancel", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token }),
-    }).then(
-      () => undefined,
-      () => undefined,
+    return (
+      rpc?.workspace.cancelRisky({ token }).then(
+        () => undefined,
+        () => undefined,
+      ) ?? Promise.resolve()
     );
   },
   createEvent<K extends EventKind>(kind: K, payload: EventPayloadData<K>, groupId?: string): void {
-    send({ type: "create-event", kind, payload, ...(groupId ? { groupId } : {}) });
+    void rpc?.events
+      .create({ kind, payload, ...(groupId ? { groupId } : {}) })
+      .then((res) => dispatchMessages(res.messages));
   },
-  // import/export are handled via REST (/api/export, /api/import), not WS.
   /** Resolve a repository string into a display descriptor (host/shortName/
    *  browseUrl/faviconUrl/brand). Backed by the daemon's TTL cache; results are
    *  also memoized in-process here so repeated renders never re-fetch. */
@@ -407,9 +416,8 @@ export const actions = {
     if (cached) return cached;
     const promise = (async () => {
       try {
-        const res = await apiFetch(`/api/repo-info?repo=${encodeURIComponent(repo)}`);
-        const json = (await res.json()) as { ok: boolean; info: RepoInfo | null };
-        const info = json?.ok ? (json.info ?? null) : null;
+        const json = await rpc?.repo.info({ repo });
+        const info = json?.ok ? ((json.info ?? null) as RepoInfo | null) : null;
         // Don't cache nulls in-process: a transient failure (401, network)
         // shouldn't poison the cache for the whole session.
         if (!info) repoInfoCache.delete(repo);
@@ -426,12 +434,7 @@ export const actions = {
   /** Open a local directory in the OS file manager (Finder/Explorer/…). */
   async openPath(path: string): Promise<boolean> {
     try {
-      const res = await apiFetch("/api/open-path", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      const json = parseOkResponse(await res.json());
+      const json = await rpc?.repo.openPath({ path });
       return json?.ok ?? false;
     } catch {
       return false;
@@ -440,12 +443,7 @@ export const actions = {
   /** Open a URL in the OS default browser (the webview can't do this itself). */
   async openUrl(url: string): Promise<boolean> {
     try {
-      const res = await apiFetch("/api/open-url", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      });
-      const json = parseOkResponse(await res.json());
+      const json = await rpc?.repo.openUrl({ url });
       return json?.ok ?? false;
     } catch {
       return false;

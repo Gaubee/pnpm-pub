@@ -299,9 +299,9 @@ export class DaemonStore extends EventEmitter {
   // ----- events (Chapter 6.2) -----
 
   /**
-   * Pending events for the WS initial snapshot. History is fetched via
-   * queryEvents() / the REST endpoint (paginated from SQLite), so the WS
-   * snapshot only carries live pending items.
+   * Pending events for the live WebUI projection. History is fetched via
+   * queryEvents() over oRPC (paginated from SQLite), so this snapshot only
+   * carries live pending items.
    */
   getEvents(): PubEvent[] {
     return this.events

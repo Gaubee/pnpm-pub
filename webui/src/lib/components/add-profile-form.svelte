@@ -29,8 +29,7 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { errorToMessage } from '$lib/error-projection.js';
-	import { parseNpmProfileLookupResponse, parseTokenApplyResponse } from '$lib/rest-response.js';
-	import { apiFetch } from '$lib/api-fetch.js';
+	import { getRpcClient } from '$lib/store.js';
 	import { parseTotpSecret, totpSecretError } from '$lib/totp.js';
 	import TotpScanner from '$lib/components/totp-scanner.svelte';
 	import IconAlert from '@lucide/svelte/icons/triangle-alert';
@@ -130,19 +129,11 @@
 		debounceTimer = setTimeout(async () => {
 			const reqId = ++avatarReqId;
 			try {
-				const query = new URLSearchParams({
+				const json = await getRpcClient()?.profile.lookupNpm({
 					username: name,
-					registry: registryValue || 'https://registry.npmjs.org/',
-				});
-				const res = await apiFetch(`/api/npm-profile?${query.toString()}`, {
-					headers: { accept: 'application/json' },
+					registry: registryValue || 'https://registry.npmjs.org/'
 				});
 				if (reqId !== avatarReqId) return; // superseded by a newer keystroke
-				if (!res.ok) {
-					avatarUrl = null;
-					return;
-				}
-				const json = parseNpmProfileLookupResponse(await res.json());
 				avatarUrl = json?.ok ? (json.profile?.avatarUrl ?? null) : null;
 			} catch {
 				if (reqId === avatarReqId) avatarUrl = null;
@@ -164,23 +155,21 @@
 		error = null;
 		const secret = totpSecret; // capture pre-send
 		try {
-			// Reauth (existing profile, token invalid) → /api/renew; new profile → /api/add-profile.
-			// Both return the same TokenApplyResponse shape.
-			const endpoint = isReauth ? '/api/renew' : '/api/add-profile';
-			const res = await apiFetch(endpoint, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
+			const json = await (isReauth
+				? getRpcClient()?.profile.renew({
 					username: trimmedUsername,
-					// Silent needs the password for the NPM exchange; manual skips it.
 					password: phase === 'silent' ? password : undefined,
-					// ALWAYS sent: the daemon persists token + TOTP as a pair on both paths.
-					totpSecret: secret,
+					totpSecret: secret ?? undefined,
 					registry: registry.trim() || undefined,
 					manualToken: phase === 'manual' ? manualToken.trim() || undefined : undefined,
-				}),
-			});
-			const json = parseTokenApplyResponse(await res.json());
+				})
+				: getRpcClient()?.profile.add({
+					username: trimmedUsername,
+					password,
+					totpSecret: secret ?? '',
+					registry: registry.trim() || undefined,
+					manualToken: phase === 'manual' ? manualToken.trim() || undefined : undefined,
+				}));
 			if (!json) {
 				error = $_('addProfile.invalidDaemon');
 				return;

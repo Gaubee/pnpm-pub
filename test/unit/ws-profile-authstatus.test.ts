@@ -1,11 +1,12 @@
 /**
- * End-to-end WS + REST integration test for the auth-status + OIDC flow.
+ * End-to-end oRPC WebSocket integration test for the auth-status flow.
  *
- * Boots a real WebServer (in-memory keychain mock), connects via WS to
- * receive the profiles frame, and verifies authStatus is carried. Then
- * exercises /api/add-profile + /api/oidc/trust to confirm the full chain.
+ * Boots a real WebServer (in-memory keychain mock), subscribes to the state
+ * stream, and verifies authStatus is carried. Then exercises profile add/renew
+ * through the same RPC transport.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { consumeEventIterator } from "@orpc/client";
 import os from "node:os";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -14,6 +15,7 @@ import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { WebServer } from "../../src/daemon/web-server.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
 import type { WsServerMessage } from "../../src/shared/index.js";
+import { isAbortError, openRpcClient } from "./orpc-test-client.js";
 
 // In-memory keytar stub
 const kcStore = new Map<string, string>();
@@ -62,7 +64,7 @@ vi.mock("../../src/daemon/avatar.js", () => ({
 
 vi.mock("../../src/daemon/keychain.js", () => {
   return {
-    __setKeytarForTest: (api: unknown) => {},
+    __setKeytarForTest: (_api: unknown) => {},
     useSandboxService: () => {},
     resetService: () => {},
     activeService: () => "pnpm-pub-test-sandbox",
@@ -120,15 +122,6 @@ import {
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-ws-${process.pid}-${Date.now()}`);
 const WEB_TOKEN = "test-webtoken-for-e2e";
 
-function wsConnect(port: number, token: string): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
-    ws.onopen = () => resolve(ws);
-    ws.onerror = (e) => reject(new Error("WS connect failed"));
-    setTimeout(() => reject(new Error("WS timeout")), 3000);
-  });
-}
-
 describe("WS profiles frame carries authStatus", () => {
   let store: DaemonStore;
   let web: WebServer;
@@ -171,16 +164,23 @@ describe("WS profiles frame carries authStatus", () => {
   });
 
   it("receives profiles frame with authStatus via WS", async () => {
-    const ws = await wsConnect(port, WEB_TOKEN);
+    const conn = await openRpcClient(port, WEB_TOKEN);
     const messages: WsServerMessage[] = [];
-    await new Promise<void>((resolve) => {
-      ws.onmessage = (ev) => {
-        const msg = JSON.parse(ev.data as string) as WsServerMessage;
-        messages.push(msg);
-        if (msg.type === "workspaces") resolve(); // workspaces is the last frame sent on open
-      };
+    const stop = consumeEventIterator(conn.client.state.subscribe(), {
+      onEvent(frame) {
+        messages.push(frame);
+      },
+      onError(error) {
+        if (!isAbortError(error)) throw error;
+      },
     });
-    ws.close();
+    await vi.waitFor(() => {
+      expect(messages.some((msg) => msg.type === "workspaces")).toBe(true);
+    });
+    await stop().catch((error: unknown) => {
+      if (!isAbortError(error)) throw error;
+    });
+    conn.close();
 
     const profilesMsg = messages.find((m) => m.type === "profiles");
     expect(profilesMsg).toBeDefined();
@@ -192,16 +192,13 @@ describe("WS profiles frame carries authStatus", () => {
   });
 
   it("add-profile sets authStatus=authenticated and stores merged secrets", async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/api/add-profile`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${WEB_TOKEN}` },
-      body: JSON.stringify({
-        username: "bob",
-        password: "bobpassword",
-        totpSecret: "BOBSECRET",
-      }),
+    const conn = await openRpcClient(port, WEB_TOKEN);
+    const json = await conn.client.profile.add({
+      username: "bob",
+      password: "bobpassword",
+      totpSecret: "BOBSECRET",
     });
-    const json = await res.json();
+    conn.close();
     expect(json.ok).toBe(true);
     // Profile should have authStatus.
     const bob = store.getProfile("bob");
@@ -227,12 +224,9 @@ describe("WS profiles frame carries authStatus", () => {
       npmPwd: "bobpassword",
     });
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/renew`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${WEB_TOKEN}` },
-      body: JSON.stringify({ username: "bob" }), // NO password — should use stored
-    });
-    const json = await res.json();
+    const conn = await openRpcClient(port, WEB_TOKEN);
+    const json = await conn.client.profile.renew({ username: "bob" });
+    conn.close();
     if (!json.ok) console.log("renew bob failed:", JSON.stringify(json));
     expect(json.ok).toBe(true);
     expect(store.getProfile("bob")?.authStatus).toBe("authenticated");
@@ -242,12 +236,9 @@ describe("WS profiles frame carries authStatus", () => {
     await store.upsertProfile({ username: "carol" });
     store.setCredentials("carol", { token: "npm_carol", totpSecret: "SECRET" }); // no npmPwd
 
-    const res = await fetch(`http://127.0.0.1:${port}/api/renew`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${WEB_TOKEN}` },
-      body: JSON.stringify({ username: "carol" }),
-    });
-    const json = await res.json();
+    const conn = await openRpcClient(port, WEB_TOKEN);
+    const json = await conn.client.profile.renew({ username: "carol" });
+    conn.close();
     console.log("renew carol result:", JSON.stringify(json));
     console.log("carol profile:", JSON.stringify(store.getProfile("carol")));
     expect(json.ok).toBe(false);

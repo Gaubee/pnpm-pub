@@ -5,7 +5,7 @@
 	 * `<img>` favicon for an unknown host. Designed to be reused across
 	 * EventCard, WorkspaceDetail and PackageDetail.
 	 *
-	 * The descriptor comes from the daemon's `/api/repo-info` resolver (see
+	 * The descriptor comes from the daemon's `repo.info` resolver (see
 	 * `src/daemon/repo-info.ts`), which caches results in the event DB.
 	 */
 	import type { RepoBrand } from './repo-info-types.js';

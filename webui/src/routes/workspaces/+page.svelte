@@ -4,7 +4,7 @@
 	 * Clicking a tracked root navigates to the Detail page (/workspaces/<base64(path)>).
 	 * Pinned roots are sorted to the top.
 	 */
-	import { daemon, actions } from '$lib/store.js';
+	import { daemon, actions, getRpcClient } from '$lib/store.js';
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
@@ -46,11 +46,7 @@
 	async function pin(ws: { path: string; pinned: boolean }): Promise<void> {
 		const next = !ws.pinned;
 		try {
-			await fetch('/api/workspace/pin', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${sessionStorage.getItem('pnpm-pub-webtoken') ?? ''}` },
-				body: JSON.stringify({ path: ws.path, pinned: next }),
-			});
+			await getRpcClient()?.workspace.pin({ path: ws.path, pinned: next });
 		} catch {
 			/* best-effort */
 		}
@@ -59,11 +55,7 @@
 	/** Remove a tracked workspace root. */
 	async function removeWorkspace(ws: { path: string }): Promise<void> {
 		try {
-			await fetch('/api/workspace/remove', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json', authorization: `Bearer ${sessionStorage.getItem('pnpm-pub-webtoken') ?? ''}` },
-				body: JSON.stringify({ path: ws.path }),
-			});
+			await getRpcClient()?.workspace.remove({ path: ws.path });
 		} catch {
 			/* best-effort */
 		}

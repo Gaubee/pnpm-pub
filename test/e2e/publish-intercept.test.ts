@@ -6,7 +6,7 @@
  *   2. Send a publish intent over the IPC socket (as the CLI would).
  *   3. Assert the intent is PARKED as a pending event and NO request has hit
  *      the registry yet (Chapter 10.3.3 — the security red line).
- *   4. Confirm the event over the authenticated WebSocket (WebToken).
+ *   4. Confirm the event over authenticated oRPC WebSocket (WebToken).
  *   5. Assert the daemon then `pnpm pack`s a real tarball and PUTs the npm
  *      publish document (with `_attachments`) to the registry, and the CLI
  *      receives an exit code 0.
@@ -29,6 +29,7 @@ import { encodeFrame, FrameReader } from "../../src/shared/frame.js";
 import { socketPath } from "../../src/shared/paths.js";
 import type { DaemonHandles } from "../../src/daemon/index.js";
 import type { IpcFrame, IpcRequest } from "../../src/shared/index.js";
+import { openRpcClient } from "../unit/orpc-test-client.js";
 
 type IpcExitEvidenceFrame = Extract<IpcFrame, { type: "exit" }>;
 
@@ -202,6 +203,17 @@ async function fetchPackument(registry: string, name: string): Promise<RegistryP
   }
 }
 
+function findPendingPublishByPackage(name: string) {
+  return handles!.store
+    .getEvents()
+    .find(
+      (event) =>
+        event.status === "pending" &&
+        event.payload?.kind === "publish" &&
+        event.payload.data.target.name === name,
+    );
+}
+
 /** Is a Verdaccio instance reachable at the given URL (Docker or otherwise)? */
 async function verdaccioReachable(url = "http://localhost:4873"): Promise<boolean> {
   try {
@@ -319,7 +331,7 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     expect(registryHits.length).toBe(before); // nothing executed
   });
 
-  it("confirms a publish over a REAL WebToken-authenticated WebSocket (Chapter 10.3.3)", async () => {
+  it("confirms a publish over a REAL WebToken-authenticated oRPC WebSocket (Chapter 10.3.3)", async () => {
     expect(handles).not.toBeNull();
     const targetRegistry = process.env.PNPM_PUB_E2E_REGISTRY ?? registryUrl;
     const againstMock = !process.env.PNPM_PUB_E2E_REGISTRY;
@@ -335,24 +347,14 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     sendIpc(sock, { cliVersion: "0.1.0" });
     sendIpc(sock, { command: "publish", cwd: pkgDir, args: [] });
     await new Promise((r) => setTimeout(r, 200));
-    const pending = handles!.store.getEvents().find((e) => e.status === "pending");
+    const pending = findPendingPublishByPackage(name);
     expect(pending).toBeTruthy();
 
-    // Chapter 10.3.3: confirm over a genuine WS connection carrying the WebToken.
-    // We reuse Node's global WebSocket (Node 22+) to exercise the real
-    // upgrade-gate + authed-socket path (web-server.ts:193-200,247-250).
-    const wsUrl = `ws://127.0.0.1:${webPort}/?token=${encodeURIComponent(webToken)}`;
-    const ws = new WebSocket(wsUrl);
+    // Chapter 10.3.3: confirm over a genuine oRPC WS connection carrying the WebToken.
     const exitPromise = readExitFrame(sock);
+    const rpc = await openRpcClient(webPort, webToken);
 
-    await new Promise<void>((resolve, reject) => {
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: "auth", webToken }));
-        ws.send(JSON.stringify({ type: "confirm-event", id: pending!.id }));
-        resolve();
-      };
-      ws.onerror = () => reject(new Error("ws error"));
-    });
+    await rpc.client.events.confirm({ id: pending!.id });
 
     const exitFrame = await exitPromise;
     if (againstMock) {
@@ -366,13 +368,13 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     expect(resolved?.status).toBe("success");
     expect(exitFrame?.type).toBe("exit");
     if (exitFrame?.type === "exit") expect(exitFrame.code).toBe(0);
-    ws.close();
+    rpc.close();
     sock.destroy();
   });
 
   it("refuses a WS upgrade with a bad WebToken (Chapter 3.2.2 瞬间拦截)", async () => {
     const webPort = handles!.port;
-    const ws = new WebSocket(`ws://127.0.0.1:${webPort}/?token=definitely-wrong`);
+    const ws = new WebSocket(`ws://127.0.0.1:${webPort}/ws/rpc?token=definitely-wrong`);
     let opened = false;
     let errored = false;
     await new Promise<void>((resolve) => {
@@ -424,7 +426,7 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     // Guard the app dir first — other tests may have left the store mid-write.
     const { ensureAppDirs } = await import("../../src/shared/paths.js");
     ensureAppDirs();
-    handles!.store.upsertProfile({ username: "drift-author", registry: driftUrl });
+    await handles!.store.upsertProfile({ username: "drift-author", registry: driftUrl });
     handles!.store.setCredentials("drift-author", { token: "t", totpSecret: "JBSWY3DPEHPK3PXP" });
     await handles!.store.setDefault("drift-author");
 
@@ -436,7 +438,7 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     sendIpc(sock, { cliVersion: "0.1.0" });
     sendIpc(sock, { command: "publish", cwd: driftDir, args: [] });
     await new Promise((r) => setTimeout(r, 200));
-    const pending = handles!.store.getEvents().find((e) => e.status === "pending");
+    const pending = findPendingPublishByPackage(driftPkg);
 
     const exitPromise = readExitFrame(sock);
     await handles!.scheduler.confirm(pending!.id);

@@ -18,6 +18,9 @@ importers:
 
   .:
     dependencies:
+      '@gaubee/node':
+        specifier: ^0.4.0
+        version: 0.4.0(@gaubee/util@0.35.2)
       '@github/keytar':
         specifier: ^7.0.0
         version: 7.10.6
@@ -520,6 +523,14 @@ packages:
 
   '@formatjs/intl-localematcher@0.6.2':
     resolution: {integrity: sha512-XOMO2Hupl0wdd172Y06h6kLpBz6Dv+J4okPLl4LPtzbr8f66WbIoy4ev98EBuZ6ZK4h5ydTN6XneT4QVpD7cdA==}
+
+  '@gaubee/node@0.4.0':
+    resolution: {integrity: sha512-Zeayj73PSkc0FTEBKQxHaIOKxiHG7w7k/e+ndIwSCmS9OJPyLWDMDUWZ7LTq4PB4ff86CYLdVI+k5Djx6JCnMA==}
+    peerDependencies:
+      '@gaubee/util': '*'
+
+  '@gaubee/util@0.35.2':
+    resolution: {integrity: sha512-LfxuAPDLyh2ngZvnQEiRWAgAuxvDNOKOxl46rfmoVIJltUvKMSI9POMjaDXkXNt4Tb+WsP5TRPQ3IR5PnXS/lQ==}
 
   '@github/keytar@7.10.6':
     resolution: {integrity: sha512-mRW6cUsSG+nj4jp5gp8e91zPySaT73r+2JM6VyMZfrEgksjPmjSMr+tPGNOK3HUHV+GUU9B1LAiiYy/wmAnIxA==}
@@ -2941,6 +2952,15 @@ snapshots:
       tslib: 2.8.1
 
   '@formatjs/intl-localematcher@0.6.2':
+    dependencies:
+      tslib: 2.8.1
+
+  '@gaubee/node@0.4.0(@gaubee/util@0.35.2)':
+    dependencies:
+      '@gaubee/util': 0.35.2
+      tslib: 2.8.1
+
+  '@gaubee/util@0.35.2':
     dependencies:
       tslib: 2.8.1
 
