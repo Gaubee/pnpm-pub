@@ -9,6 +9,7 @@
 	import { Toggle } from '$lib/components/ui/toggle/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
+	import { Switch } from '$lib/components/ui/switch/index.js';
 	import {
 		AlertDialog,
 		AlertDialogAction,
@@ -46,6 +47,7 @@
 	import { untrack } from 'svelte';
 	import IconAlertTriangle from '@lucide/svelte/icons/triangle-alert';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
+	import IconTimer from '@lucide/svelte/icons/timer';
 	import IconX from '@lucide/svelte/icons/x';
 
 	let deleteOpen = $state(false);
@@ -333,6 +335,29 @@
 			reauthBusy = false;
 		}
 	}
+
+	// ----- auto-renew toggle -----
+	const autoRenewOn = $derived(profile?.autoRenew ?? false);
+	let autoRenewBusy = $state(false);
+	async function toggleAutoRenew(next: boolean): Promise<void> {
+		if (autoRenewBusy || !profile) return;
+		autoRenewBusy = true;
+		try {
+			const res = await apiFetch('/api/profile/auto-renew', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ username, autoRenew: next }),
+			});
+			const json = await res.json();
+			if (!json?.ok) throw new Error('toggle failed');
+			// The daemon broadcasts a fresh profiles frame; the derived `profile`
+			// reflows and the switch reflects the persisted state.
+		} catch {
+			/* leave as-is; the switch reverts via the derived */
+		} finally {
+			autoRenewBusy = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -423,6 +448,20 @@
 			<div class="flex items-center justify-between gap-3">
 				<div class="flex min-w-0 items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
 					<IconKey /> {$_('profile.npmToken')}
+					{#if autoRenewOn}
+						<Tooltip>
+							<TooltipTrigger>
+								{#snippet child({ props })}
+									<Badge {...props} variant="brand" class="gap-1 normal-case">
+										<IconTimer class="h-3 w-3" /> {$_('profile.autoRenew')}
+									</Badge>
+								{/snippet}
+							</TooltipTrigger>
+							<TooltipContent class="max-w-xs text-[11px]">
+								{$_('profile.autoRenewHint')}
+							</TooltipContent>
+						</Tooltip>
+					{/if}
 				</div>
 				<!-- Header actions as a single ButtonGroup. The Renew toggle and the
 					 Reveal/Copy buttons are independent — toggling renew never hides the
@@ -535,20 +574,42 @@
 							<p class="text-xs text-destructive">{reauthError}</p>
 						{/if}
 
-						<div class="flex items-center gap-2">
-							<Button size="sm" onclick={submitReauth} disabled={!canReauth}>
-								{#if reauthBusy}<IconLoader class="h-3.5 w-3.5 animate-spin" />{/if}
-								{$_('profile.reauthSubmit')}
-							</Button>
-							{#if reauthPhase === 'manual'}
-								<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'idle')} disabled={reauthBusy}>
-									{$_('profile.reauthUsePassword')}
+						<div class="flex items-center justify-between gap-2">
+							<div class="flex items-center gap-2">
+								<Button size="sm" onclick={submitReauth} disabled={!canReauth}>
+									{#if reauthBusy}<IconLoader class="h-3.5 w-3.5 animate-spin" />{/if}
+									{$_('profile.reauthSubmit')}
 								</Button>
-							{:else}
-								<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'manual')} disabled={reauthBusy}>
-									{$_('profile.reauthUseManualToken')}
-								</Button>
-							{/if}
+								{#if reauthPhase === 'manual'}
+									<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'idle')} disabled={reauthBusy}>
+										{$_('profile.reauthUsePassword')}
+									</Button>
+								{:else}
+									<Button size="sm" variant="ghost" onclick={() => (reauthPhase = 'manual')} disabled={reauthBusy}>
+										{$_('profile.reauthUseManualToken')}
+									</Button>
+								{/if}
+							</div>
+							<!-- AutoRenew (inline-end): re-mint the token with the stored
+							     password before it expires. -->
+							<Tooltip>
+								<TooltipTrigger>
+									{#snippet child({ props })}
+										<div {...props} class="flex items-center gap-1.5">
+											<IconTimer class="h-3.5 w-3.5 text-muted-foreground" />
+											<span class="text-[11px] text-muted-foreground">{$_('profile.autoRenew')}</span>
+											<Switch
+												checked={autoRenewOn}
+												disabled={autoRenewBusy}
+												onCheckedChange={(v: boolean) => toggleAutoRenew(v)}
+											/>
+										</div>
+									{/snippet}
+								</TooltipTrigger>
+								<TooltipContent class="max-w-xs text-[11px]">
+									{$_('profile.autoRenewHint')}
+								</TooltipContent>
+							</Tooltip>
 						</div>
 					</div>
 				</div>

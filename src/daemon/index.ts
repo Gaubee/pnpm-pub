@@ -194,6 +194,12 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   // Populate the credential pool from the keychain (Chapter 3.1 / 5.1).
   await refreshCredentials(store);
 
+  // AutoRenew scheduler: proactively re-mint NPM session tokens (2h lifetime)
+  // for profiles with autoRenew enabled. Started after credentials are warm.
+  const { AutoRenewScheduler } = await import('./auto-renew.js');
+  const autoRenew = new AutoRenewScheduler({ store, log: (line) => log(line) });
+  autoRenew.start();
+
   // Tray host (Chapter 6.4). We bind opentray's public createTray() directly;
   // when the runtime is unavailable (dev/headless) we still construct a
   // TrayHost with null handles so the KeepOnTop/flash state machine is
@@ -241,6 +247,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     const exit = stopOpts.exit ?? false;
     log(`daemon stop requested (exit=${String(exit)})`);
     scheduler.drainAll();
+    autoRenew.stop();
     stopPlacement?.();
     await trayHost?.destroy();
     await web.stop();
