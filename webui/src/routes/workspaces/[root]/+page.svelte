@@ -12,6 +12,9 @@
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { fade } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { daemon, actions } from '$lib/store.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -278,8 +281,11 @@
 				{/if}
 			</div>
 
-			{#each filteredPackages as pkg (pkg.path)}
+			{#each filteredPackages as pkg, i (pkg.path)}
 				<div
+					animate:flip={flipParams}
+					in:fade={enterParams(i)}
+					out:fade={leaveParams}
 					class="group rounded-lg border bg-card p-3.5 transition-colors {batchMode && selected.has(pkg.name) ? 'border-brand ring-2 ring-brand/30' : 'border-border'}"
 					role={batchMode ? 'button' : undefined}
 					onclick={batchMode ? () => toggleSelect(pkg.name) : undefined}

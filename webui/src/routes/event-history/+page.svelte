@@ -12,6 +12,9 @@
 	 * Events sharing a groupId collapse to the latest member + a "+N more" toggle.
 	 */
 	import { onMount } from 'svelte';
+	import { fade } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { apiFetch } from '$lib/api-fetch.js';
 	import { daemon } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
@@ -205,8 +208,9 @@
 	{:else}
 		<!-- Grouped history (compact cards) -->
 		<div class="space-y-2.5">
-			{#each groups as group (group.id)}
-				{#if group.collapsed && !expandedGroups.has(group.id)}
+			{#each groups as group, i (group.id)}
+				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
+					{#if group.collapsed && !expandedGroups.has(group.id)}
 					<div class="space-y-1">
 						<EventCard event={group.latest} variant="compact" />
 						<button
@@ -233,6 +237,7 @@
 						<EventCard {event} variant="compact" />
 					{/each}
 				{/if}
+				</div>
 			{/each}
 		</div>
 

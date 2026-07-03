@@ -11,6 +11,9 @@
 	import IconLayers from '@lucide/svelte/icons/layers';
 	import { _ } from 'svelte-i18n';
 	import { untrack } from 'svelte';
+	import { fade } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 
 	interface Props {
 		targets: PublishTarget[];
@@ -42,8 +45,8 @@
 			</div>
 		{:else}
 			<ul class="max-h-40 overflow-auto border-t border-border px-3 py-1.5 text-xs">
-				{#each targets as t (t.path)}
-					<li class="flex items-center gap-2 py-0.5">
+				{#each targets as t, i (t.path)}
+					<li animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams} class="flex items-center gap-2 py-0.5">
 						<span class="truncate font-mono">{t.name}</span>
 						<Badge variant="outline" class="ml-auto shrink-0 font-mono text-[10px]">@{t.version}</Badge>
 					</li>

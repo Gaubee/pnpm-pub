@@ -5,6 +5,9 @@
 	 * Pinned roots are sorted to the top.
 	 */
 	import { daemon, actions } from '$lib/store.js';
+	import { fade } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -96,8 +99,8 @@
 	{#if sortedWorkspaces.length > 0}
 		<section class="space-y-2">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('workspaces.trackedRoots')}</h2>
-			{#each sortedWorkspaces as ws (ws.path)}
-				<div class="group flex items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent/40">
+			{#each sortedWorkspaces as ws, i (ws.path)}
+					<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams} class="group flex items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent/40">
 					<button
 						class="flex min-w-0 flex-1 items-center gap-2 text-left"
 						onclick={() => openDetail(ws.path)}

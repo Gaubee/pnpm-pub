@@ -10,6 +10,9 @@
 	 * are surfaced via the sidebar badge, and the user is free to navigate away.
 	 */
 	import { onMount, untrack } from 'svelte';
+	import { fade } from 'svelte/transition';
+	import { flip } from 'svelte/animate';
+	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { pendingEvents } from '$lib/store.js';
 	import { daemon } from '$lib/store.js';
 	import { apiFetch } from '$lib/api-fetch.js';
@@ -196,12 +199,14 @@
 	{#if surfaceEvents.length > 0}
 		<section class="space-y-2.5">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
-			{#each surfaceEvents as event (event.id)}
+			{#each surfaceEvents as event, i (event.id)}
+				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
 				<EventCard
 					{event}
 					autoClose={held.has(event.id)}
 					onAutoClose={() => dismiss(event.id)}
 				/>
+				</div>
 			{/each}
 		</section>
 	{/if}
@@ -237,8 +242,10 @@
 				</p>
 			</div>
 		{:else}
-			{#each previewEvents as event (event.id)}
+			{#each previewEvents as event, i (event.id)}
+				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
 				<EventCard {event} />
+				</div>
 			{/each}
 		{/if}
 	</section>
