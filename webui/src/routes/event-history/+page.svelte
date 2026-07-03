@@ -207,9 +207,9 @@
 		</div>
 	{:else}
 		<!-- Grouped history (compact cards) -->
-		<div class="space-y-2.5">
+			<div class="space-y-2.5">
 			{#each groups as group, i (group.id)}
-				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
+				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
 					{#if group.collapsed && !expandedGroups.has(group.id)}
 					<div class="space-y-1">
 						<EventCard event={group.latest} variant="compact" />

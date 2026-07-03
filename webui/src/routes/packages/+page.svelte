@@ -276,7 +276,7 @@
 			{#each data.items as pkg (pkg.name)}
 				<div
 					animate:flip={{ duration: 200 }}
-					in:fade={{ duration: 150 }}
+					in:fade|global={{ duration: 150 }}
 					out:fade={{ duration: 150 }}
 					class="group rounded-lg border border-border bg-card p-3.5 transition-colors hover:bg-accent/30"
 				>

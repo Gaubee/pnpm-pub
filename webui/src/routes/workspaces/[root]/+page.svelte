@@ -284,7 +284,7 @@
 			{#each filteredPackages as pkg, i (pkg.path)}
 				<div
 					animate:flip={flipParams}
-					in:fade={enterParams(i)}
+					in:fade|global={enterParams(i)}
 					out:fade={leaveParams}
 					class="group rounded-lg border bg-card p-3.5 transition-colors {batchMode && selected.has(pkg.name) ? 'border-brand ring-2 ring-brand/30' : 'border-border'}"
 					role={batchMode ? 'button' : undefined}

@@ -200,7 +200,7 @@
 		<section class="space-y-2.5">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
 			{#each surfaceEvents as event, i (event.id)}
-				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
+				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
 				<EventCard
 					{event}
 					autoClose={held.has(event.id)}
@@ -243,7 +243,7 @@
 			</div>
 		{:else}
 			{#each previewEvents as event, i (event.id)}
-				<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams}>
+				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
 				<EventCard {event} />
 				</div>
 			{/each}

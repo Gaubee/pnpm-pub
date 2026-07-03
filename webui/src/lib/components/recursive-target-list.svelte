@@ -46,7 +46,7 @@
 		{:else}
 			<ul class="max-h-40 overflow-auto border-t border-border px-3 py-1.5 text-xs">
 				{#each targets as t, i (t.path)}
-					<li animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams} class="flex items-center gap-2 py-0.5">
+					<li animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams} class="flex items-center gap-2 py-0.5">
 						<span class="truncate font-mono">{t.name}</span>
 						<Badge variant="outline" class="ml-auto shrink-0 font-mono text-[10px]">@{t.version}</Badge>
 					</li>

@@ -100,7 +100,7 @@
 		<section class="space-y-2">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('workspaces.trackedRoots')}</h2>
 			{#each sortedWorkspaces as ws, i (ws.path)}
-					<div animate:flip={flipParams} in:fade={enterParams(i)} out:fade={leaveParams} class="group flex items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent/40">
+					<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams} class="group flex items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent/40">
 					<button
 						class="flex min-w-0 flex-1 items-center gap-2 text-left"
 						onclick={() => openDetail(ws.path)}

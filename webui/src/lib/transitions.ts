@@ -5,12 +5,15 @@
  * rhythm is uniform, and `prefers-reduced-motion` is honored centrally (Svelte
  * transitions do NOT auto-respect it, unlike the CSS keyframes in layout.css).
  *
+ * Svelte 5 disables `in:` transitions on initial component mount. Adding the
+ * `|global` modifier (e.g. `in:fade|global`) overrides this so list items
+ * animate in on first paint.
+ *
  * Usage on the each's direct child element:
  *   import { fade } from 'svelte/transition';
+ *   import { flip } from 'svelte/animate';
  *   import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
- *   animate:flip={flipParams}
- *   in:fade={enterParams(i)}
- *   out:fade={leaveParams}
+ *   <div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>...
  */
 const REDUCED = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
