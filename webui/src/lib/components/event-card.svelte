@@ -20,13 +20,16 @@
 	import type { RepoInfo } from '$lib/components/repo-info-types.js';
 	import { actions, daemon } from '$lib/store.js';
 	import TarballTree from '$lib/components/tarball-tree.svelte';
+	import RecursiveTargetList from '$lib/components/recursive-target-list.svelte';
 	import AutoCloseBar from '$lib/components/auto-close-bar.svelte';
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconOidc from '@lucide/svelte/icons/shield-check';
+	import IconLayers from '@lucide/svelte/icons/layers';
 	import IconPlaceholder from '@lucide/svelte/icons/package';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
 	import IconClock from '@lucide/svelte/icons/clock';
 	import IconCheck from '@lucide/svelte/icons/check';
+	import IconBadgeInfo from '@lucide/svelte/icons/badge-info';
 	import IconX from '@lucide/svelte/icons/x';
 	import IconRotateCw from '@lucide/svelte/icons/rotate-cw';
 	import IconTrash from '@lucide/svelte/icons/trash-2';
@@ -71,6 +74,7 @@
 		({
 			publish: IconPublish,
 			'setup-oidc': IconOidc,
+			'recursive-publish': IconLayers,
 			'create-placeholder': IconPlaceholder,
 			'refresh-token': IconRefresh,
 			unpublish: IconTrash,
@@ -84,7 +88,8 @@
 	// (see below), so the two signals stay independent.
 	const kindAccent = $derived.by(() => {
 		switch (event.kind) {
-			case 'publish': return 'brand';
+			case 'publish':
+			case 'recursive-publish': return 'brand';
 			case 'unpublish': return 'destructive';
 			default: return '';
 		}
@@ -161,6 +166,7 @@
 	);
 	const oidcCtx = $derived(event.payload?.kind === 'setup-oidc' ? event.payload.data : null);
 	const unpublishCtx = $derived(event.payload?.kind === 'unpublish' ? event.payload.data : null);
+	const recursiveCtx = $derived(event.payload?.kind === 'recursive-publish' ? event.payload.data : null);
 
 	const timeLabel = $derived(new Date(event.createdAt).toLocaleTimeString());
 
@@ -181,16 +187,23 @@
 	// the event kind and the data it carries.
 	let repoInfo = $state<RepoInfo | null>(null);
 	// The raw repository string to resolve, drawn from whichever event kind
-	// carries one (publish.target.repository, or setup-oidc's repo field).
-	const repoRaw = $derived(publishData?.target.repository ?? oidcCtx?.repo ?? '');
+	// carries one (publish.target.repository, setup-oidc's repo field, or any
+	// recursive-publish target's repository).
+	const repoRaw = $derived(
+		publishData?.target.repository
+			?? oidcCtx?.repo
+			?? recursiveCtx?.targets.find((t) => t.repository)?.repository
+			?? '',
+	);
 	$effect(() => {
 		if (!repoRaw) { repoInfo = null; return; }
 		// Fire-and-forget; the store memoizes so re-renders are cheap.
 		void actions.repoInfo(repoRaw).then((info) => { repoInfo = info; });
 	});
 	// The local package directory (for "open folder"). Publish → source path;
-	// setup-oidc → its path. Unpublish / placeholder have no local path.
-	const sourcePath = $derived(publishData?.source.path ?? oidcCtx?.path ?? '');
+	// setup-oidc → its path; recursive-publish → workspace root. Unpublish /
+	// placeholder have no local path.
+	const sourcePath = $derived(publishData?.source.path ?? recursiveCtx?.source.path ?? oidcCtx?.path ?? '');
 	// The npm registry page link. For publish, derived from target name/version.
 	// For unpublish, from its name/version. For create-placeholder, name only.
 	const packageName = $derived(
@@ -209,7 +222,10 @@
 	// Whether the right-corner group has any action to show at all.
 	const hasCornerActions = $derived(!!repoInfo || !!sourcePath || !!npmUrl || overrideActive);
 	const isRetryableStatus = $derived(event.status === 'failed' || event.status === 'expired' || event.status === 'rejected');
-	const isRetryable = $derived((isPublish || event.payload?.kind === 'unpublish') && isRetryableStatus);
+	const isRetryable = $derived((isPublish || event.payload?.kind === 'unpublish' || event.payload?.kind === 'recursive-publish') && isRetryableStatus);
+	/** Whether the inline Retry button renders (publish + recursive-publish;
+	 *  unpublish retry goes through the ConfirmAction two-step instead). */
+	const hasRetryButton = $derived(isRetryableStatus && (isPublish || event.payload?.kind === 'recursive-publish'));
 	const isUnpublishable = $derived(isPublish && event.status === 'success');
 	let confirmUnpublish = $state(false);
 	// Confirm/Reject are fire-and-forget WS sends — the daemon drives the actual
@@ -241,6 +257,8 @@
 		// into the same group in the Events Hub.
 		if (publishData) {
 			actions.createEvent('publish', publishData, event.groupId);
+		} else if (recursiveCtx) {
+			actions.createEvent('recursive-publish', recursiveCtx, event.groupId);
 		} else if (unpublishCtx) {
 			actions.createEvent('unpublish', unpublishCtx, event.groupId);
 		}
@@ -271,7 +289,12 @@
 	// and every control mutation rebuilds the args and ships an `update-event`.
 	let advancedOpen = $state(false);
 
-	const currentBranch = $derived(publishData?.branch ?? '');
+	/** The editable payload's args/branch, read from whichever publish-like
+	 *  payload is active (single-package `publish` or `recursive-publish`). All
+	 *  advanced-option deriveds below read from this single source so the panel
+	 *  works identically for both kinds. */
+	const editableArgs = $derived(publishData?.args ?? recursiveCtx?.args ?? []);
+	const currentBranch = $derived(publishData?.branch ?? recursiveCtx?.branch ?? '');
 
 	/** Find `--flag <value>` (or `--flag=value`) in args; returns undefined if absent. */
 	function argValue(args: string[], flag: string): string | undefined {
@@ -282,32 +305,39 @@
 		}
 		return undefined;
 	}
-	const accessArg = $derived.by(() => {
-		const v = publishData ? argValue(publishData.args, '--access') : undefined;
-		return v === 'restricted' ? 'restricted' : 'public';
-	});
-	const tagArg = $derived(publishData ? (argValue(publishData.args, '--tag') ?? '') : '');
+	const accessArg = $derived(argValue(editableArgs, '--access') === 'restricted' ? 'restricted' : 'public');
+	const tagArg = $derived(argValue(editableArgs, '--tag') ?? '');
 	/** A boolean flag is "on" when present as `--flag` and "off" only when an
 	 *  explicit `--no-flag` is present. Absent ⇒ default (per-option). */
 	function hasFlag(args: string[], flag: string): boolean { return args.includes(flag); }
 
-	const isScopedPkg = $derived(!!publishData && publishData.target.name.startsWith('@'));
-	const ignoreScriptsOn = $derived(publishData ? hasFlag(publishData.args, '--ignore-scripts') : false);
+	// Whether `--access` is meaningful: single-package ⇒ scoped check; recursive
+	// ⇒ any scoped target (pnpm publish -r applies one --access to the run, and
+	// non-scoped targets ignore it at the registry, so "any scoped" is the
+	// pragmatic gate).
+	const isScopedPkg = $derived.by(() => {
+		if (publishData) return publishData.target.name.startsWith('@');
+		if (recursiveCtx) return recursiveCtx.targets.some((t) => t.name.startsWith('@'));
+		return false;
+	});
+	const ignoreScriptsOn = $derived(hasFlag(editableArgs, '--ignore-scripts'));
 	// No-git-checks defaults ON: if the args carry no explicit --git-checks,
 	// we treat it as opted-out (the common case for feature-branch publishes).
-	const noGitChecksOn = $derived(
-		publishData ? (hasFlag(publishData.args, '--git-checks') ? false : true) : false,
-	);
-	const publishBranchOn = $derived(publishData ? argValue(publishData.args, '--publish-branch') !== undefined : false);
-	const publishBranchValue = $derived(publishData ? (argValue(publishData.args, '--publish-branch') ?? '') : '');
+	const noGitChecksOn = $derived(hasFlag(editableArgs, '--git-checks') ? false : true);
+	const publishBranchOn = $derived(argValue(editableArgs, '--publish-branch') !== undefined);
+	const publishBranchValue = $derived(argValue(editableArgs, '--publish-branch') ?? '');
 
 	// publish-branch mismatch gate: blocks the Confirm button client-side.
 	const branchMismatch = $derived(publishBranchOn && !!currentBranch && publishBranchValue !== currentBranch);
 	const branchNoCurrent = $derived(publishBranchOn && !currentBranch);
 	const canConfirm = $derived(isPending && !branchMismatch);
 
+	/** Whether the advanced-options panel should render at all. */
+	const hasAdvancedOptions = $derived(isPublish || !!recursiveCtx);
+
 	/** Rebuild args from the current structured state + a partial override, then
-	 *  ship an update-event. Carries forward the --access arg always. */
+	 *  ship an update-event. Works for both `publish` and `recursive-publish`
+	 *  (both carry an editable `args` array). */
 	function rebuildArgs(overrides?: {
 		access?: 'public' | 'restricted';
 		tag?: string;
@@ -316,7 +346,7 @@
 		publishBranchOn?: boolean;
 		publishBranch?: string;
 	}): void {
-		if (!publishData) return;
+		if (!publishData && !recursiveCtx) return;
 		const access = overrides?.access ?? accessArg;
 		const tag = overrides?.tag !== undefined ? overrides.tag : tagArg;
 		const ignoreScripts = overrides?.ignoreScripts ?? ignoreScriptsOn;
@@ -332,6 +362,8 @@
 		// and narrows the allowed branch via --publish-branch.
 		if (!branchOn && noGitChecks) args.push('--no-git-checks');
 		if (branchOn && branchVal) args.push('--publish-branch', branchVal);
+		// recursive-publish forwards the -r flag so the rebuilt args stay valid.
+		if (recursiveCtx && !args.includes('-r') && !args.includes('--recursive')) args.unshift('-r');
 		actions.updateEvent(event.id, args);
 	}
 </script>
@@ -345,7 +377,9 @@
 			<div class="min-w-0">
 				<div class="flex items-center gap-2">
 					<span class="truncate text-sm font-semibold">
-						{#if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
+						{#if recursiveCtx}
+							{$_('eventCard.recursivePublish')}
+						{:else if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
 					</span>
 					{#if publishTarget}
 						<Badge variant="outline" class="h-5 font-mono text-[10px]">@{publishTarget.target.version}</Badge>
@@ -457,6 +491,10 @@
 			</div>
 		{/if}
 
+		{#if recursiveCtx}
+			<RecursiveTargetList targets={recursiveCtx.targets} pending={isPending} />
+		{/if}
+
 		{#if !isPending && event.result && event.status !== 'rejected'}
 			{@const isError = isExpired || event.status === 'failed'}
 			{@const isSuccess = event.status === 'success'}
@@ -474,7 +512,7 @@
 					{#if isError}
 						<IconAlertTriangle class="h-3 w-3 shrink-0 text-destructive" />
 					{:else if isSuccess}
-						<IconCheck class="h-3 w-3 shrink-0 text-success" />
+						<IconBadgeInfo class="h-3 w-3 shrink-0 text-success" />
 					{:else}
 						<IconAlertTriangle class="h-3 w-3 shrink-0 text-muted-foreground" />
 					{/if}
@@ -514,7 +552,7 @@
 		{/if}
 
 		{#if isPending}
-			{#if isPublish}
+			{#if hasAdvancedOptions}
 				<!-- Advanced publish options — edit args before confirmation. -->
 				<div class="rounded-md border border-border">
 					<button
@@ -621,7 +659,19 @@
 				<ButtonGroup>
 					<Button variant={event.kind === 'unpublish' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={doConfirm}>
 						{#if confirming}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconCheck class="h-3.5 w-3.5" />{/if}
-						{#if confirming}{$_('eventCard.confirming')}{:else if event.kind === 'setup-oidc'}{$_('eventCard.confirmSetupOidc')}{:else if event.kind === 'refresh-token'}{$_('eventCard.confirmTokenRefresh')}{:else if event.kind === 'unpublish'}{$_('eventCard.confirmUnpublish')}{:else}{$_('eventCard.confirmPublish')}{/if}
+						{#if confirming}
+							{$_('eventCard.confirming')}
+						{:else if event.kind === 'setup-oidc'}
+							{$_('eventCard.confirmSetupOidc')}
+						{:else if event.kind === 'recursive-publish'}
+							{$_('eventCard.confirmRecursivePublish')}
+						{:else if event.kind === 'refresh-token'}
+							{$_('eventCard.confirmTokenRefresh')}
+						{:else if event.kind === 'unpublish'}
+							{$_('eventCard.confirmUnpublish')}
+						{:else}
+							{$_('eventCard.confirmPublish')}
+						{/if}
 					</Button>
 					<Button variant="outline" size="sm" disabled={rejecting} onclick={doReject}>
 						{#if rejecting}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconX class="h-3.5 w-3.5" />{/if}
@@ -661,7 +711,7 @@
 				     retry-for-unpublish use ConfirmAction (two-step confirmation). -->
 				<div class="pt-1">
 					<ButtonGroup>
-						{#if isPublish && isRetryableStatus}
+						{#if hasRetryButton}
 							<Button variant="outline" size="sm" class="flex-1" onclick={retry}>
 								<IconRotateCw class="h-3.5 w-3.5" /> {$_('eventCard.retry')}
 							</Button>
