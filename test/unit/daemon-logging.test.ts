@@ -6,6 +6,8 @@ import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { bootDaemon } from "../../src/daemon/index.js";
 import { daemonLogPath, setHomeOverride } from "../../src/shared/paths.js";
+import { WINDOW_ENTER_SEED_OPACITY } from "../../src/shared/window-opacity.js";
+import type { WebviewWindowOptions } from "@opentray/ext-webview";
 
 type MenuClickHandler = (event: { itemId: number }) => void;
 
@@ -59,7 +61,12 @@ function makeHappyMount() {
     listen: () => () => {},
     destroy: async () => {},
   };
+  const createWebviewWindow = vi.fn((options: WebviewWindowOptions) => {
+    void options;
+    return panel;
+  });
   return {
+    createWebviewWindow,
     extend: () => ({
       onMenuClick,
       setIcon: async () => {},
@@ -72,7 +79,7 @@ function makeHappyMount() {
       }),
       getScreenDetails: async () => ({ currentScreen: null, screens: [], isExtended: false }),
       destroy: async () => {},
-      createWebviewWindow: () => panel,
+      createWebviewWindow,
     }),
   };
 }
@@ -95,6 +102,29 @@ afterEach(async () => {
 });
 
 describe("bootDaemon logging", () => {
+  it("Scenario: Given daemon startup, When the tray WebView is created, Then the native window is seeded below full opacity before first show", async () => {
+    const mount = makeHappyMount();
+    trayMocks.createTray.mockResolvedValueOnce(mount);
+
+    const handles = await bootDaemon({
+      cliVersion: "0.1.0",
+    });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      expect(mount.createWebviewWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          style: expect.objectContaining({
+            opacity: WINDOW_ENTER_SEED_OPACITY,
+          }),
+        }),
+      );
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
   it("Scenario: Given tray Quit, When selected, Then daemon stop exits the process to release the OpenTray session", async () => {
     trayMocks.createTray.mockResolvedValueOnce(makeHappyMount());
     const exitCodes: number[] = [];

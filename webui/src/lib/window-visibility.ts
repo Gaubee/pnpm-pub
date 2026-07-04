@@ -10,11 +10,15 @@
 import { browser } from "$app/environment";
 import { get } from "svelte/store";
 import { actions, daemon, setWindowAutoCloseCountdown, type DaemonState } from "$lib/store.js";
+import {
+  countdownFromExitTime,
+  ENTER_DURATION_MS,
+  exitOpacityKeyframes,
+  EXIT_DURATION_MS,
+  IOS_ENTER_EASING,
+  WINDOW_ENTER_SEED_OPACITY,
+} from "$lib/window-opacity-timeline.js";
 
-const ENTER_DURATION_MS = 1000;
-const EXIT_DURATION_MS = 6000;
-const IOS_ENTER_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
-const SPRING_EASING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
 const OPACITY_EPSILON = 0.002;
 
 type Mode = "idle" | "entering" | "exiting";
@@ -25,11 +29,6 @@ const bridge = (): Navigator["opentrayWindow"] =>
 function clampOpacity(value: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.min(1, Math.max(0, value));
-}
-
-function countdownFromExitTime(currentTime: number): number {
-  const remainingMs = Math.max(0, EXIT_DURATION_MS - currentTime);
-  return Math.max(0, Math.ceil(remainingMs / 1000) - 1);
 }
 
 class WindowVisibilityController {
@@ -84,7 +83,7 @@ class WindowVisibilityController {
     }
 
     if (becameShown) {
-      this.startEnter(0);
+      this.startEnter(WINDOW_ENTER_SEED_OPACITY);
       if (state.exitRequested) this.queuedExit = true;
       return;
     }
@@ -153,17 +152,10 @@ class WindowVisibilityController {
     this.setSourceOpacity(from);
     this.applyNativeOpacity(from);
     setWindowAutoCloseCountdown(5);
-    const animation = this.source.animate(
-      [
-        { opacity: String(from), offset: 0, easing: SPRING_EASING },
-        { opacity: "0.8", offset: 1 / 6, easing: SPRING_EASING },
-        { opacity: "0.9", offset: 2 / 6, easing: SPRING_EASING },
-        { opacity: "0.5", offset: 3 / 6, easing: SPRING_EASING },
-        { opacity: "0.7", offset: 4 / 6, easing: SPRING_EASING },
-        { opacity: "0", offset: 1 },
-      ],
-      { duration: EXIT_DURATION_MS, fill: "forwards" },
-    );
+    const animation = this.source.animate(exitOpacityKeyframes(from), {
+      duration: EXIT_DURATION_MS,
+      fill: "forwards",
+    });
     this.animation = animation;
     this.mirrorFrames();
     animation.finished.then(

@@ -5754,3 +5754,29 @@ Status: complete
 ### Residuals
 
 - `agent-browser screenshot` hit `Resource temporarily unavailable (os error 35)` after the DOM/console/error checks passed, so screenshot evidence was not captured in this round.
+
+## Milestone 236 — Auto-close opacity pulse alignment round
+
+Status: complete
+
+### Delivered
+
+- Re-checked the WebUI-owned auto-close timeline against the original opacity prompt.
+- Split the exit timeline into a pure `window-opacity-timeline` source so the breathing anchors are explicit and testable.
+- Aligned the 6s exit curve to three 0.5Hz pulses: `1→0.8→0.9`, `0.9→0.5→0.7`, then `0.7→0`.
+- Corrected the first 4s pulse legs away from spring bounce and onto a sine-like ease-in-out breathing curve; the final `0.7→0` leg keeps the settle curve.
+- Seeded first native WebView startup, later `TrayHost.show()` restores, and WebUI enter animation from the shared opacity `0.1` atom before the window becomes fully visible.
+- Kept the daemon/WebUI ontology boundary unchanged: daemon projects `exitRequested`; WebUI owns opacity anchors, easing, and countdown projection.
+- Updated Chapter 6 to name the exact pulse and native show-seed contracts.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/window-opacity-timeline.test.ts test/unit/tray-host.test.ts test/unit/daemon-logging.test.ts --reporter=verbose`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+
+### Residuals
+
+- Native visual timing was not re-smoked in this round; the focused proof locks the exact WAAPI keyframe contract.

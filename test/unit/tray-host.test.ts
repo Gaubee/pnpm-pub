@@ -15,6 +15,7 @@ import { DaemonStore } from "../../src/daemon/store.js";
 import { TrayHost } from "../../src/daemon/tray-host.js";
 import type { OpentrayTray, OpentrayWindow, TrayPinFrame } from "../../src/daemon/tray-host.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
+import { WINDOW_ENTER_SEED_OPACITY } from "../../src/shared/window-opacity.js";
 import os from "node:os";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -176,7 +177,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     });
     host.show();
     expect(window.visible).toBe(true);
-    expect(window.opacity).toBe(0);
+    expect(window.opacity).toBe(WINDOW_ENTER_SEED_OPACITY);
 
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(true);

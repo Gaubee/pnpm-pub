@@ -33,6 +33,7 @@
 import type { EventfulTrayHandle, Menu, TrayIcon as OpentrayTrayIcon } from "opentray";
 import type { WebviewTrayCapability, WebviewWindowHandle } from "@opentray/ext-webview";
 import type { DaemonStore } from "./store.js";
+import { WINDOW_ENTER_SEED_OPACITY } from "../shared/window-opacity.js";
 
 /**
  * The opentray surfaces this host drives, typed against the real SDK types.
@@ -263,8 +264,11 @@ export class TrayHost {
     this.exitRequested = false;
     this.focused = true;
     // Non-animated seed only: WebUI owns the enter animation clock, but the host
-    // sets opacity to 0 before show() so native restore never flashes at 1.
-    this.safeCall("setStyle(opacity)", this.window?.setStyle({ opacity: 0 }));
+    // sets opacity before show() so native restore never flashes at 1.
+    this.safeCall(
+      "setStyle(opacity)",
+      this.window?.setStyle({ opacity: WINDOW_ENTER_SEED_OPACITY }),
+    );
     const showP = this.window?.show();
     this.safeCall("show", showP);
     // keepOnTop is PERMANENT (the window always stays above others). Re-apply

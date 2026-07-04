@@ -21,6 +21,7 @@ import { createResolverByRootFile } from "@gaubee/node/path";
 import type { CreateTrayOptions, EventfulTrayHandle, TrayIcon } from "opentray";
 import type { IpcStatusFrame } from "../shared/index.js";
 import { daemonLogPath } from "../shared/paths.js";
+import { WINDOW_ENTER_SEED_OPACITY } from "../shared/window-opacity.js";
 import { trayIconForProfile } from "./avatar.js";
 import { getProfileSecrets } from "./keychain.js";
 
@@ -446,6 +447,7 @@ async function tryCreateTray(
         // The "keep open" pin (whether blur auto-hide is enabled) is separate
         // and lives in TrayHost, not the window style.
         keepOnTop: true,
+        opacity: WINDOW_ENTER_SEED_OPACITY,
         background: { kind: "semantic", token: "blur", state: "active" },
       },
     });
