@@ -244,8 +244,25 @@ function reportHidden(): void {
 function installHideReporter(): void {
   if (!browser || hideReporterInstalled) return;
   hideReporterInstalled = true;
-  // Primary: page visibility flip (reliable on Windows).
+  // A page reload / SPA navigation unloads the document, which the browser
+  // surfaces as a `visibilitychange → hidden`. That is NOT a real window hide
+  // — the native window stays visible and just reloads its content. Without
+  // this gate the daemon's `markHidden()` poisons `visibility = "hidden"`,
+  // and subsequent blurs short-circuit in `reevaluateAutoClose` (visibility
+  // must be "shown" to authorize auto-close), so blur auto-hide dies until a
+  // close+reopen cycle runs `show()` and resets the state. We arm this flag on
+  // unload precursors (which fire BEFORE visibilitychange) and never clear it,
+  // since the document is going away anyway.
+  let unloading = false;
+  const armUnload = () => {
+    unloading = true;
+  };
+  window.addEventListener("pagehide", armUnload, { capture: true });
+  window.addEventListener("beforeunload", armUnload, { capture: true });
+  // Primary: page visibility flip (reliable on Windows). Skip the unload-driven
+  // flip so a reload no longer masquerades as a real hide.
   document.addEventListener("visibilitychange", () => {
+    if (unloading) return;
     if (document.visibilityState === "hidden") reportHidden();
   });
   // Supplement: on a window blur, re-check visibility shortly after. A plain
@@ -254,6 +271,7 @@ function installHideReporter(): void {
   // and we report. This bridges the macOS X-close gap.
   window.addEventListener("blur", () => {
     setTimeout(() => {
+      if (unloading) return;
       if (document.visibilityState === "hidden") reportHidden();
     }, 150);
   });
