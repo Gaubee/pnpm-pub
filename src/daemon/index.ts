@@ -45,6 +45,8 @@ export interface DaemonOptions {
    * Defaults to the daemon's own WebServer URL.
    */
   webviewUrl?: string;
+  /** Process-exit sink for real daemon shutdown sources; tests may inject it. */
+  exitProcess?: (code: number) => void;
 }
 
 const WEB_TOKEN_PLACEHOLDER = "__PNPM_PUB_WEB_TOKEN__";
@@ -163,7 +165,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     cliVersion: opts.cliVersion,
     onStatus: () => ({ active: true, profile: store.getDefault(), pid: process.pid }),
     onStop: async () => {
-      await daemonHandles?.stop();
+      await daemonHandles?.stop({ exit: true });
     },
     onStart: async (profileOverride) => {
       if (profileOverride && store.getProfile(profileOverride)) {
@@ -244,12 +246,13 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       openItemId: MENU_OPEN_ID,
       quitItemId: MENU_QUIT_ID,
       initialVisible: mounted.window !== null,
-      // Project pin/countdown frames to every connected WebUI client.
-      onPinFrame: (pinned, countdown) => web.broadcast({ type: "pin", pinned, countdown }),
+      // Project tray/window facts to every connected WebUI client. The WebUI
+      // owns the auto-close animation clock and derives countdown locally.
+      onPinFrame: (frame) => web.broadcast({ type: "pin", ...frame }),
       // Quit menu → graceful daemon shutdown. stop() is declared below; the
       // closure is only invoked on a later tray menu click, by which time stop
       // is assigned, so the forward reference is safe.
-      onQuit: () => void stop(),
+      onQuit: () => void stop({ exit: true }),
     });
     // Reflect pending-event state on the tray icon: ≥1 pending event → the
     // color (active) icon; otherwise the default mono template. We push the
@@ -270,9 +273,6 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   const stop = async (stopOpts: { exit?: boolean } = {}): Promise<void> => {
     if (stopping) return;
     stopping = true;
-    // bootDaemon runs inside a worker (the main thread owns the visible runtime
-    // host loop). The worker must NOT call process.exit on its own — tearing
-    // down the IPC/socket/tray is enough; the host terminates the worker.
     const exit = stopOpts.exit ?? false;
     log(`daemon stop requested (exit=${String(exit)})`);
     scheduler.drainAll();
@@ -282,18 +282,20 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     await web.stop();
     await ipc.stop();
     store.close(); // flush + close the persisted event database
-    if (exit) process.exit(0);
+    if (exit) {
+      (opts.exitProcess ?? process.exit)(0);
+    }
   };
 
   const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, port, webToken, stop };
 
   process.on("SIGINT", () => {
     log("received SIGINT — stopping daemon");
-    void stop();
+    void stop({ exit: true });
   });
   process.on("SIGTERM", () => {
     log("received SIGTERM — stopping daemon");
-    void stop();
+    void stop({ exit: true });
   });
 
   return daemonHandles;

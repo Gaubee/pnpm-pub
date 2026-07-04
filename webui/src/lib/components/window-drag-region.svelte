@@ -105,9 +105,9 @@
 	}
 
 	// "Keep open" pin (Chapter 6.4). The window is ALWAYS kept on top; this pin
-	// only decides whether blur auto-hide is enabled. When pinned (keep open) a
-	// blur is ignored; when unpinned a blur starts a 3→2→1→0 countdown shown
-	// beside the icon. The daemon owns the state; we read its projection.
+	// only decides whether blur auto-hide is enabled. When unpinned, daemon blur
+	// may authorize page-owned auto-close; the countdown is derived locally from
+	// the WebAnimation opacity timeline.
 	const pinned = $derived($daemon.pinned);
 	const pinCountdown = $derived($daemon.pinCountdown);
 	const counting = $derived(pinCountdown !== null);
@@ -172,8 +172,8 @@
 		"Keep open" pin (Chapter 6.4) — inline-start. A ghost icon Button matching
 		the Workspaces page's pin affordance: the ICON turns brand-colored when
 		active (Pin), muted otherwise (PinOff). The window is always kept on top;
-		this pin only decides whether blur auto-hide is enabled. The live countdown
-		(3→2→1→0) overlays beside the icon when a blur auto-hide is pending.
+		this pin only decides whether blur auto-hide is enabled. The live 5→0
+		countdown overlays beside the icon while the page-owned exit animation runs.
 		Anchored to the left safe edge so it clears the macOS traffic lights.
 	-->
 	<Button

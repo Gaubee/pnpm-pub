@@ -28,8 +28,17 @@ await panel.show();
 ```
 
 The `WebviewWindowHandle` (`panel`) is what backs the `TrayHost` surface:
-`panel.show()/hide()` → tray click / blur-auto-hide, `panel.setStyle({ keepOnTop })`
-→ the pending-event pin, and `panel.listen('blur', ...)` → the auto-hide hook.
+`panel.show()/hide()` → reversible tray-window visibility,
+`panel.setStyle({ keepOnTop })` → permanent native stacking,
+`panel.listen('blur'/'focus', ...)` → auto-close eligibility, and page-side
+`navigator.opentrayWindow.setStyle({ opacity })` → the WebUI-owned enter/exit
+opacity timeline.
+
+`Hide window` is only a projection change on the existing tray-owned window.
+`Quit`, `pnpm pub daemon stop`, and daemon version self-destruct are process
+lifetime sources: after destroying the tray/window surfaces they exit the daemon
+process so the OpenTray broker session socket closes and the single-session
+runtime lease is released before the next `pnpm dev`.
 
 The window uses opentray's tray-panel glass-shell style:
 
@@ -61,7 +70,7 @@ shows the full mount:
 ```
 opentray webview window mounted
 WebUI available at http://127.0.0.1:<port>/#token=<webtoken>
-[tray] pin (keepOnTop + flash)   ← TrayHost reacts to a pending publish event
+[tray] show                      ← TrayHost reacts to a pending publish event
 ```
 
 ## Prerequisites
@@ -179,9 +188,9 @@ them directly (no bun, no source transpilation).
 | `pnpm build`           | Full production build → `dist/{cli.js,daemon.js,prebuilds/,webui/}`.     |
 | `pnpm release:start`   | Boot the daemon + tray from the built bundle (`node dist/cli.js start`). |
 | `pnpm release:status`  | Query the running daemon (`node dist/cli.js status`).                    |
-| `pnpm release:stop`    | Graceful shutdown (`node dist/cli.js stop`).                             |
+| `pnpm release:stop`    | Graceful shutdown that exits the daemon process.                         |
 | `pnpm release:publish` | Run the built CLI (`node dist/cli.js …`).                                |
-| `pnpm pub daemon stop` | Graceful shutdown through the namespaced daemon command.                 |
+| `pnpm pub daemon stop` | Namespaced graceful shutdown that exits the daemon process.              |
 
 ### Testing
 

@@ -7,12 +7,15 @@ import { promises as fsp } from "node:fs";
 import { bootDaemon } from "../../src/daemon/index.js";
 import { daemonLogPath, setHomeOverride } from "../../src/shared/paths.js";
 
+type MenuClickHandler = (event: { itemId: number }) => void;
+
 const trayMocks = vi.hoisted(() => ({
   // tryCreateTray uses opentray 0.10's public createTray(options, runtime) API.
   // createTray resolves to a handle whose extend() yields the WebView-capable
   // tray surface; tests override this to simulate failure modes.
   createTray: vi.fn(),
   placementWatch: vi.fn(),
+  menuClickHandlers: [] as MenuClickHandler[],
 }));
 
 vi.mock("opentray", () => ({
@@ -43,6 +46,12 @@ vi.mock("@opentray/ext-webview", () => ({
  * the pieces they want to break.
  */
 function makeHappyMount() {
+  const onMenuClick = (handler: MenuClickHandler) => {
+    trayMocks.menuClickHandlers.push(handler);
+    return () => {
+      trayMocks.menuClickHandlers = trayMocks.menuClickHandlers.filter((item) => item !== handler);
+    };
+  };
   const panel = {
     show: async () => {},
     hide: async () => {},
@@ -52,7 +61,7 @@ function makeHappyMount() {
   };
   return {
     extend: () => ({
-      onMenuClick: () => () => {},
+      onMenuClick,
       setIcon: async () => {},
       setTooltip: async () => {},
       setMenu: async () => {},
@@ -76,6 +85,7 @@ beforeEach(async () => {
   setHomeOverride(sandbox);
   trayMocks.createTray.mockReset();
   trayMocks.placementWatch.mockReset();
+  trayMocks.menuClickHandlers = [];
   trayMocks.placementWatch.mockResolvedValue({ stop: () => {} });
 });
 
@@ -85,6 +95,36 @@ afterEach(async () => {
 });
 
 describe("bootDaemon logging", () => {
+  it("Scenario: Given tray Quit, When selected, Then daemon stop exits the process to release the OpenTray session", async () => {
+    trayMocks.createTray.mockResolvedValueOnce(makeHappyMount());
+    const exitCodes: number[] = [];
+
+    const handles = await bootDaemon({
+      cliVersion: "0.1.0",
+      exitProcess: (code) => {
+        exitCodes.push(code);
+      },
+    });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      expect(trayMocks.menuClickHandlers).toHaveLength(1);
+      trayMocks.menuClickHandlers[0]?.({ itemId: 2 });
+
+      for (let attempt = 0; attempt < 20 && exitCodes.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const log = await fsp.readFile(daemonLogPath(), "utf8");
+      expect(log).toContain("[tray] quit requested");
+      expect(log).toContain("daemon stop requested (exit=true)");
+      expect(exitCodes).toEqual([0]);
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
   it("Scenario: Given daemon startup, When logging WebUI availability, Then the WebToken is redacted", async () => {
     const handles = await bootDaemon({
       cliVersion: "0.1.0",

@@ -254,4 +254,10 @@ export type WsServerMessage =
       isPnpmWorkspace?: boolean;
     }
   | { type: "toast"; level: "info" | "success" | "error" | "warning"; message: string }
-  | { type: "pin"; pinned: boolean; countdown: number | null };
+  | {
+      type: "pin";
+      pinned: boolean;
+      exitRequested: boolean;
+      visibility: "hidden" | "shown";
+      hasActiveEvents: boolean;
+    };

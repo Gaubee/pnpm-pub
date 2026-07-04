@@ -89,10 +89,14 @@ export interface DaemonState {
   riskyConfirmationToken: string | null;
   /**
    * Tray window keepOnTop pin state (Chapter 6.4). When true the window stays
-   * on top and is exempt from blur auto-hide. `pinCountdown` is the live 3→2→1→0
-   * number while a blur auto-hide is pending, or null when idle.
+   * on top and is exempt from blur auto-hide. `exitRequested`, `windowVisibility`,
+   * and `hasActiveEvents` are daemon facts; `pinCountdown` is a local projection
+   * derived from the page-owned WebAnimation auto-close timeline.
    */
   pinned: boolean;
+  exitRequested: boolean;
+  windowVisibility: "hidden" | "shown";
+  hasActiveEvents: boolean;
   pinCountdown: number | null;
   toast: { level: "info" | "success" | "error" | "warning"; message: string; id: number } | null;
 }
@@ -111,6 +115,9 @@ function createState(): DaemonState {
     isPnpmWorkspace: false,
     riskyConfirmationToken: null,
     pinned: false,
+    exitRequested: false,
+    windowVisibility: "hidden",
+    hasActiveEvents: false,
     pinCountdown: null,
     toast: null,
   };
@@ -290,9 +297,22 @@ function handleServerMessage(msg: WsServerMessage): void {
       daemon.update((s) => ({ ...s, toast: { ...msg, id: Date.now() } }));
       break;
     case "pin":
-      daemon.update((s) => ({ ...s, pinned: msg.pinned, pinCountdown: msg.countdown }));
+      daemon.update((s) => ({
+        ...s,
+        pinned: msg.pinned,
+        exitRequested: msg.exitRequested,
+        windowVisibility: msg.visibility,
+        hasActiveEvents: msg.hasActiveEvents,
+        pinCountdown: msg.exitRequested ? s.pinCountdown : null,
+      }));
       break;
   }
+}
+
+/** Local projection from the page-owned auto-close animation timeline. */
+export function setWindowAutoCloseCountdown(countdown: number | null): void {
+  if (get(daemon).pinCountdown === countdown) return;
+  daemon.update((s) => ({ ...s, pinCountdown: countdown }));
 }
 
 function dispatchMessages(messages: WsServerMessage[]): void {
@@ -390,12 +410,16 @@ export const actions = {
     });
   },
   /**
-   * Toggle the tray window's keepOnTop pin (Chapter 6.4). The daemon persists
-   * it, applies the native style, cancels any pending auto-hide, and projects
-   * the new frame back via the `pin` server message.
+   * Toggle the tray window's keep-open pin (Chapter 6.4). The daemon persists
+   * it, re-evaluates auto-close eligibility, and projects the new frame back
+   * via the `pin` server message.
    */
   setPin(pinned: boolean): void {
     void rpc?.tray.setPin({ pinned });
+  },
+  /** Called when the page-owned WAAPI exit timeline has actually completed. */
+  completeAutoClose(): void {
+    void rpc?.tray.completeAutoClose();
   },
   scanWorkspace(root: string): void {
     void rpc?.workspace.scan({ root }).then((res) => dispatchMessages(res.messages));

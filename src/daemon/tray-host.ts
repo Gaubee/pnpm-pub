@@ -11,7 +11,7 @@
  * layering on top is purely the product behavior the skill leaves to the app:
  *   - tray primary click toggles show/hide (synced with out-of-band hides)
  *   - the window is ALWAYS kept on top (keepOnTop is permanent, not a toggle)
- *   - blur auto-hide with a live countdown, unless "keep open" (pinned) is on
+ *   - blur requests page-owned auto-close animation unless keep-open is active
  *   - the keep-open pin is persisted via the store + projected to the WebUI
  *
  * opentray 0.8 removed its broker daemon concept: the tray lifetime is now owned
@@ -49,6 +49,15 @@ export type OpentrayWindow = WebviewWindowHandle;
  */
 export type TrayIcon = OpentrayTrayIcon;
 
+type Visibility = "hidden" | "shown";
+
+export interface TrayPinFrame {
+  pinned: boolean;
+  exitRequested: boolean;
+  visibility: Visibility;
+  hasActiveEvents: boolean;
+}
+
 export interface TrayHostOptions {
   /** Tray title (kept static). */
   title?: string;
@@ -67,43 +76,36 @@ export interface TrayHostOptions {
   /** Initial native window visibility when TrayHost takes ownership. */
   initialVisible?: boolean;
   /**
-   * Projected pin (keepOnTop) state — called on every state change so the host
-   * can broadcast it to connected WebUI clients. `countdown` is the live 3→2→1→0
-   * number while a blur auto-hide is pending, or null when idle.
+   * Projected tray/window state — called on every state change so the host can
+   * broadcast it to connected WebUI clients. The daemon owns eligibility
+   * (`exitRequested`, `hasActiveEvents`, `visibility`); the WebUI owns the
+   * opacity animation and its derived countdown.
    */
-  onPinFrame?: (pinned: boolean, countdown: number | null) => void;
+  onPinFrame?: (frame: TrayPinFrame) => void;
   /**
    * Invoked when the user picks the tray "Quit" menu item. The host calls this
    * (best-effort) and lets the caller tear the daemon down — TrayHost itself
    * only owns window/tray visibility, not process lifecycle.
    */
   onQuit?: () => void;
-  /**
-   * Override the blur auto-hide cadence (ms). The sequence is: blur → show 3 →
-   * every `tickMs` decrement to 2/1/0 → after one more tick, hide. Defaults to
-   * 1000ms (a 4s total sequence: 3,2,1,0 then hide).
-   */
-  autoHideTickMs?: number;
 }
-
-type Visibility = "hidden" | "shown";
-
-/** Countdown value that means "hide the window now" (never rendered). */
-const COUNTDOWN_HIDE = -1;
-/** First countdown number shown immediately on blur. */
-const COUNTDOWN_START = 3;
 
 export class TrayHost {
   private visibility: Visibility = "hidden";
   /**
    * "Keep open" pin — when true the window ignores blur auto-hide. The window
    * is ALWAYS kept on top regardless of this flag (keepOnTop is permanent); the
-   * pin only decides whether a blur starts the auto-hide countdown.
+   * pin only decides whether a blur may request page-owned auto-close.
    */
   private pinned = false;
-  /** Live auto-hide countdown (3→2→1→0) while pending, else null. */
-  private countdown: number | null = null;
-  private blurTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * True while the daemon has authorized a WebUI exit animation. The actual
+   * opacity timeline and countdown are page projections; this flag is the
+   * platform intent that lets the page start or abort that timeline.
+   */
+  private exitRequested = false;
+  /** Last known native focus state. Needed when canAutoClose changes while blurred. */
+  private focused = false;
   private unsubs: Array<() => void> = [];
 
   constructor(
@@ -113,6 +115,7 @@ export class TrayHost {
     private opts: TrayHostOptions = {},
   ) {
     this.visibility = opts.initialVisible ? "shown" : "hidden";
+    this.focused = opts.initialVisible ?? false;
     // Seed the pin from persisted preferences (Chapter 6.4). The window was
     // created with this same value at mount time, so no setStyle is needed.
     this.pinned = store.getPreferences().keepOnTop;
@@ -126,8 +129,12 @@ export class TrayHost {
     this.opts.log?.(`[tray] ${line}`);
   }
 
-  private get tickMs(): number {
-    return this.opts.autoHideTickMs ?? 1000;
+  private get hasActiveEvents(): boolean {
+    return this.store.getEvents().length > 0;
+  }
+
+  private get canAutoClose(): boolean {
+    return !this.pinned && !this.hasActiveEvents;
   }
 
   /**
@@ -144,10 +151,15 @@ export class TrayHost {
     }
   }
 
-  /** Push the current pin/countdown frame to the WebUI (best-effort). */
+  /** Push the current tray/window frame to the WebUI (best-effort). */
   private emitPinFrame(): void {
     try {
-      this.opts.onPinFrame?.(this.pinned, this.countdown);
+      this.opts.onPinFrame?.({
+        pinned: this.pinned,
+        exitRequested: this.exitRequested,
+        visibility: this.visibility,
+        hasActiveEvents: this.hasActiveEvents,
+      });
     } catch {
       /* projection must never throw */
     }
@@ -173,16 +185,24 @@ export class TrayHost {
       });
       this.unsubs.push(off);
     }
-    // blur auto-hide: only when unpinned. focus cancels any pending countdown.
+    const onStoreEvent = () => this.reevaluateAutoClose();
+    this.store.on("event", onStoreEvent);
+    this.unsubs.push(() => {
+      this.store.off("event", onStoreEvent);
+    });
+
+    // Blur/focus only changes eligibility. The WebUI owns the animation clock.
     if (this.window) {
       const offBlur = this.window.listen("blur", () => {
         this.log("window blur");
-        this.startCountdown();
+        this.focused = false;
+        this.reevaluateAutoClose();
       });
       this.unsubs.push(offBlur);
       const offFocus = this.window.listen("focus", () => {
         this.log("window focus");
-        this.cancelCountdown();
+        this.focused = true;
+        this.cancelAutoClose();
       });
       this.unsubs.push(offFocus);
     }
@@ -199,51 +219,52 @@ export class TrayHost {
   }
 
   /**
-   * Start the blur auto-hide countdown (3→2→1→0→hide). No-op if pinned or a
-   * countdown is already running. Every tick + the terminal hide project a pin
-   * frame so the WebUI can render the live number.
+   * Re-check whether the current native/window state should run auto-close.
+   * This is called from every orthogonal source that can change the answer:
+   * focus, pin preference, and pending-event presence.
    */
-  private startCountdown(): void {
-    if (this.pinned) return;
-    if (this.countdown !== null) return; // already counting
-    this.countdown = COUNTDOWN_START;
-    this.emitPinFrame();
-    this.blurTimer = setInterval(() => this.tick(), this.tickMs);
+  private reevaluateAutoClose(): void {
+    if (this.hasActiveEvents && this.visibility === "hidden") {
+      this.show();
+      return;
+    }
+    if (this.visibility !== "shown" || this.focused) {
+      this.cancelAutoClose();
+      return;
+    }
+    if (this.canAutoClose) this.requestAutoClose();
+    else this.cancelAutoClose();
   }
 
-  private tick(): void {
-    if (this.countdown === null) return;
-    const next = this.countdown - 1;
-    if (next === COUNTDOWN_HIDE) {
-      // Sequence complete: hide and reset. Keep visibility in sync so the next
-      // tray click re-shows in one click. Project the cleared frame so the
-      // WebUI stops rendering the countdown number.
-      this.clearTimer();
-      this.countdown = null;
-      this.hide();
+  private requestAutoClose(): void {
+    if (!this.canAutoClose) {
+      this.cancelAutoClose();
+      return;
+    }
+    if (this.exitRequested) {
       this.emitPinFrame();
       return;
     }
-    this.countdown = next;
+    this.exitRequested = true;
     this.emitPinFrame();
   }
 
-  private cancelCountdown(): void {
-    if (this.countdown === null && this.blurTimer === null) return;
-    this.clearTimer();
-    this.countdown = null;
-    this.emitPinFrame();
-  }
-
-  private clearTimer(): void {
-    if (this.blurTimer !== null) {
-      clearInterval(this.blurTimer);
-      this.blurTimer = null;
+  private cancelAutoClose(): void {
+    if (!this.exitRequested) {
+      this.emitPinFrame();
+      return;
     }
+    this.exitRequested = false;
+    this.emitPinFrame();
   }
 
   /** Restore window visibility (skill: show() restores, never re-bootstraps). */
   show(): void {
+    this.exitRequested = false;
+    this.focused = true;
+    // Non-animated seed only: WebUI owns the enter animation clock, but the host
+    // sets opacity to 0 before show() so native restore never flashes at 1.
+    this.safeCall("setStyle(opacity)", this.window?.setStyle({ opacity: 0 }));
     const showP = this.window?.show();
     this.safeCall("show", showP);
     // keepOnTop is PERMANENT (the window always stays above others). Re-apply
@@ -251,6 +272,7 @@ export class TrayHost {
     this.applyKeepOnTop(showP);
     this.visibility = "shown";
     this.pushMenu();
+    this.emitPinFrame();
     this.log("show");
   }
 
@@ -301,9 +323,12 @@ export class TrayHost {
 
   /** Reversible dismissal (skill: hide(), NOT destroy()). */
   hide(): void {
+    this.exitRequested = false;
+    this.focused = false;
     this.safeCall("hide", this.window?.hide());
     this.visibility = "hidden";
     this.pushMenu();
+    this.emitPinFrame();
     this.log("hide");
   }
 
@@ -315,15 +340,30 @@ export class TrayHost {
    * in a single click instead of two.
    */
   markHidden(): void {
-    this.cancelCountdown();
+    this.exitRequested = false;
+    this.focused = false;
     this.visibility = "hidden";
     this.pushMenu();
+    this.emitPinFrame();
   }
 
   /**
-   * Toggle the "keep open" pin: persist it and (when pinning) cancel any pending
-   * auto-hide. The window's keepOnTop style is permanent and NOT affected by the
-   * pin — the pin only gates blur auto-hide. Projected to the WebUI immediately.
+   * Called by the WebUI when its WAAPI exit animation reaches completion. The
+   * daemon validates that auto-close is still authorized before hiding; stale
+   * completions after focus, pin, or active-event changes are ignored.
+   */
+  completeAutoClose(): void {
+    if (!this.exitRequested || !this.canAutoClose) {
+      this.cancelAutoClose();
+      return;
+    }
+    this.hide();
+  }
+
+  /**
+   * Toggle the "keep open" pin: persist it and re-evaluate auto-close. The
+   * window's keepOnTop style is permanent and NOT affected by the pin — the pin
+   * only gates blur auto-hide. Projected to the WebUI immediately.
    */
   async setPin(pinned: boolean): Promise<void> {
     if (this.pinned === pinned) {
@@ -334,18 +374,21 @@ export class TrayHost {
     // Persist (fire-and-forget; the store swallows nothing but writeJson is
     // atomic + best-effort). Awaited so callers/tests can observe completion.
     await this.store.setKeepOnTop(pinned);
-    if (pinned) this.cancelCountdown();
     this.log(`keep-open pin set to ${pinned}`);
-    this.emitPinFrame();
+    this.reevaluateAutoClose();
   }
 
-  /** Current pin + live countdown (for the WebUI initial snapshot). */
-  getPinState(): { pinned: boolean; countdown: number | null } {
-    return { pinned: this.pinned, countdown: this.countdown };
+  /** Current tray/window frame (for the WebUI initial snapshot). */
+  getPinState(): TrayPinFrame {
+    return {
+      pinned: this.pinned,
+      exitRequested: this.exitRequested,
+      visibility: this.visibility,
+      hasActiveEvents: this.hasActiveEvents,
+    };
   }
 
   async destroy(): Promise<void> {
-    this.clearTimer();
     for (const off of this.unsubs) {
       try {
         off();

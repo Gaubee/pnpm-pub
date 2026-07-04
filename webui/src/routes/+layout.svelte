@@ -17,6 +17,7 @@
 	import { bridgeDaemonToast } from '$lib/notify.js';
 	import WindowDragRegion from '$lib/components/window-drag-region.svelte';
 	import { initI18n } from '$lib/i18n.js';
+	import { initWindowVisibility } from '$lib/window-visibility.js';
 
 	let { children } = $props();
 
@@ -24,7 +25,9 @@
 
 	onMount(() => {
 		// Establish the long-lived daemon WS connection (Chapter 4.4.3).
+		const stopWindowVisibility = initWindowVisibility();
 		connect();
+		return () => stopWindowVisibility();
 	});
 
 	// Bridge daemon toasts (auth result, errors, pending-event created, …) into

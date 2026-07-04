@@ -5660,3 +5660,97 @@ Status: complete
 ### Residuals
 
 - none
+
+## Milestone 232 — WebUI-owned tray opacity timeline round
+
+Status: complete
+
+### Delivered
+
+- Replaced the daemon-owned 3→0 blur countdown with a tray/window projection frame carrying `visibility`, `exitRequested`, and `hasActiveEvents`.
+- Added a WebUI-owned WAAPI controller that uses one invisible DOM animation as the source for native `opacity` and the visible 5→0 countdown.
+- Added the `completeAutoClose` tray RPC so the daemon hides only after the WebUI exit animation finishes and only while auto-close is still authorized.
+- Made `canAutoClose = !pinKeepOpen && !hasActiveEvents`; active events now wake the hidden tray window and gate blur auto-close like the pin.
+- Updated Chapter 6 and README tray-host docs to describe the new animation/source boundary.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/tray-host.test.ts`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+
+### Residuals
+
+- none
+
+## Milestone 233 — OpenTray broker session release on daemon Quit round
+
+Status: complete
+
+### Delivered
+
+- Diagnosed the `pnpm dev` "no exception but not normally started" symptom from process/runtime evidence: tray `Quit` called `daemon stop requested (exit=false)`, leaving the OpenTray broker single-session lease alive so the next start mounted headless with `OPENTRAY_BROKER_SINGLE_SESSION`.
+- Changed real daemon stop sources (`Quit`, CLI stop/version self-destruct, SIGINT/SIGTERM) to request process exit after graceful tray/web/ipc/store teardown.
+- Kept `handles.stop({ exit: false })` available for tests and in-process harnesses where process exit would be the wrong source of action.
+- Documented that `hide()` is window projection, while `Quit` and `daemon stop` are process-lifetime actions that release the OpenTray session socket.
+- Added a daemon regression proving the tray `Quit` path logs `exit=true` and reaches the process-exit sink.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/daemon-logging.test.ts test/unit/tray-host.test.ts --reporter=verbose`
+- `pnpm exec tsc --noEmit --pretty false`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+
+### Residuals
+
+- none
+
+## Milestone 234 — Random WebUI dev port restoration round
+
+Status: complete
+
+### Delivered
+
+- Restored the `pnpm dev` frontend random-port law with `scripts/dev-webui.ts`: it allocates a free local WebUI port first, then starts Vite+ with that concrete port and `--strictPort`.
+- Changed the daemon Vite plugin to derive `PNPM_PUB_DEV_WEBVIEW_URL` from the actual Vite listening address instead of hardcoding `127.0.0.1:5173`.
+- Added `scripts/**/*.ts` to the root TypeScript check so the dev launcher is covered by the normal type gate.
+- Preserved the daemon's independent random local port and proxy boundary.
+
+### Verification
+
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec vitest run test/unit/daemon-logging.test.ts test/unit/tray-host.test.ts --reporter=verbose`
+- Live `pnpm dev` smoke: Vite bound `http://127.0.0.1:49549/`, daemon env carried `PNPM_PUB_DEV_WEBVIEW_URL=http://127.0.0.1:49549/#token=__PNPM_PUB_WEB_TOKEN__`, and HTTP returned 200.
+- Live `pnpm dev` smoke: Vite bound `http://127.0.0.1:50560/`, daemon env carried `PNPM_PUB_DEV_WEBVIEW_URL=http://127.0.0.1:50560/#token=__PNPM_PUB_WEB_TOKEN__`, and HTTP returned 200.
+- `git diff --check`
+
+### Residuals
+
+- pnpm still prints its standard Ctrl-C lifecycle line with exit code 130, but process/port cleanup is clean and no app daemon or OpenTray broker remains.
+
+## Milestone 235 — WebUI boot-loop projection fix round
+
+Status: complete
+
+### Delivered
+
+- Diagnosed the blank WebUI startup as a client-side main-thread loop, not an OpenTray broker or Vite shell failure.
+- Traced the loop to `initWindowVisibility()` subscribing to the `daemon` store while the initial `windowVisibility` was `hidden`.
+- Fixed `setWindowAutoCloseCountdown(null)` so unchanged countdown projections do not write back into the object-valued Svelte store and recursively notify the same subscriber before first render.
+- Preserved the ontology boundary: daemon frames still own `visibility` / `exitRequested`; the WebUI countdown remains a local projection.
+
+### Verification
+
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- Browser smoke on `http://127.0.0.1:56138/active-events`: `agent-browser open` returned, DOM snapshot showed titlebar/sidebar/Events controls, `agent-browser console` showed only Vite connect logs, and `agent-browser errors` returned empty output.
+
+### Residuals
+
+- `agent-browser screenshot` hit `Resource temporarily unavailable (os error 35)` after the DOM/console/error checks passed, so screenshot evidence was not captured in this round.

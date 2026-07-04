@@ -20,6 +20,6 @@
       "@pnpm-pub/shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src/**/*", "vitest.config.ts"],
+  "include": ["src/**/*", "scripts/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "dist", "webui", "webui/**"]
 }

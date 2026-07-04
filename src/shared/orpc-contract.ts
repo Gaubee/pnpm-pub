@@ -281,6 +281,7 @@ export const webRpcContract = {
   },
   tray: {
     setPin: oc.input(z.object({ pinned: z.boolean() })).output(OkResponseSchema),
+    completeAutoClose: oc.output(OkResponseSchema),
     windowHidden: oc.output(OkResponseSchema),
   },
 } as const;

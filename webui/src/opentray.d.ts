@@ -50,12 +50,21 @@ export interface OpentrayWindowOverlay {
   ): void;
 }
 
+/** Page-side native window style patch consumed by this WebUI. */
+export interface OpentrayWindowStylePatch {
+  /** Native window opacity, clamped by the host to the supported 0..1 range. */
+  opacity?: number;
+  /** Host-side permanent keep-on-top style; mirrored here for type parity. */
+  keepOnTop?: boolean;
+}
+
 /**
  * The page-facing native window bridge. `startAppRegionDrag()` hands a
  * pointerdown to the native window manager (overlay chrome drag); `overlay`
  * exposes titlebar geometry so the page can reserve space for OS controls;
  * `resizeTo()` lets the page set the OS window size at runtime (used to give
- * each route its preferred default geometry).
+ * each route its preferred default geometry); `setStyle()` lets the WebUI map
+ * its page-owned animation timeline onto native window style.
  */
 export interface OpentrayWindowBridge {
   readonly overlay?: OpentrayWindowOverlay;
@@ -67,6 +76,8 @@ export interface OpentrayWindowBridge {
   stopAppRegionDrag?(): Promise<{ active: boolean }>;
   /** Resize the OS window (logical CSS pixels). No-op when not in a host. */
   resizeTo?(width: number, height: number): Promise<{ width: number; height: number }>;
+  /** Patch native window style. Used here only for opacity animation. */
+  setStyle?(style: OpentrayWindowStylePatch): Promise<unknown>;
 }
 
 declare global {

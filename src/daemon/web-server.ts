@@ -501,6 +501,10 @@ export class WebServer {
           if (this.trayHost) await this.trayHost.setPin(input.pinned);
           return { ok: true };
         }),
+        completeAutoClose: rpc.tray.completeAutoClose.handler(() => {
+          this.trayHost?.completeAutoClose();
+          return { ok: true };
+        }),
         windowHidden: rpc.tray.windowHidden.handler(() => {
           this.trayHost?.markHidden();
           return { ok: true };
@@ -521,8 +525,7 @@ export class WebServer {
       { type: "workspaces", workspaces: this.deps.store.getWorkspaces() },
     ];
     if (this.trayHost) {
-      const { pinned, countdown } = this.trayHost.getPinState();
-      queue.push({ type: "pin", pinned, countdown });
+      queue.push({ type: "pin", ...this.trayHost.getPinState() });
     }
 
     let wake: (() => void) | null = null;

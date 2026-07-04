@@ -22,7 +22,7 @@
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
     "build": "vp pack",
-    "dev": "cd webui && exec vp dev --host 127.0.0.1 --port 5173 --strictPort",
+    "dev": "tsx scripts/dev-webui.ts",
     "dev:core": "tsx src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
     "dev:publish": "bun run src/cli/cli.ts",

@@ -5,15 +5,15 @@
  *   - tray-click toggles show/hide
  *   - keepOnTop is PERMANENT (always on), independent of the pin
  *   - the "keep open" pin only gates blur auto-hide (default unpinned)
- *   - blur starts a 3→2→1→0 auto-hide countdown (unpinned only)
- *   - focus cancels a pending countdown
- *   - setPin persists the preference + cancels countdown (no style change)
+ *   - blur authorizes page-owned auto-close (unpinned + no active events)
+ *   - focus cancels a pending auto-close intent
+ *   - setPin persists the preference + re-evaluates auto-close
  *   - markHidden (window-hidden WS) keeps toggle() correct after an OS-close
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { TrayHost } from "../../src/daemon/tray-host.js";
-import type { OpentrayTray, OpentrayWindow } from "../../src/daemon/tray-host.js";
+import type { OpentrayTray, OpentrayWindow, TrayPinFrame } from "../../src/daemon/tray-host.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +26,7 @@ import { promises as fsp } from "node:fs";
 function makeWindow(): OpentrayWindow & {
   visible: boolean;
   keepOnTop: boolean;
+  opacity: number;
   fireBlur(): void;
   fireFocus(): void;
 } {
@@ -33,15 +34,19 @@ function makeWindow(): OpentrayWindow & {
   const win = {
     visible: false,
     keepOnTop: false,
+    opacity: 1,
     async show() {
       win.visible = true;
     },
     async hide() {
       win.visible = false;
     },
-    async setStyle(style: { keepOnTop?: boolean }) {
+    async setStyle(style: { keepOnTop?: boolean; opacity?: number }) {
       if (style.keepOnTop !== undefined) {
         win.keepOnTop = style.keepOnTop;
+      }
+      if (style.opacity !== undefined) {
+        win.opacity = style.opacity;
       }
     },
     listen(event: unknown, handler: (payload: unknown) => void) {
@@ -69,6 +74,7 @@ function makeWindow(): OpentrayWindow & {
   return win as unknown as OpentrayWindow & {
     visible: boolean;
     keepOnTop: boolean;
+    opacity: number;
     fireBlur(): void;
     fireFocus(): void;
   };
@@ -159,68 +165,53 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await host.destroy();
   });
 
-  it("blur starts a 3→2→1→0 countdown then hides (unpinned)", async () => {
-    vi.useFakeTimers();
+  it("blur requests page-owned auto-close, then completeAutoClose hides", async () => {
     const store = new DaemonStore();
     await store.load();
     const window = makeWindow();
-    const frames: Array<{ pinned: boolean; countdown: number | null }> = [];
+    const frames: TrayPinFrame[] = [];
     const host = new TrayHost(store, makeTray(), window, {
       title: "pnpm-pub",
-      onPinFrame: (pinned, countdown) => frames.push({ pinned, countdown }),
+      onPinFrame: (frame) => frames.push(frame),
     });
     host.show();
     expect(window.visible).toBe(true);
+    expect(window.opacity).toBe(0);
 
     window.fireBlur();
-    // Immediately shows 3.
-    expect(host.getPinState().countdown).toBe(3);
+    expect(host.getPinState().exitRequested).toBe(true);
+    expect(window.visible).toBe(true);
 
-    vi.advanceTimersByTime(1000);
-    expect(host.getPinState().countdown).toBe(2);
-    vi.advanceTimersByTime(1000);
-    expect(host.getPinState().countdown).toBe(1);
-    vi.advanceTimersByTime(1000);
-    expect(host.getPinState().countdown).toBe(0);
-    expect(window.visible).toBe(true); // 0 still shown; hide on the next tick
-
-    vi.advanceTimersByTime(1000);
+    host.completeAutoClose();
     expect(window.visible).toBe(false);
     expect(host.getVisibility()).toBe("hidden");
-    expect(host.getPinState().countdown).toBe(null);
+    expect(host.getPinState().exitRequested).toBe(false);
 
-    // Frames projected: 3, 2, 1, 0, then null after hide.
-    const projected = frames.map((f) => f.countdown);
-    expect(projected).toContain(3);
-    expect(projected).toContain(0);
-    expect(projected[projected.length - 1]).toBe(null);
+    const projected = frames.map((f) => f.exitRequested);
+    expect(projected).toContain(true);
+    expect(projected[projected.length - 1]).toBe(false);
     await host.destroy();
   });
 
-  it("focus cancels a pending countdown", async () => {
-    vi.useFakeTimers();
+  it("focus cancels a pending auto-close intent", async () => {
     const store = new DaemonStore();
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
     host.show();
     window.fireBlur();
-    expect(host.getPinState().countdown).toBe(3);
-
-    vi.advanceTimersByTime(1000);
-    expect(host.getPinState().countdown).toBe(2);
+    expect(host.getPinState().exitRequested).toBe(true);
 
     window.fireFocus();
-    expect(host.getPinState().countdown).toBe(null);
+    expect(host.getPinState().exitRequested).toBe(false);
 
-    // Advancing time does NOT hide the window (countdown was cancelled).
-    vi.advanceTimersByTime(10_000);
+    // A stale WebUI completion after focus must not hide the window.
+    host.completeAutoClose();
     expect(window.visible).toBe(true);
     await host.destroy();
   });
 
-  it("pinned windows ignore blur (no countdown)", async () => {
-    vi.useFakeTimers();
+  it("pinned windows ignore blur (no auto-close intent)", async () => {
     const store = new DaemonStore();
     await store.load();
     const window = makeWindow();
@@ -230,10 +221,51 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     expect(window.visible).toBe(true);
 
     window.fireBlur();
-    expect(host.getPinState().countdown).toBe(null);
+    expect(host.getPinState().exitRequested).toBe(false);
 
-    vi.advanceTimersByTime(10_000);
+    host.completeAutoClose();
     expect(window.visible).toBe(true);
+    await host.destroy();
+  });
+
+  it("pin changes re-evaluate auto-close while the window is blurred", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
+    host.show();
+    window.fireBlur();
+    expect(host.getPinState().exitRequested).toBe(true);
+
+    await host.setPin(true);
+    expect(host.getPinState().exitRequested).toBe(false);
+
+    await host.setPin(false);
+    expect(host.getPinState().exitRequested).toBe(true);
+    await host.destroy();
+  });
+
+  it("active events open the window and gate blur auto-close", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
+    expect(window.visible).toBe(false);
+
+    const event = store.createEvent({
+      kind: "refresh-token",
+      profile: "alice",
+      payload: { kind: "refresh-token", data: { username: "alice" } },
+    });
+    expect(window.visible).toBe(true);
+    expect(host.getPinState().hasActiveEvents).toBe(true);
+
+    window.fireBlur();
+    expect(host.getPinState().exitRequested).toBe(false);
+
+    store.resolveEvent(event.id, "success");
+    expect(host.getPinState().hasActiveEvents).toBe(false);
+    expect(host.getPinState().exitRequested).toBe(true);
     await host.destroy();
   });
 

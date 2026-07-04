@@ -406,15 +406,16 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("profiles"), default: z.string(), profiles: z.array(ProfileSchema) }),
   z.object({ type: z.literal("workspaces"), workspaces: z.array(WorkspaceEntrySchema) }),
   /**
-   * Pin (keepOnTop) state projection. Sent on connect (initial state) and
-   * whenever the daemon's TrayHost changes it (blur auto-hide countdown ticks,
-   * user toggles the pin, focus cancels a countdown). `countdown` is the live
-   * 3→2→1→0 number while a blur auto-hide is pending, or null when idle.
+   * Tray/window state projection. Sent on connect and whenever TrayHost facts
+   * change. `exitRequested` is the daemon's authorization for the page-owned
+   * opacity timeline; the WebUI derives the visible 5→0 countdown from WAAPI.
    */
   z.object({
     type: z.literal("pin"),
     pinned: z.boolean(),
-    countdown: z.number().int().nonnegative().nullable(),
+    exitRequested: z.boolean(),
+    visibility: z.enum(["hidden", "shown"]),
+    hasActiveEvents: z.boolean(),
   }),
   z.object({
     type: z.literal("packages"),

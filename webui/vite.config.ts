@@ -8,6 +8,7 @@ import { execa, type ResultPromise } from "execa";
 import httpProxy from "http-proxy";
 import http from "node:http";
 import net from "node:net";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 
 // Anchor module resolution at the repo root so `tsx` (a root devDep, not in
@@ -110,9 +111,7 @@ function pnpmPubDaemonDev(): Plugin {
           },
         });
         daemon.on("exit", (code, signal) => {
-          console.error(
-            `[dev] daemon child exit: code=${String(code)} signal=${String(signal)}`,
-          );
+          console.error(`[dev] daemon child exit: code=${String(code)} signal=${String(signal)}`);
           void shutdown(`daemon exited (code=${String(code)} signal=${String(signal)})`);
         });
       };
@@ -137,17 +136,20 @@ function pnpmPubDaemonDev(): Plugin {
         // Install at the FRONT of the connect stack so daemon routes are served
         // before SvelteKit's own middleware can 404 them. `server.middlewares`
         // is a Connect instance whose `.stack` is the ordered layer list.
-        (server.middlewares as unknown as { stack: unknown[] }).stack.unshift(
-          { route: "", handle: handler },
-        );
+        (server.middlewares as unknown as { stack: unknown[] }).stack.unshift({
+          route: "",
+          handle: handler,
+        });
         httpServer.on("upgrade", (req, socket, head) => {
           if (isDaemonRoute(req.url ?? "")) proxy.ws(req, socket, head);
         });
-        // Spawn the daemon IMMEDIATELY (in parallel with Vite's own boot) rather
-        // than waiting for Vite's HTTP server to finish listening. The webui port
-        // is pinned to 5173 (see the `dev` script) so the banner URL is known up
-        // front.
-        spawnDaemon(port, "http://127.0.0.1:5173/#token=__PNPM_PUB_WEB_TOKEN__");
+        // Vite owns the WebUI port (`pnpm dev` passes `--port 0`), so the tray
+        // WebView URL is not knowable until the HTTP server has bound.
+        const startDaemon = (): void => {
+          spawnDaemon(port, webuiUrlFromAddress(httpServer.address()));
+        };
+        if (httpServer.listening) startDaemon();
+        else httpServer.once("listening", startDaemon);
       });
     },
   };
@@ -171,4 +173,24 @@ function allocateRandomPort(): Promise<number> {
       });
     });
   });
+}
+
+function webuiUrlFromAddress(address: ReturnType<http.Server["address"]>): string {
+  if (!isAddressInfo(address)) {
+    throw new Error("Vite dev server did not expose a TCP listening address");
+  }
+  const host = address.address === "::" ? "127.0.0.1" : address.address;
+  const formattedHost = host.includes(":") ? `[${host}]` : host;
+  return `http://${formattedHost}:${address.port}/#token=__PNPM_PUB_WEB_TOKEN__`;
+}
+
+function isAddressInfo(address: ReturnType<http.Server["address"]>): address is AddressInfo {
+  return (
+    typeof address === "object" &&
+    address !== null &&
+    "address" in address &&
+    "port" in address &&
+    typeof address.address === "string" &&
+    typeof address.port === "number"
+  );
 }
