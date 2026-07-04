@@ -59,7 +59,7 @@ export function readWebToken(): string {
 export function avatarUrlFor(username: string): string {
   const token = readWebToken();
   const t = encodeURIComponent(username);
-  return `./api/avatar/${t}.png${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  return `/api/avatar/${t}.png${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 }
 
 function derivePort(): string {
