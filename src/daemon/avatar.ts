@@ -2,11 +2,13 @@
  * Avatar fetch + cache (Chapter 1.3.2 / 4.3).
  *
  * NPM no longer exposes a reliable anonymous `/-/user/<username>` avatar
- * endpoint. The resolver below treats npm registry/user data as the source of
- * identity and only returns an avatar URL when it can be derived from a
- * verified registry profile response or a maintainer email discovered through
- * the registry search API. Initials belong to the UI fallback; they are never
- * persisted as an npm avatar.
+ * endpoint, so resolution is delegated to `safe-npm-sdk`'s `lookupAvatar`,
+ * which walks a best-effort fallback chain (authenticated profile email →
+ * registry user document → maintainer-search email, each verified against a
+ * real Gravatar image) and returns the first hit tagged with its source. This
+ * module owns the two layers the SDK does not: a 24h negative cache (so a
+ * profile with no resolvable avatar doesn't re-probe every boot) and the
+ * PNG fetch + signature validation + on-disk cache that backs the tray icon.
  *
  * The tray icon is the NPM logo composited over the active profile's avatar
  * (Chapter 1.3.2). Compositing is done with the canvas-free approach of
@@ -16,28 +18,19 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createClient, lookupAvatar, type AvatarSource } from "safe-npm-sdk";
 import { avatarCacheDir } from "../shared/paths.js";
-import { readAuthenticatedProfile } from "./npm-profile-client.js";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export type NpmAvatarSource =
-  | "authenticated-profile"
-  | "registry-profile"
-  | "maintainer-gravatar"
-  | "none";
+/** Which link of the {@link lookupAvatar} fallback chain produced the avatar. */
+export type NpmAvatarSource = AvatarSource;
 
 export interface NpmProfileIdentity {
   username: string;
   registry: string;
   avatarUrl: string | null;
   source: NpmAvatarSource;
-}
-
-export interface AuthenticatedProfileProjection {
-  email?: string | null;
-  avatarUrl?: string | null;
 }
 
 /** Resolve the cached avatar file path for a username. */
@@ -76,11 +69,7 @@ function hasRecentNegativeCache(username: string): boolean {
 function writeNegativeCache(username: string): void {
   try {
     fs.mkdirSync(avatarCacheDir(), { recursive: true });
-    fs.writeFileSync(
-      avatarNegativeCachePath(username),
-      JSON.stringify({ at: Date.now() }),
-      "utf8",
-    );
+    fs.writeFileSync(avatarNegativeCachePath(username), JSON.stringify({ at: Date.now() }), "utf8");
   } catch {
     /* best-effort */
   }
@@ -92,20 +81,26 @@ export function hasCachedAvatar(username: string): boolean {
 }
 
 /**
- * Resolve the best currently available npm profile avatar projection.
+ * Resolve the best currently available npm profile avatar projection by
+ * delegating to `safe-npm-sdk`'s `lookupAvatar`.
  *
- * Source order:
- * 1. authenticated npm profile through `npm-profile.get()` when available;
- * 2. registry profile endpoints for registries that still expose `.avatar`;
- * 3. registry search maintainer email -> verified Gravatar URL.
+ * The SDK walks: authenticated profile email → registry `/-/user/{name}` →
+ * maintainer-search email, each verified against a real Gravatar image, and
+ * returns the first hit with an {@link NpmAvatarSource} tag. A total miss
+ * returns `{ avatarUrl: null, source: "none" }` rather than throwing.
+ *
+ * `token` is the profile's npm access token. When provided the SDK takes the
+ * authenticated-profile path (the reliable way npm avatars resolve today);
+ * without it the resolver falls back to the anonymous registry/maintainer
+ * probes, which are slower and often unsuccessful.
  */
 export async function lookupNpmProfileIdentity(
   username: string,
   registry = "https://registry.npmjs.org/",
-  options: { token?: string; profile?: AuthenticatedProfileProjection } = {},
+  options: { token?: string } = {},
 ): Promise<NpmProfileIdentity> {
   const normalizedUsername = username.trim();
-  const normalizedRegistry = normalizeRegistry(registry);
+  const normalizedRegistry = registry.trim().replace(/\/$/, "") || "https://registry.npmjs.org";
   if (!normalizedUsername) {
     return {
       username: normalizedUsername,
@@ -115,109 +110,28 @@ export async function lookupNpmProfileIdentity(
     };
   }
 
-  if (options.profile) {
-    const profileAvatar = normalizeAvatarUrl(options.profile.avatarUrl ?? null);
-    if (profileAvatar) {
-      return {
+  const client = options.token
+    ? createClient({ auth: { token: options.token }, registry: normalizedRegistry })
+    : createClient({ registry: normalizedRegistry });
+
+  // lookupAvatar is best-effort and never throws on a miss (it returns
+  // source:"none"); it only errs when the client can't be resolved, which we
+  // treat as a miss too.
+  const result = await lookupAvatar(normalizedUsername, client);
+  const data = result.ok
+    ? result.data
+    : {
         username: normalizedUsername,
         registry: normalizedRegistry,
-        avatarUrl: profileAvatar,
-        source: "authenticated-profile",
+        avatarUrl: null,
+        source: "none" as const,
       };
-    }
-    const profileGravatar = options.profile.email
-      ? await verifiedGravatarUrl(options.profile.email)
-      : null;
-    if (profileGravatar) {
-      return {
-        username: normalizedUsername,
-        registry: normalizedRegistry,
-        avatarUrl: profileGravatar,
-        source: "authenticated-profile",
-      };
-    }
-  }
-
-  if (options.token) {
-    const identity = await lookupAuthenticatedIdentity(
-      normalizedUsername,
-      normalizedRegistry,
-      options.token,
-    );
-    if (identity) return identity;
-  }
-
-  const registryProfiles = [
-    registryUrl(normalizedRegistry, `/-/user/${encodeURIComponent(normalizedUsername)}`),
-    registryUrl(
-      normalizedRegistry,
-      `/-/user/org.couchdb.user:${encodeURIComponent(normalizedUsername)}`,
-    ),
-  ];
-  for (const url of registryProfiles) {
-    const profile = await fetchJson(url, { headers: { accept: "application/json" } });
-    const avatarUrl = normalizeAvatarUrl(
-      readStringField(profile, "avatar", "avatarUrl", "avatar_url"),
-    );
-    if (avatarUrl) {
-      return {
-        username: normalizedUsername,
-        registry: normalizedRegistry,
-        avatarUrl,
-        source: "registry-profile",
-      };
-    }
-  }
-
-  const email = await lookupMaintainerEmail(normalizedUsername, normalizedRegistry);
-  const avatarUrl = email ? await verifiedGravatarUrl(email) : null;
-  if (avatarUrl) {
-    return {
-      username: normalizedUsername,
-      registry: normalizedRegistry,
-      avatarUrl,
-      source: "maintainer-gravatar",
-    };
-  }
-
   return {
     username: normalizedUsername,
-    registry: normalizedRegistry,
-    avatarUrl: null,
-    source: "none",
+    registry: data.registry ?? normalizedRegistry,
+    avatarUrl: data.avatarUrl,
+    source: data.source,
   };
-}
-
-async function lookupAuthenticatedIdentity(
-  username: string,
-  registry: string,
-  token: string,
-): Promise<NpmProfileIdentity | null> {
-  try {
-    const profile = await readAuthenticatedProfile(token, registry);
-    const profileAvatar = normalizeAvatarUrl(profile.avatarUrl);
-    if (profileAvatar) {
-      return {
-        username,
-        registry,
-        avatarUrl: profileAvatar,
-        source: "authenticated-profile",
-      };
-    }
-    const profileGravatar = profile.email ? await verifiedGravatarUrl(profile.email) : null;
-    if (profileGravatar) {
-      return {
-        username,
-        registry,
-        avatarUrl: profileGravatar,
-        source: "authenticated-profile",
-      };
-    }
-  } catch {
-    // Authenticated profile is a projection source. Token persistence must not
-    // fail only because npm refuses `/-/npm/v1/user` for this token.
-  }
-  return null;
 }
 
 /**
@@ -319,92 +233,4 @@ function isPngBuffer(buf: Buffer): boolean {
     buf.length >= PNG_SIGNATURE.length &&
     buf.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
   );
-}
-
-function normalizeRegistry(registry: string): string {
-  return registry.trim().replace(/\/$/, "") || "https://registry.npmjs.org";
-}
-
-function registryUrl(registry: string, pathname: string): string {
-  return new URL(pathname, `${registry}/`).toString();
-}
-
-async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
-  try {
-    const res = await fetch(url, init);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-function readStringField(value: unknown, ...keys: string[]): string | null {
-  if (!isRecord(value)) return null;
-  for (const key of keys) {
-    const field = value[key];
-    if (typeof field === "string" && field.trim().length > 0) return field.trim();
-  }
-  return null;
-}
-
-function normalizeAvatarUrl(value: string | null): string | null {
-  if (!value) return null;
-  const npmAvatar = value.match(/(?:https:\/\/www\.npmjs\.com)?\/avatar\/([a-f0-9]{32})/i);
-  if (npmAvatar?.[1]) return gravatarUrlFromHash(npmAvatar[1].toLowerCase());
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function lookupMaintainerEmail(username: string, registry: string): Promise<string | null> {
-  const url = registryUrl(
-    registry,
-    `/-/v1/search?text=${encodeURIComponent(`maintainer:${username}`)}&size=5`,
-  );
-  const data = await fetchJson(url, { headers: { accept: "application/json" } });
-  if (!isRecord(data) || !Array.isArray(data.objects)) return null;
-  const lowerUsername = username.toLowerCase();
-  for (const entry of data.objects) {
-    if (!isRecord(entry) || !isRecord(entry.package)) continue;
-    const publisherEmail = readMatchingIdentityEmail(entry.package.publisher, lowerUsername);
-    if (publisherEmail) return publisherEmail;
-    const maintainers = entry.package.maintainers;
-    if (!Array.isArray(maintainers)) continue;
-    for (const maintainer of maintainers) {
-      const email = readMatchingIdentityEmail(maintainer, lowerUsername);
-      if (email) return email;
-    }
-  }
-  return null;
-}
-
-function readMatchingIdentityEmail(value: unknown, lowerUsername: string): string | null {
-  if (!isRecord(value)) return null;
-  const username = readStringField(value, "username");
-  const email = readStringField(value, "email");
-  return username?.toLowerCase() === lowerUsername && email ? email : null;
-}
-
-async function verifiedGravatarUrl(email: string): Promise<string | null> {
-  const url = gravatarUrlFromHash(
-    createHash("md5").update(email.trim().toLowerCase()).digest("hex"),
-  );
-  try {
-    const res = await fetch(url, { method: "HEAD" });
-    return res.ok ? url : null;
-  } catch {
-    return null;
-  }
-}
-
-function gravatarUrlFromHash(hash: string): string {
-  return `https://gravatar.com/avatar/${hash}?s=128&d=404`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
