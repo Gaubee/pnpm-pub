@@ -13,7 +13,7 @@
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { cn } from '$lib/utils.js';
 	import { actions, activeProfile, avatarUrlFor, daemon, openAddProfile, pendingEvents } from '$lib/store.js';
-	import IconEvent from '@lucide/svelte/icons/list-checks';
+	import IconEvent from '@lucide/svelte/icons/list-todo';
 	import IconWorkspaces from '@lucide/svelte/icons/folder-tree';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconChevron from '@lucide/svelte/icons/chevrons-up-down';
@@ -88,11 +88,11 @@
 				<a
 					href={item.href}
 					class={cn(
-						'group flex items-center gap-2.5 rounded-md py-2 text-sm font-medium transition-colors',
+						'group flex items-center gap-2.5 rounded-md py-2 text-sm font-medium transition-all duration-150',
 						collapsed ? 'justify-center px-0' : 'px-3',
 						active
-							? 'bg-accent text-accent-foreground'
-							: 'text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground',
+							? '[backdrop-filter:contrast(2)] text-accent-foreground'
+							: 'text-muted-foreground hover:[backdrop-filter:contrast(1)] hover:text-accent-foreground',
 					)}
 					aria-label={label}
 					title={collapsed ? label : undefined}
@@ -116,7 +116,7 @@
 			{#each pinned as ws (ws.path)}
 				<a
 					href="/workspaces/{btoa(ws.path)}"
-					class="flex items-center gap-2.5 truncate rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-accent-foreground"
+					class="flex items-center gap-2.5 truncate rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-all duration-150 hover:[backdrop-filter:contrast(1)] hover:text-accent-foreground"
 				>
 					<IconWorkspaces class="h-3.5 w-3.5 shrink-0" />
 					<span class="truncate">{ws.path.split('/').pop() ?? ws.path}</span>
@@ -130,10 +130,10 @@
 		<button
 			type="button"
 			onclick={() => (menuOpen = !menuOpen)}
-			class={cn(
-				'flex w-full items-center rounded-md p-2 text-left transition-colors hover:bg-accent/60',
-				collapsed ? 'justify-center' : 'gap-2.5',
-			)}
+				class={cn(
+					'flex w-full items-center rounded-md p-2 text-left transition-all duration-150 hover:[backdrop-filter:contrast(1)]',
+					collapsed ? 'justify-center' : 'gap-2.5',
+				)}
 			aria-label={$_('sidebar.switchProfile')}
 			title={collapsed ? ($activeProfile?.username ?? $_('sidebar.noProfile')) : undefined}
 		>

@@ -176,17 +176,17 @@
 		countdown overlays beside the icon while the page-owned exit animation runs.
 		Anchored to the left safe edge so it clears the macOS traffic lights.
 	-->
-	<Button
-		variant="ghost"
-		size="sm"
-		class="pin-toggle no-drag {counting ? 'counting' : ''}"
-		style="left: {safeLeft + 6}px"
-		onclick={() => actions.setPin(!pinned)}
-		onpointerdown={(e) => e.stopPropagation()}
-		aria-label={pinLabel}
-		aria-pressed={pinned}
-		title={pinLabel}
-	>
+		<Button
+			variant="ghost"
+			size="sm"
+			class="pin-toggle no-drag hover:bg-transparent hover:[backdrop-filter:contrast(1)] dark:hover:bg-transparent {counting ? 'counting' : ''}"
+			style="left: {safeLeft + 6}px"
+			onclick={() => actions.setPin(!pinned)}
+			onpointerdown={(e) => e.stopPropagation()}
+			aria-label={pinLabel}
+			aria-pressed={pinned}
+			title={pinLabel}
+		>
 		{#if pinned}
 			<IconPin class="h-3.5 w-3.5 text-brand" />
 		{:else}
@@ -289,10 +289,10 @@
 		background: transparent;
 		border: none;
 		cursor: pointer;
-		transition: background-color 0.12s ease, color 0.12s ease;
+		transition: backdrop-filter 0.12s ease, color 0.12s ease;
 	}
 	.theme-toggle:hover {
-		background: color-mix(in oklab, var(--accent) 60%, transparent);
+		backdrop-filter: contrast(1);
 		color: var(--accent-foreground);
 	}
 	.theme-toggle:focus-visible {
