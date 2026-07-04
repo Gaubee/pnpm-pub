@@ -5,12 +5,14 @@
  *   pnpm-pub start [--profile]    -> spawn daemon + open tray
  *   pnpm-pub status               -> query daemon status
  *   pnpm-pub stop                 -> graceful shutdown
+ *   pnpm-pub daemon <start|status|stop>
+ *                                   -> namespaced daemon management
  *   pnpm-pub <anything-else>      -> treated as `pnpm publish <args>` (fallback)
  *
  * The fallback is the key UX guarantee: muscle-memory compatibility with
- * `pnpm publish` (Chapter 7.1.2). yargs is used purely to recognise the three
- * explicit management subcommands; EVERYTHING else is forwarded verbatim to
- * the daemon as a publish intent.
+ * `pnpm publish` (Chapter 7.1.2). yargs is used only for coarse parsing; the
+ * explicit management commands are resolved before EVERYTHING else is
+ * forwarded verbatim to the daemon as a publish intent.
  */
 import net from "node:net";
 import { execFile, spawn } from "node:child_process";
@@ -33,6 +35,8 @@ const DAEMON_ENTRY = process.env.PNPM_PUB_DAEMON_ENTRY ?? path.join(__dirname, "
 const CLI_VERSION = readPackageVersion();
 const execFileAsync = promisify(execFile);
 const PROFILE_ERROR = "--profile requires a value (e.g. --profile alice).";
+type CliManagementCommand = "start" | "status" | "stop" | "version";
+type DaemonManagementCommand = Exclude<CliManagementCommand, "version">;
 
 // ---------------------------------------------------------------------------
 // Daemon connection helpers (Chapter 7.2.1 — auto-booting ghost process).
@@ -396,14 +400,54 @@ function toPositionalStrings(value: unknown): string[] {
   return value.map(String);
 }
 
+function resolveManagementCommand(positional: string[]): {
+  command?: CliManagementCommand;
+  error?: string;
+} {
+  const head = positional[0];
+  if (head === "daemon") {
+    return resolveDaemonManagementCommand(positional.slice(1));
+  }
+  if (isCliManagementCommand(head)) return { command: head };
+  return {};
+}
+
+function resolveDaemonManagementCommand(positional: string[]): {
+  command?: DaemonManagementCommand;
+  error?: string;
+} {
+  const command = positional[0];
+  if (!command) {
+    return { error: "daemon requires a command: start, status, or stop." };
+  }
+  if (!isDaemonManagementCommand(command)) {
+    return { error: `unknown daemon command: ${command}. Expected start, status, or stop.` };
+  }
+  const extra = positional.slice(1);
+  if (extra.length > 0) {
+    return {
+      error: `daemon ${command} does not accept positional arguments: ${extra.join(" ")}.`,
+    };
+  }
+  return { command };
+}
+
+function isCliManagementCommand(value: string | undefined): value is CliManagementCommand {
+  return value === "start" || value === "status" || value === "stop" || value === "version";
+}
+
+function isDaemonManagementCommand(value: string | undefined): value is DaemonManagementCommand {
+  return value === "start" || value === "status" || value === "stop";
+}
+
 /** Project a fatal CLI error to stderr without assuming thrown values are Error instances. */
 export function formatCliFatalError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
 
 // ---------------------------------------------------------------------------
-// yargs entry (Chapter 7.1) — three explicit subcommands; everything else is
-// an implicit publish intent (7.1.2).
+// yargs entry (Chapter 7.1) — management commands first; everything else is an
+// implicit publish intent (7.1.2).
 // ---------------------------------------------------------------------------
 
 export async function main(argv: string[]): Promise<void> {
@@ -433,16 +477,21 @@ export async function main(argv: string[]): Promise<void> {
 
   // Explicit subcommand?
   const positional = toPositionalStrings(parsed._);
-  if (positional[0] === "start") {
+  const management = resolveManagementCommand(positional);
+  if (management.error) {
+    process.stderr.write(`${management.error}\n`);
+    process.exit(1);
+  }
+  if (management.command === "start") {
     process.exit(await runStart(parsedProfile.profile));
   }
-  if (positional[0] === "status") {
+  if (management.command === "status") {
     process.exit(await runStatus());
   }
-  if (positional[0] === "stop") {
+  if (management.command === "stop") {
     process.exit(await runStop());
   }
-  if (positional[0] === "version") {
+  if (management.command === "version") {
     // pnpm-pub's own version. Note `pnpm-pub --version` is distinct: it is a
     // publish terminal intent (Chapter 7.1.2) and forwards to `pnpm publish
     // --version` (≡ `pnpm --version`), preserving muscle-memory parity.

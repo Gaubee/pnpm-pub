@@ -18,7 +18,7 @@
 	import RepoIcon from '$lib/components/repo-icon.svelte';
 	import ConfirmAction from '$lib/components/confirm-action.svelte';
 	import type { RepoInfo } from '$lib/components/repo-info-types.js';
-	import { actions, daemon } from '$lib/store.js';
+	import { actions, avatarUrlFor, daemon } from '$lib/store.js';
 	import TarballTree from '$lib/components/tarball-tree.svelte';
 	import RecursiveTargetList from '$lib/components/recursive-target-list.svelte';
 	import AutoCloseBar from '$lib/components/auto-close-bar.svelte';
@@ -429,8 +429,8 @@
 				<!-- Cross-profile event: show whose identity it runs under. -->
 				<div data-slot="button" class="inline-flex h-7 items-center gap-1.5 border border-warning/60 bg-warning/10 px-2 text-[11px] font-medium text-foreground">
 					<Avatar class="h-4 w-4">
-						{#if effectiveProfileRecord?.avatarUrl}
-							<AvatarImage src={effectiveProfileRecord.avatarUrl} alt={effectiveProfileRecord.username} />
+						{#if effectiveProfile}
+							<AvatarImage src={avatarUrlFor(effectiveProfile)} alt={effectiveProfile} />
 						{/if}
 						<AvatarFallback class="text-[8px]">{initials(effectiveProfile)}</AvatarFallback>
 					</Avatar>

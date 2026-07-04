@@ -5634,3 +5634,29 @@ Status: complete
 ### Residuals
 
 - none
+
+## Milestone 231 — CLI daemon namespace stop round
+
+Status: complete
+
+### Delivered
+
+- Reserved `daemon start|status|stop` as a CLI management namespace before fallback publish routing.
+- Fixed `pnpm pub daemon stop` so it sends the daemon stop frame instead of creating a publish intent that requires a profile.
+- Documented the namespaced lifecycle command in README and `spec/07.md`.
+- Rebuilt the local release bundle so `node dist/cli.js daemon stop` reflects the source fix.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/235-cli-daemon-stop-routed-as-publish.md`.
+
+### Verification
+
+- initial failing `pnpm exec vitest run test/unit/cli-stop.test.ts`
+- `pnpm exec vitest run test/unit/cli-stop.test.ts`
+- `pnpm exec vitest run test/unit/cli-stop.test.ts test/unit/cli-start.test.ts test/unit/cli-handshake.test.ts`
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm pub daemon stop`
+- `pnpm pub daemon status`
+
+### Residuals
+
+- none

@@ -215,17 +215,17 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     activeProfileRef = defaultProfile;
     if (defaultProfile) {
       const registry = store.getProfile(defaultProfile)?.registry ?? "https://registry.npmjs.org/";
-      // Pass the profile's npm token so the resolver takes the reliable
-      // authenticated-profile path (email → Gravatar) instead of the slow,
-      // often-unsuccessful anonymous maintainer-search probe. Token read is
-      // best-effort; if the keychain isn't unlocked yet we resolve headless.
+      // Pre-warm the avatar cache (fire-and-forget — never block startup). Uses
+      // getCachedAvatarPath so this shares the in-flight fetch with the WebUI's
+      // /api/avatar route if it races. Passes the profile's npm token for the
+      // reliable authenticated email→Gravatar resolution path.
       void Promise.all([
         import("./avatar.js"),
         getProfileSecrets(defaultProfile)
           .then((s) => s?.npm_token)
           .catch(() => undefined),
-      ]).then(([{ fetchAndCacheAvatar }, token]) =>
-        fetchAndCacheAvatar(defaultProfile, registry, { token }),
+      ]).then(([{ getCachedAvatarPath }, token]) =>
+        getCachedAvatarPath(defaultProfile, registry, { token }),
       );
     }
     const mounted = await tryCreateTray(

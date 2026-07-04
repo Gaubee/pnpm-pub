@@ -144,11 +144,13 @@ pnpm build            # WebUI → dist/webui, daemon+CLI → dist/{daemon,cli}.j
 pnpm release:start    # node dist/cli.js start   (boots the daemon + tray)
 pnpm release:status   # node dist/cli.js status
 pnpm release:stop     # node dist/cli.js stop
+pnpm pub daemon stop  # node dist/cli.js daemon stop
 ```
 
 The distributed binary is `dist/cli.js` (`bin` field); `pnpm-pub <anything>`
 falls back to `pnpm publish <anything>` for muscle-memory compatibility
-(Chapter 7.1.2).
+(Chapter 7.1.2). The `daemon start|status|stop` namespace is reserved for
+daemon lifecycle management and never falls through to publish.
 
 ## Scripts
 
@@ -179,6 +181,7 @@ them directly (no bun, no source transpilation).
 | `pnpm release:status`  | Query the running daemon (`node dist/cli.js status`).                    |
 | `pnpm release:stop`    | Graceful shutdown (`node dist/cli.js stop`).                             |
 | `pnpm release:publish` | Run the built CLI (`node dist/cli.js …`).                                |
+| `pnpm pub daemon stop` | Graceful shutdown through the namespaced daemon command.                 |
 
 ### Testing
 

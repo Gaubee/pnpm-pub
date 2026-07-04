@@ -80,6 +80,32 @@ describe("CLI stop command", () => {
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   });
+
+  it("Scenario: Given a daemon stop command, When the daemon socket opens, Then CLI sends the stop frame without creating a publish intent", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const net = await import("node:net");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
+      throw new ExitCode(code ?? 0);
+    });
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await main(["node", "pnpm-pub", "daemon", "stop"]);
+    } catch {
+      /* ignore exit throw */
+    }
+
+    expect(net.default.createConnection).toHaveBeenCalled();
+    expect(mockState.frames).toEqual([{ command: "stop" }]);
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("Stop signal sent."));
+    expect(stdoutSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Waiting for GUI confirmation"),
+    );
+    exitSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
 });
 
 class ExitCode {

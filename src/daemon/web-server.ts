@@ -53,7 +53,7 @@ import {
   type ProfileSecrets,
 } from "./keychain.js";
 import { exportBundle, importBundle } from "./crypto.js";
-import { lookupNpmProfileIdentity } from "./avatar.js";
+import { getCachedAvatarPath, lookupNpmProfileIdentity } from "./avatar.js";
 import { recordTokenCreatedAt } from "./auto-renew.js";
 import {
   listTrustedPublishers,
@@ -206,6 +206,52 @@ export class WebServer {
 
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = (req.url ?? "/").split("?")[0]!;
+
+    // Cached avatar image. Serves the daemon-side PNG cache so the WebUI never
+    // hits the npm/gravatar network directly. Authenticated like the rest of
+    // the API. If the cache is cold, this awaits (or triggers) the in-flight
+    // fetch; on a permanent not-found it 404s (the SPA falls back to initials).
+    const avatarMatch = url.match(/^\/api\/avatar\/([^/]+)\.png$/);
+    if (avatarMatch) {
+      // <img src> can't set Authorization headers, so accept the WebToken as a
+      // ?token= query param (same mechanism the WS upgrade uses).
+      const q = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+      const queryToken = q.get("token") ?? "";
+      const headerToken = (req.headers["authorization"] ?? "").startsWith("Bearer ")
+        ? (req.headers["authorization"] as string).slice(7)
+        : "";
+      if (queryToken !== this.deps.webToken && headerToken !== this.deps.webToken) {
+        res.writeHead(401);
+        res.end("Unauthorized");
+        return;
+      }
+      const username = decodeURIComponent(avatarMatch[1]!);
+      const registry =
+        this.deps.store.getProfile(username)?.registry ?? "https://registry.npmjs.org/";
+      // Saved profile → pass its token so the resolver takes the reliable
+      // authenticated email→Gravatar path (anonymous lookup usually fails).
+      const token = await getProfileSecrets(username)
+        .then((s) => s?.npm_token)
+        .catch(() => undefined);
+      const file = await getCachedAvatarPath(username, registry, { token });
+      if (!file || !existsSync(file)) {
+        res.writeHead(404);
+        res.end("Not found");
+        return;
+      }
+      try {
+        const data = await fsp.readFile(file);
+        res.writeHead(200, {
+          "content-type": "image/png",
+          "cache-control": "no-cache",
+        });
+        res.end(data);
+      } catch {
+        res.writeHead(404);
+        res.end("Not found");
+      }
+      return;
+    }
 
     if (url.startsWith("/api/")) {
       return json(res, 404, { ok: false, error: "The WebUI API is served over /ws/rpc." });

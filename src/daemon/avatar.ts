@@ -234,3 +234,40 @@ function isPngBuffer(buf: Buffer): boolean {
     buf.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
   );
 }
+
+/**
+ * In-flight avatar fetches keyed by username, so concurrent requests for the
+ * same avatar (e.g. the HTTP route + the startup pre-fetch) share a single
+ * network probe instead of racing. Resolved promises are cleared on settle.
+ */
+const inflight = new Map<string, Promise<string | null>>();
+
+/**
+ * Get the cached avatar path for a username, waiting for (or triggering) the
+ * fetch if the cache is cold. This is the entry point the WebUI avatar route
+ * uses: it never re-probes the network if a fetch is already running, and it
+ * returns the local PNG path once available (or null if the lookup failed and
+ * is within the negative-cache TTL).
+ *
+ * `token` is forwarded to the resolver so saved profiles take the reliable
+ * authenticated email→Gravatar path.
+ */
+export async function getCachedAvatarPath(
+  username: string,
+  registry = "https://registry.npmjs.org/",
+  options: { token?: string } = {},
+): Promise<string | null> {
+  // Hot cache: a PNG is already on disk.
+  if (isCachedAvatarPng(avatarCachePath(username))) return avatarCachePath(username);
+  // Negative cache: a recent lookup already failed — don't re-probe.
+  if (hasRecentNegativeCache(username)) return null;
+  // Coalesce with any in-flight fetch for this username.
+  let p = inflight.get(username);
+  if (!p) {
+    p = fetchAndCacheAvatar(username, registry, options).finally(() => {
+      inflight.delete(username);
+    });
+    inflight.set(username, p);
+  }
+  return p;
+}

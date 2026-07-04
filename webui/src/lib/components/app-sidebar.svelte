@@ -12,7 +12,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
 	import { cn } from '$lib/utils.js';
-	import { actions, activeProfile, daemon, openAddProfile, pendingEvents } from '$lib/store.js';
+	import { actions, activeProfile, avatarUrlFor, daemon, openAddProfile, pendingEvents } from '$lib/store.js';
 	import IconEvent from '@lucide/svelte/icons/list-checks';
 	import IconWorkspaces from '@lucide/svelte/icons/folder-tree';
 	import IconPlus from '@lucide/svelte/icons/plus';
@@ -138,10 +138,11 @@
 			title={collapsed ? ($activeProfile?.username ?? $_('sidebar.noProfile')) : undefined}
 		>
 			<Avatar>
-				{#if $activeProfile?.avatarUrl}
-					<AvatarImage src={$activeProfile.avatarUrl} alt={$activeProfile.username} />
-				{:else}
+				{#if $activeProfile?.username}
+					<AvatarImage src={avatarUrlFor($activeProfile.username)} alt={$activeProfile.username} />
 					<AvatarFallback>{$activeProfile ? initials($activeProfile.username) : '??'}</AvatarFallback>
+				{:else}
+					<AvatarFallback>{'??'}</AvatarFallback>
 				{/if}
 			</Avatar>
 			{#if !collapsed}

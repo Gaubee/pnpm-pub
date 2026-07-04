@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
-	import { actions, daemon, closeAddProfile, getRpcClient } from '$lib/store.js';
+	import { actions, avatarUrlFor, daemon, closeAddProfile, getRpcClient } from '$lib/store.js';
 	import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -357,11 +357,8 @@
 		<header class="flex items-start justify-between gap-4">
 			<div class="flex min-w-0 items-center gap-3">
 				<Avatar class="size-12 border border-border">
-					{#if profile.avatarUrl}
-						<AvatarImage src={profile.avatarUrl} alt={profile.username} />
-					{:else}
-						<AvatarFallback>{initials(profile.username)}</AvatarFallback>
-					{/if}
+					<AvatarImage src={avatarUrlFor(profile.username)} alt={profile.username} />
+					<AvatarFallback>{initials(profile.username)}</AvatarFallback>
 				</Avatar>
 				<div class="min-w-0">
 					<h1 class="flex flex-wrap items-center gap-2 text-lg font-semibold tracking-tight">

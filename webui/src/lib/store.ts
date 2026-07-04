@@ -49,6 +49,19 @@ export function readWebToken(): string {
   return sessionStorage.getItem(SESSION_TOKEN_KEY) ?? "";
 }
 
+/**
+ * The avatar URL for a saved profile, served from the daemon's PNG cache via
+ * `/api/avatar/:username.png`. The daemon resolves/caches the npm avatar on its
+ * side; the WebUI never hits the npm/gravatar network directly. The WebToken is
+ * appended as `?token=` because <img src> can't set Authorization headers. The
+ * route waits for (or triggers) the in-flight fetch if the cache is cold.
+ */
+export function avatarUrlFor(username: string): string {
+  const token = readWebToken();
+  const t = encodeURIComponent(username);
+  return `./api/avatar/${t}.png${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+}
+
 function derivePort(): string {
   if (!browser) return "0";
   // The daemon serves on a random port; opentray loads /#token=... on whatever
