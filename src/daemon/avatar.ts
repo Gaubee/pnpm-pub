@@ -38,6 +38,50 @@ export function avatarCachePath(username: string): string {
   return path.join(avatarCacheDir(), `${username}.png`);
 }
 
+/** Image types we accept for the cache + their file extension + content-type. */
+const ACCEPTED_IMAGE_TYPES = {
+  png: { ext: ".png", contentType: "image/png" },
+  jpeg: { ext: ".jpg", contentType: "image/jpeg" },
+  webp: { ext: ".webp", contentType: "image/webp" },
+  gif: { ext: ".gif", contentType: "image/gif" },
+} as const;
+type AcceptedImage = (typeof ACCEPTED_IMAGE_TYPES)[keyof typeof ACCEPTED_IMAGE_TYPES];
+
+/** Sniff the image type from a buffer's magic bytes (no content-type needed). */
+function sniffImage(buf: Buffer): AcceptedImage | null {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return ACCEPTED_IMAGE_TYPES.png;
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return ACCEPTED_IMAGE_TYPES.jpeg;
+  }
+  if (buf.length >= 12 && buf.subarray(0, 4).toString("ascii") === "RIFF" && buf.subarray(8, 12).toString("ascii") === "WEBP") {
+    return ACCEPTED_IMAGE_TYPES.webp;
+  }
+  if (buf.length >= 6 && (buf.subarray(0, 6).toString("ascii") === "GIF87a" || buf.subarray(0, 6).toString("ascii") === "GIF89a")) {
+    return ACCEPTED_IMAGE_TYPES.gif;
+  }
+  return null;
+}
+
+/** All extensions we might have cached a username's avatar under. */
+const CACHE_EXTENSIONS = Object.values(ACCEPTED_IMAGE_TYPES).map((t) => t.ext);
+
+/**
+ * Find an existing cached avatar file for a username (any accepted image type).
+ * Returns the path + its content-type, or null.
+ */
+export function findCachedAvatar(username: string): { path: string; contentType: string } | null {
+  for (const ext of CACHE_EXTENSIONS) {
+    const file = path.join(avatarCacheDir(), `${username}${ext}`);
+    if (fs.existsSync(file) && fs.statSync(file).size > 0) {
+      const matched = Object.values(ACCEPTED_IMAGE_TYPES).find((t) => t.ext === ext);
+      if (matched) return { path: file, contentType: matched.contentType };
+    }
+  }
+  return null;
+}
+
 /**
  * Resolve the "not found" marker path for a username. A failed avatar lookup
  * (no resolvable avatar, network error, non-image response) writes a small JSON
@@ -75,9 +119,9 @@ function writeNegativeCache(username: string): void {
   }
 }
 
-/** Is a cached avatar present on disk? */
+/** Is a cached avatar present on disk (any accepted image type)? */
 export function hasCachedAvatar(username: string): boolean {
-  return isCachedAvatarPng(avatarCachePath(username));
+  return findCachedAvatar(username) !== null;
 }
 
 /**
@@ -134,10 +178,22 @@ export async function lookupNpmProfileIdentity(
   };
 }
 
+/** A cached avatar's on-disk location + the content-type to serve it as. */
+export interface CachedAvatar {
+  path: string;
+  contentType: string;
+}
+
 /**
- * Fetch a profile's avatar from NPM and cache it. Returns the local path on
- * success, or null when the avatar can't be resolved (network failure, missing
- * user, non-image content). Errors are swallowed — avatars are cosmetic.
+ * Fetch a profile's avatar from NPM and cache it. Returns the local path +
+ * content-type on success, or null when the avatar can't be resolved (network
+ * failure, missing user, non-image content). Errors are swallowed — avatars are
+ * cosmetic.
+ *
+ * Accepts PNG/JPEG/WebP/GIF (npm/gravatar commonly serve JPEG, not just PNG);
+ * the file is stored with the matching extension and the HTTP route serves it
+ * with the correct content-type. (The opentray tray icon needs RGBA PNG and
+ * only uses PNG cache entries — see trayIconForProfile.)
  *
  * `token` is the profile's npm access token. When provided the resolver takes
  * the authenticated-profile path (email → Gravatar), which is the reliable way
@@ -150,14 +206,10 @@ export async function fetchAndCacheAvatar(
   username: string,
   registry = "https://registry.npmjs.org/",
   options: { token?: string } = {},
-): Promise<string | null> {
-  // Fast path: serve a cached avatar PNG.
-  const cached = avatarCachePath(username);
-  try {
-    if (isCachedAvatarPng(cached)) return cached;
-  } catch {
-    /* ignore */
-  }
+): Promise<CachedAvatar | null> {
+  // Fast path: serve an existing cached avatar (any accepted image type).
+  const existing = findCachedAvatar(username);
+  if (existing) return existing;
   // Fast path: a recent lookup already failed — skip the slow network probe
   // until the negative-cache TTL expires.
   if (hasRecentNegativeCache(username)) return null;
@@ -175,13 +227,15 @@ export async function fetchAndCacheAvatar(
       return null;
     }
     const buf = Buffer.from(await imgRes.arrayBuffer());
-    if (!isPngBuffer(buf)) {
+    const imgType = sniffImage(buf);
+    if (!imgType) {
       writeNegativeCache(username);
       return null;
     }
     fs.mkdirSync(avatarCacheDir(), { recursive: true });
-    fs.writeFileSync(cached, buf);
-    return cached;
+    const file = path.join(avatarCacheDir(), `${username}${imgType.ext}`);
+    fs.writeFileSync(file, buf);
+    return { path: file, contentType: imgType.contentType };
   } catch {
     // Network errors are transient — don't poison the negative cache for them,
     // but they're still swallowed (avatars are cosmetic).
@@ -204,10 +258,11 @@ export async function fetchAndCacheAvatar(
  * overlay is produced here.
  */
 export function trayIconForProfile(username: string | undefined): string | null {
-  if (!username || !hasCachedAvatar(username)) return null;
-  // The cached avatar IS a real PNG (fetched from NPM), so it satisfies the
-  // opentray rgba requirement for the native tray icon.
-  return avatarCachePath(username);
+  // opentray's native tray icon requires RGBA PNG. Only a PNG-format cached
+  // avatar qualifies; JPEG/WebP/GIF avatars fall back to the platform npm mark.
+  if (!username) return null;
+  const pngPath = avatarCachePath(username);
+  return isCachedAvatarPng(pngPath) ? pngPath : null;
 }
 
 function isCachedAvatarPng(file: string): boolean {
@@ -240,14 +295,14 @@ function isPngBuffer(buf: Buffer): boolean {
  * same avatar (e.g. the HTTP route + the startup pre-fetch) share a single
  * network probe instead of racing. Resolved promises are cleared on settle.
  */
-const inflight = new Map<string, Promise<string | null>>();
+const inflight = new Map<string, Promise<CachedAvatar | null>>();
 
 /**
- * Get the cached avatar path for a username, waiting for (or triggering) the
- * fetch if the cache is cold. This is the entry point the WebUI avatar route
- * uses: it never re-probes the network if a fetch is already running, and it
- * returns the local PNG path once available (or null if the lookup failed and
- * is within the negative-cache TTL).
+ * Get the cached avatar for a username, waiting for (or triggering) the fetch
+ * if the cache is cold. This is the entry point the WebUI avatar route uses: it
+ * never re-probes the network if a fetch is already running, and it returns the
+ * local path + content-type once available (or null if the lookup failed and is
+ * within the negative-cache TTL).
  *
  * `token` is forwarded to the resolver so saved profiles take the reliable
  * authenticated email→Gravatar path.
@@ -256,9 +311,10 @@ export async function getCachedAvatarPath(
   username: string,
   registry = "https://registry.npmjs.org/",
   options: { token?: string } = {},
-): Promise<string | null> {
-  // Hot cache: a PNG is already on disk.
-  if (isCachedAvatarPng(avatarCachePath(username))) return avatarCachePath(username);
+): Promise<CachedAvatar | null> {
+  // Hot cache: an avatar of any accepted type is already on disk.
+  const existing = findCachedAvatar(username);
+  if (existing) return existing;
   // Negative cache: a recent lookup already failed — don't re-probe.
   if (hasRecentNegativeCache(username)) return null;
   // Coalesce with any in-flight fetch for this username.

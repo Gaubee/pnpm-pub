@@ -233,16 +233,16 @@ export class WebServer {
       const token = await getProfileSecrets(username)
         .then((s) => s?.npm_token)
         .catch(() => undefined);
-      const file = await getCachedAvatarPath(username, registry, { token });
-      if (!file || !existsSync(file)) {
+      const cached = await getCachedAvatarPath(username, registry, { token });
+      if (!cached || !existsSync(cached.path)) {
         res.writeHead(404);
         res.end("Not found");
         return;
       }
       try {
-        const data = await fsp.readFile(file);
+        const data = await fsp.readFile(cached.path);
         res.writeHead(200, {
-          "content-type": "image/png",
+          "content-type": cached.contentType,
           "cache-control": "no-cache",
         });
         res.end(data);
