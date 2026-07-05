@@ -44,6 +44,7 @@
     import type { Snippet } from "svelte";
     import type { RepoInfo } from "$lib/components/repo-info-types.js";
     import { actions, daemon } from "$lib/store.js";
+    import { isMemberInheriting } from "$lib/trusted-publishing.js";
     import EventCardHeader from "$lib/components/event-card-header.svelte";
     import EventCardBody from "$lib/components/event-card-body.svelte";
     import EventCardFooter from "$lib/components/event-card-footer.svelte";
@@ -402,24 +403,28 @@
     }
 
     function retry(): void {
-        // Re-create the event with the SAME payload + SAME groupId so it folds
-        // into the same group in the Events Hub.
+        // Re-create the event with the SAME payload. If the original was part
+        // of a group, mint a FRESH groupId for the retry — reusing the original
+        // would fold the retried event back into the OLD (failed) group,
+        // doubling the task list and leaving the original failure visible
+        // alongside the new pending retry. A standalone retry stays standalone.
+        const retryGroupId = event.groupId ? crypto.randomUUID() : undefined;
         if (publishData) {
-            actions.createEvent("publish", publishData, event.groupId);
+            actions.createEvent("publish", publishData, retryGroupId);
         } else if (recursiveCtx) {
             actions.createEvent(
                 "recursive-publish",
                 recursiveCtx,
-                event.groupId,
+                retryGroupId,
             );
         } else if (configureTrustCtx) {
             actions.createEvent(
                 "configure-trust",
                 configureTrustCtx,
-                event.groupId,
+                retryGroupId,
             );
         } else if (unpublishCtx) {
-            actions.createEvent("unpublish", unpublishCtx, event.groupId);
+            actions.createEvent("unpublish", unpublishCtx, retryGroupId);
         }
     }
 
@@ -507,11 +512,29 @@
             publishBranchValue !== currentBranch,
     );
     const branchNoCurrent = $derived(publishBranchOn && !currentBranch);
+    /** For a configure-trust member of a group, "ready" depends on inheritance:
+     *  - inherit member: ready when the GROUP DEFAULT config exists (the member
+     *    itself carries no config; it resolves to the group default at confirm).
+     *  - custom member (or standalone): ready when its own config is present
+     *    (either carried on the payload, or the inline form's draft is valid).
+     *  Without this, an inherit member's confirm button stays disabled even
+     *  after the group default form is filled — because the member's own
+     *  `configureTrustCtx.config` is empty and no inline form runs for it. */
+    const inheritsGroupDefault = $derived(
+        !!event.groupId &&
+            !!configureTrustCtx &&
+            configureTrustCtx.action !== "remove" &&
+            isMemberInheriting(event, $daemon.groupInheritMembers),
+    );
+    const groupDefaultPresent = $derived(
+        event.groupId ? !!$daemon.groupTrustDefaults[event.groupId] : false,
+    );
     const trustedPublishingReady = $derived(
         !configureTrustCtx ||
             configureTrustCtx.action === "remove" ||
-            !!configureTrustCtx.config ||
-            trustedPublishingDraftValid,
+            (inheritsGroupDefault
+                ? groupDefaultPresent
+                : !!configureTrustCtx.config || trustedPublishingDraftValid),
     );
     const canConfirm = $derived(
         isPending && !branchMismatch && trustedPublishingReady,

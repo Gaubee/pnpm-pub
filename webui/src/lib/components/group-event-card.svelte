@@ -51,6 +51,8 @@
     import IconReset from "@lucide/svelte/icons/refresh-ccw";
     import IconChevronRight from "@lucide/svelte/icons/chevron-right";
     import IconClock from "@lucide/svelte/icons/clock";
+    import IconAlertTriangle from "@lucide/svelte/icons/triangle-alert";
+    import IconBadgeInfo from "@lucide/svelte/icons/badge-info";
     import { _ } from "svelte-i18n";
     import { untrack } from "svelte";
     import { fade } from "svelte/transition";
@@ -193,33 +195,37 @@
         }
     }
 
-    /** Re-create a pending event for `member` with the same payload + same
-     *  groupId, so the new event folds back into this group in the Events Hub.
-     *  Mirrors EventCard.retry() but parameterized over a single member. */
-    function recreateMember(member: PubEvent): void {
+    /** Re-create a pending event for `member` with the same payload, folding
+     *  it into `targetGroupId`. Retry/reset MUST pass a FRESH groupId — reusing
+     *  the member's original groupId would fold the retried events back into
+     *  the OLD (failed) group, doubling the task list and leaving the original
+     *  failures visible alongside the new pending retries. A new groupId means
+     *  the retry is its own GroupEvent; the old group stays in history. */
+    function recreateMember(member: PubEvent, targetGroupId: string): void {
         const payload = member.payload;
         if (!payload) return;
-        actions.createEvent(payload.kind, payload.data, member.groupId);
+        actions.createEvent(payload.kind, payload.data, targetGroupId);
     }
-    /** Retry every failed/rejected member in this group — full fan-out, no
-     *  skipping. Each member is recreated as a fresh pending event sharing the
-     *  group's groupId. */
+    /** Retry every failed/rejected member in this group. All retries share ONE
+     *  freshly-minted groupId so they form a single new GroupEvent. */
     function retryAll(): void {
         if (batchRunning) return;
         batchRunning = true;
         try {
-            for (const e of retryableMembers) recreateMember(e);
+            const retryGroupId = crypto.randomUUID();
+            for (const e of retryableMembers) recreateMember(e, retryGroupId);
         } finally {
             batchRunning = false;
         }
     }
-    /** Reset every succeeded member — re-run the same operation by recreating
-     *  each as a fresh pending event (e.g. re-configure trust, re-publish). */
+    /** Reset every succeeded member — re-run the same operation under a fresh
+     *  groupId so the re-runs form their own new GroupEvent. */
     function resetAll(): void {
         if (batchRunning) return;
         batchRunning = true;
         try {
-            for (const e of succeededMembers) recreateMember(e);
+            const resetGroupId = crypto.randomUUID();
+            for (const e of succeededMembers) recreateMember(e, resetGroupId);
         } finally {
             batchRunning = false;
         }
@@ -298,6 +304,36 @@
     );
     /** Resolved = no pending members (drives autoClose countdown visibility). */
     const isResolved = $derived(!hasPending);
+
+    /** Group-level result log. Once the group has resolved, surface the latest
+     *  member's `result` (the representative outcome) as an expandable log row —
+     *  the same pattern EventCardBody uses — so a failed batch shows its error
+     *  on the group card itself, not only after drilling into each member. */
+    let logExpanded = $state(false);
+    const groupResult = $derived(isResolved ? group.latest.result : undefined);
+    const groupIsError = $derived(
+        group.latest.status === "failed" ||
+            group.latest.status === "expired" ||
+            group.latest.status === "rejected",
+    );
+    const groupIsSuccess = $derived(group.latest.status === "success");
+    const groupResultFirstLine = $derived(
+        (groupResult?.split(/\r?\n/)[0] ?? "").trim(),
+    );
+    const groupResultAccent = $derived(
+        groupIsError
+            ? "text-destructive"
+            : groupIsSuccess
+              ? "text-success"
+              : "text-muted-foreground",
+    );
+    const groupResultBorder = $derived(
+        groupIsError
+            ? "border-destructive/40"
+            : groupIsSuccess
+              ? "border-success/30"
+              : "border-border",
+    );
 </script>
 
 <Card
@@ -443,6 +479,52 @@
                 </ul>
             {/if}
         </div>
+
+        {#if groupResult}
+            <!-- Group-level result log (resolved groups only). Surfaces the
+                 latest member's outcome so a failed batch shows its error on
+                 the card itself — click to expand the full text. -->
+            <div class="rounded-md border {groupResultBorder}">
+                <button
+                    type="button"
+                    class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {groupResultAccent}"
+                    onclick={() => (logExpanded = !logExpanded)}
+                    aria-expanded={logExpanded}
+                >
+                    <IconChevronRight
+                        class="h-3 w-3 shrink-0 transition-transform {logExpanded
+                            ? 'rotate-90'
+                            : ''}"
+                    />
+                    {#if groupIsError}
+                        <IconAlertTriangle
+                            class="h-3 w-3 shrink-0 text-destructive"
+                        />
+                    {:else if groupIsSuccess}
+                        <IconBadgeInfo class="h-3 w-3 shrink-0 text-success" />
+                    {:else}
+                        <IconAlertTriangle
+                            class="h-3 w-3 shrink-0 text-muted-foreground"
+                        />
+                    {/if}
+                    <span class="shrink-0 font-medium"
+                        >{groupIsError
+                            ? $_("eventCard.errorLog")
+                            : $_("eventCard.log")}:</span
+                    >
+                    {#if !logExpanded}
+                        <span class="truncate font-mono">{groupResultFirstLine}</span>
+                    {/if}
+                </button>
+                {#if logExpanded}
+                    <div
+                        class="max-h-48 overflow-auto border-t {groupResultBorder} px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {groupResultAccent}"
+                    >
+                        {groupResult}
+                    </div>
+                {/if}
+            </div>
+        {/if}
 
         <!-- Actions: confirm/reject (pending surface) + retry/reset (resolved).
 		     Each row only renders when it has at least one eligible member. -->
