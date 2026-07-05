@@ -427,6 +427,19 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello"), webTokenRequired: z.literal(true) }),
   z.object({ type: z.literal("events"), events: z.array(PubEventSchema) }),
   z.object({ type: z.literal("event"), event: PubEventSchema }),
+  /**
+   * Trusted-publishing group draft state. Single lightweight frame per change
+   * (NOT a per-member echo) — carries the group's shared default config and the
+   * explicit set of member ids that inherit it. Sent on connect (once per
+   * pending group) and whenever the default form edits the group draft or a
+   * member's inherit/custom flag flips.
+   */
+  z.object({
+    type: z.literal("group-trust-draft"),
+    groupId: z.string(),
+    defaultConfig: TrustedPublisherCreateConfigSchema.optional(),
+    inheritMembers: z.array(z.string()),
+  }),
   z.object({ type: z.literal("profiles"), default: z.string(), profiles: z.array(ProfileSchema) }),
   z.object({ type: z.literal("workspaces"), workspaces: z.array(WorkspaceEntrySchema) }),
   /**

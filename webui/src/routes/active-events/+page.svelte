@@ -13,7 +13,7 @@
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
-	import { pendingEvents } from '$lib/store.js';
+	import { pendingEvents, visibleEvents } from '$lib/store.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
 	import { groupEvents, type EventGroup } from '$lib/group-event.js';
@@ -86,8 +86,33 @@
 	// Pending events + held (recently-resolved) events, newest-first, then
 	// collapsed by groupId into EventGroups. Standalone events (no groupId)
 	// form single-member groups (isGroup === false) rendered as plain EventCards.
+	//
+	// GROUP COMPLETENESS: if a group has even ONE pending member, the WHOLE
+	// group is shown — including its resolved (success/failed/…) members — so
+	// the user sees the batch's full state (e.g. 3 pending + 2 already-succeeded
+	// in the same configure-trust run). We pull resolved siblings from
+	// $daemon.events by groupId; events with no groupId (standalone) only
+	// surface here when pending or held.
 	const surfaceGroups = $derived.by((): EventGroup[] => {
-		const merged = [...$pendingEvents, ...held.values()];
+		const seeds = [...$pendingEvents, ...held.values()];
+		// Collect every groupId that has a pending/held seed.
+		const activeGroupIds = new Set<string>();
+		for (const e of seeds) {
+			if (e.groupId) activeGroupIds.add(e.groupId);
+		}
+		// Pull in ALL members of those active groups (resolved siblings too)
+		// from the profile-filtered visible set, so cross-profile siblings
+		// don't leak into this surface.
+		const merged: PubEvent[] = [];
+		for (const e of $visibleEvents) {
+			if (e.groupId && activeGroupIds.has(e.groupId)) {
+				merged.push(e);
+			}
+		}
+		// Add back the standalone (no groupId) seeds that aren't group members.
+		for (const e of seeds) {
+			if (!e.groupId) merged.push(e);
+		}
 		merged.sort((a, b) => b.createdAt - a.createdAt);
 		return groupEvents(merged);
 	});
@@ -108,9 +133,13 @@
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	});
 
-	// Preview-history: the latest few events, fetched from the daemon via oRPC.
-	const PREVIEW_COUNT = 5;
-	let previewEvents = $state<PubEvent[]>([]);
+	// Preview-history: the latest few GROUPS, fetched from the daemon via oRPC.
+	// We over-fetch raw events because a single group may contribute many rows
+	// (e.g. a 10-package batch = 10 events but only ONE "recent activity").
+	// After grouping on the client we keep the first PREVIEW_GROUP_COUNT groups.
+	const PREVIEW_GROUP_COUNT = 5;
+	const PREVIEW_FETCH_LIMIT = 50;
+	let previewGroups = $state<EventGroup[]>([]);
 	let previewLoading = $state(true);
 
 	async function fetchPreview(): Promise<void> {
@@ -119,13 +148,16 @@
 			const json = await getRpcClient()?.events.query({
 				scope: 'history',
 				page: 0,
-				limit: PREVIEW_COUNT,
+				limit: PREVIEW_FETCH_LIMIT,
 				q: '',
 			});
 			if (!json) throw new Error('events unavailable');
-			previewEvents = json.rows;
+			// rows are newest-first from the daemon; groupEvents preserves that
+			// order and buckets by groupId ?? event.id. Trim to the target
+			// group count so a single huge batch doesn't crowd out other activity.
+			previewGroups = groupEvents(json.rows).slice(0, PREVIEW_GROUP_COUNT);
 		} catch {
-			previewEvents = [];
+			previewGroups = [];
 		} finally {
 			previewLoading = false;
 		}
@@ -216,6 +248,8 @@
 					<GroupEventCard
 						group={g}
 						surface="pending"
+						autoClose={g.events.some((e) => held.has(e.id))}
+						onAutoClose={() => { for (const e of g.events) if (held.has(e.id)) dismiss(e.id); }}
 					/>
 				{:else}
 					<EventCard
@@ -252,7 +286,7 @@
 					</div>
 				{/each}
 			</div>
-		{:else if previewEvents.length === 0}
+		{:else if previewGroups.length === 0}
 			<div class="rounded-xl border border-dashed border-border p-10 text-center">
 				<p class="text-sm text-muted-foreground">{$_('events.noEvents')}</p>
 				<p class="mt-1 text-xs text-muted-foreground/70">
@@ -260,9 +294,13 @@
 				</p>
 			</div>
 		{:else}
-			{#each previewEvents as event, i (event.id)}
+			{#each previewGroups as g, i (g.id)}
 				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
-				<EventCard {event} />
+				{#if g.isGroup}
+					<GroupEventCard group={g} surface="history" />
+				{:else}
+					<EventCard event={g.latest} />
+				{/if}
 				</div>
 			{/each}
 		{/if}

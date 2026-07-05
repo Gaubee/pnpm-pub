@@ -265,6 +265,12 @@ export type WsServerMessage =
   | { type: "hello"; webTokenRequired: true }
   | { type: "events"; events: PubEvent[] }
   | { type: "event"; event: PubEvent }
+  | {
+      type: "group-trust-draft";
+      groupId: string;
+      defaultConfig?: TrustedPublisherCreateConfig;
+      inheritMembers: string[];
+    }
   | { type: "profiles"; default: string; profiles: Profile[] }
   | { type: "workspaces"; workspaces: WorkspaceEntry[] }
   | {

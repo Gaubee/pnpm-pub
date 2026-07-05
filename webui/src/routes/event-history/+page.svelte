@@ -23,7 +23,6 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { Spinner } from '$lib/components/ui/spinner/index.js';
-	import IconChevronDown from '@lucide/svelte/icons/chevron-down';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconChevronLeft from '@lucide/svelte/icons/chevron-left';
 	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -37,7 +36,6 @@
 	let groups = $state<EventGroup[]>([]);
 	let total = $state(0);
 	let loading = $state(true);
-	let expandedGroups = $state<Set<string>>(new Set());
 	// Timestamp of the newest event the user has seen; events newer than this
 	// (arriving via WS) count as unread.
 	let lastSeenCreatedAt = $state(0);
@@ -70,13 +68,6 @@
 		} finally {
 			loading = false;
 		}
-	}
-
-	function toggleGroup(id: string): void {
-		const next = new Set(expandedGroups);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		expandedGroups = next;
 	}
 
 	function jumpToTop(): void {
@@ -186,33 +177,11 @@
 			<div class="space-y-2.5">
 			{#each groups as group, i (group.id)}
 				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
-					{#if group.collapsed && !expandedGroups.has(group.id)}
-					<div class="space-y-1">
+					{#if group.isGroup}
+						<GroupEventCard group={group} surface="history" />
+					{:else}
 						<EventCard event={group.latest} variant="compact" />
-						<button
-							type="button"
-							class="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-							onclick={() => toggleGroup(group.id)}
-						>
-							<IconChevronDown class="h-3 w-3" />
-							{$_('eventCard.groupMore', { values: { n: group.events.length - 1 } })}
-						</button>
-					</div>
-				{:else}
-					{#if group.collapsed}
-						<button
-							type="button"
-							class="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-							onclick={() => toggleGroup(group.id)}
-						>
-							<IconChevronDown class="h-3 w-3 rotate-180" />
-							{$_('eventCard.collapse')}
-						</button>
 					{/if}
-					{#each group.events as event (event.id)}
-						<EventCard {event} variant="compact" />
-					{/each}
-				{/if}
 				</div>
 			{/each}
 		</div>

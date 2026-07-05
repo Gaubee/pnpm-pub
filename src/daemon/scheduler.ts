@@ -2134,10 +2134,18 @@ export class PublishScheduler {
     token: string,
     totpSecret: string,
     registry: string,
-  ): Promise<{ ok: true; message: string; mutated: boolean } | { ok: false; message: string; mutated: boolean }> {
+  ): Promise<
+    | { ok: true; message: string; mutated: boolean }
+    | { ok: false; message: string; mutated: boolean }
+  > {
     if (ctx.action === "remove") {
       const id = ctx.target.currentConfig?.id;
-      if (!id) return { ok: false, message: "Trusted publisher id is required for removal.", mutated: false };
+      if (!id)
+        return {
+          ok: false,
+          message: "Trusted publisher id is required for removal.",
+          mutated: false,
+        };
       const result = await removeTrustedPublisher(
         { registry, token, totpSecret },
         ctx.target.name,
@@ -2203,7 +2211,10 @@ export class PublishScheduler {
     registry: string,
   ): Promise<void> {
     if (event.payload?.kind !== "configure-trust") return;
-    const ctx = event.payload.data;
+    // Resolve the effective config: inherit members get the group default,
+    // custom members get their own. Falls back to the raw payload data when no
+    // resolution applies (standalone events, remove actions).
+    const ctx = this.store.resolveConfigureTrustConfig(event);
     client.log("stdout", `configuring trusted publishing for ${ctx.target.name}...\n`);
     try {
       const result = await this.applyConfigureTrust(ctx, token, totpSecret, registry);

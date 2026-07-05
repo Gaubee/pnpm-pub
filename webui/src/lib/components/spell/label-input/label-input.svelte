@@ -74,6 +74,15 @@
 		...restProps
 	}: Props = $props();
 
+	// The floating label is positioned via the `peer-placeholder-shown:`
+	// pseudo-class, which ONLY matches when the input has a non-empty
+	// placeholder attribute AND the input value is empty. A literal empty
+	// placeholder (`""`) makes the pseudo-class never match, so the label
+	// stays "floated up" even on an empty input. Fall back to a single space
+	// so the mechanism works; it's already visually hidden by
+	// `placeholder:opacity-0` on the input.
+	const effectivePlaceholder = $derived(placeholder || ' ');
+
 	let isVisible = $state(false);
 	let isPasswordType = $derived(type === "password");
 	let inputType = $derived(isPasswordType ? (isVisible ? "text" : "password") : type);
@@ -93,7 +102,7 @@
 			inputClassName,
 			"placeholder:opacity-0 placeholder:transition-opacity focus:placeholder:opacity-100 focus:placeholder:delay-100 focus:placeholder:duration-200"
 		)}
-		{placeholder}
+		placeholder={effectivePlaceholder}
 		type={inputType}
 		{disabled}
 		{id}

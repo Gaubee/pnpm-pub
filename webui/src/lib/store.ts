@@ -91,6 +91,18 @@ export interface DaemonState {
   /** Staged confirmation token for a risky-workspace add (Chapter 5.3.2). */
   riskyConfirmationToken: string | null;
   /**
+   * Trusted-publishing group inheritance state (Chapter 6.2.5). Single source
+   * of truth lives in the daemon; these are projections kept in sync via the
+   * lightweight `group-trust-draft` frame (one frame per change — NOT a
+   * per-member echo). The group DEFAULT form edits only `groupTrustDefaults`;
+   * members never receive a copied config, which is what keeps editing cheap
+   * (no N×echo / no 100% CPU loop). `groupInheritMembers` is the EXPLICIT
+   * marker of which members inherit the default — config presence is NOT used
+   * to infer it.
+   */
+  groupTrustDefaults: Record<string, TrustedPublisherCreateConfig>;
+  groupInheritMembers: Record<string, string[]>;
+  /**
    * App-wide preferences (Chapter 6.4) — single read source. The keep-open pin
    * and any future preference field live here. `pinned` below is a convenience
    * projection of `preferences.keepOnTop` so existing consumers don't change.
@@ -124,6 +136,8 @@ function createState(): DaemonState {
     scannedRoot: null,
     isPnpmWorkspace: false,
     riskyConfirmationToken: null,
+    groupTrustDefaults: {},
+    groupInheritMembers: {},
     preferences: { keepOnTop: false, values: {} },
     pinned: false,
     exitRequested: false,
@@ -325,6 +339,23 @@ function handleServerMessage(msg: WsServerMessage): void {
         return { ...s, events: sortEvents([msg.event, ...others]) };
       });
       break;
+    case "group-trust-draft": {
+      // Lightweight single-frame update — does NOT touch `events`, so member
+      // rows don't get re-sorted/re-rendered on every keystroke of the default
+      // form. We replace ONLY this group's default + inherit set.
+      const { groupId, defaultConfig, inheritMembers } = msg;
+      daemon.update((s) => ({
+        ...s,
+        groupTrustDefaults:
+          defaultConfig === undefined
+            ? Object.fromEntries(
+                Object.entries(s.groupTrustDefaults).filter(([k]) => k !== groupId),
+              )
+            : { ...s.groupTrustDefaults, [groupId]: defaultConfig },
+        groupInheritMembers: { ...s.groupInheritMembers, [groupId]: inheritMembers },
+      }));
+      break;
+    }
     case "packages":
       daemon.update((s) => ({
         ...s,
@@ -447,6 +478,13 @@ export const actions = {
   },
   updateConfigureTrustGroupDraft(groupId: string, config: TrustedPublisherCreateConfig): void {
     void rpc?.events.updateConfigureTrustGroupDraft({ groupId, config }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
+  },
+  /** Toggle a group configure-trust member between inherit and custom. The
+   *  inheritance flag is the single source of truth (daemon-side). */
+  setMemberInherit(eventId: string, inherit: boolean): void {
+    void rpc?.events.setMemberInherit({ eventId, inherit }).then((res) => {
       if (!res.ok && res.error) pushToast("error", res.error);
     });
   },

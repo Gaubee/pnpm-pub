@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { LabelInput } from '$lib/components/spell/label-input/index.js';
@@ -10,6 +11,8 @@
 		permissionsFromBooleans,
 		providerFromHint,
 		splitRepositoryHint,
+		TRUSTED_PUBLISHING_FIELDS,
+		type TrustedPublishingFieldKey,
 	} from '$lib/trusted-publishing.js';
 	import { _ } from 'svelte-i18n';
 	import type {
@@ -44,33 +47,45 @@
 		{ value: 'gitlab', labelKey: 'trustedPublishing.providerGitlab' },
 	];
 
+	// Field metadata lives in $lib/trusted-publishing.ts so the read-only view
+	// (TrustedPublishingReadonly) and this form stay in sync.
+	const PROVIDER_FIELDS = TRUSTED_PUBLISHING_FIELDS;
+
 	let provider = $state<TrustedPublisherType>('github');
-	let repoOwner = $state('');
-	let repoName = $state('');
-	let workflowFile = $state('');
-	let ciFilePath = $state('');
-	let orgId = $state('');
-	let circleProjectId = $state('');
-	let pipelineDefinitionId = $state('');
-	let contextIds = $state('');
-	let vcsOrigin = $state('');
-	let environment = $state('');
+	// A single reactive object so `bind:value={values[field.key]}` works in the
+	// generic grid renderer (Svelte 5 deep reactivity).
+	let values = $state<Record<TrustedPublishingFieldKey, string>>({
+		repoOwner: '',
+		repoName: '',
+		workflowFile: '',
+		ciFilePath: '',
+		environment: '',
+		orgId: '',
+		circleProjectId: '',
+		pipelineDefinitionId: '',
+		contextIds: '',
+		vcsOrigin: '',
+	});
 	let allowPublish = $state(true);
 	let allowStagePublish = $state(true);
 	let initializedKey = '';
 	let sentKey = '';
 
+	const providerFields = $derived(PROVIDER_FIELDS[provider]);
+
 	function reset(): void {
-		repoOwner = '';
-		repoName = '';
-		workflowFile = '';
-		ciFilePath = '';
-		orgId = '';
-		circleProjectId = '';
-		pipelineDefinitionId = '';
-		contextIds = '';
-		vcsOrigin = '';
-		environment = '';
+		values = {
+			repoOwner: '',
+			repoName: '',
+			workflowFile: '',
+			ciFilePath: '',
+			environment: '',
+			orgId: '',
+			circleProjectId: '',
+			pipelineDefinitionId: '',
+			contextIds: '',
+			vcsOrigin: '',
+		};
 		allowPublish = true;
 		allowStagePublish = true;
 	}
@@ -83,22 +98,22 @@
 		allowStagePublish = permissions.allowStagePublish;
 		if (source.type === 'github') {
 			const [owner, ...rest] = source.claims.repository.split('/');
-			repoOwner = owner ?? '';
-			repoName = rest.join('/');
-			workflowFile = source.claims.workflow_ref.file;
-			environment = source.claims.environment ?? '';
+			values.repoOwner = owner ?? '';
+			values.repoName = rest.join('/');
+			values.workflowFile = source.claims.workflow_ref.file;
+			values.environment = source.claims.environment ?? '';
 		} else if (source.type === 'gitlab') {
 			const [owner, ...rest] = source.claims.project_path.split('/');
-			repoOwner = owner ?? '';
-			repoName = rest.join('/');
-			ciFilePath = source.claims.ci_config_ref_uri ?? '';
-			environment = source.claims.environment ?? '';
+			values.repoOwner = owner ?? '';
+			values.repoName = rest.join('/');
+			values.ciFilePath = source.claims.ci_config_ref_uri ?? '';
+			values.environment = source.claims.environment ?? '';
 		} else {
-			orgId = source.claims['oidc.circleci.com/org-id'];
-			circleProjectId = source.claims['oidc.circleci.com/project-id'];
-			pipelineDefinitionId = source.claims['oidc.circleci.com/pipeline-definition-id'];
-			contextIds = (source.claims['oidc.circleci.com/context-ids'] ?? []).join(', ');
-			vcsOrigin = source.claims['oidc.circleci.com/vcs-origin'];
+			values.orgId = source.claims['oidc.circleci.com/org-id'];
+			values.circleProjectId = source.claims['oidc.circleci.com/project-id'];
+			values.pipelineDefinitionId = source.claims['oidc.circleci.com/pipeline-definition-id'];
+			values.contextIds = (source.claims['oidc.circleci.com/context-ids'] ?? []).join(', ');
+			values.vcsOrigin = source.claims['oidc.circleci.com/vcs-origin'];
 		}
 	}
 
@@ -106,13 +121,23 @@
 		reset();
 		provider = providerFromHint(repositoryHint);
 		const repo = splitRepositoryHint(repositoryHint);
-		repoOwner = repo.owner;
-		repoName = repo.name;
-		if (provider === 'gitlab') ciFilePath = '.gitlab-ci.yml';
+		values.repoOwner = repo.owner;
+		values.repoName = repo.name;
+		if (provider === 'gitlab') values.ciFilePath = '.gitlab-ci.yml';
 	}
 
+	// Re-init (which resets the fields) ONLY when the form's IDENTITY changes —
+	// NOT every time the seeded `config` content changes. Including config in
+	// the key re-introduced an echo→reset loop: a custom member's edit sends an
+	// `updateConfigureTrustDraft`, the daemon echoes the updated member event,
+	// `config` changes, the init effect re-runs `reset()`, and the user's
+	// in-flight edit is wiped (and re-sent → echo → loop). The form seeds from
+	// `config`/`currentConfig` ONCE per identity; after that the user owns the
+	// fields. Identity = `groupId` for the group path (stable across re-sorts),
+	// else `eventId`.
 	$effect(() => {
-		const key = `${eventId}:${JSON.stringify(config ?? currentConfig ?? null)}:${repositoryHint}`;
+		const identity = groupId ?? eventId;
+		const key = `${identity}:${repositoryHint}`;
 		if (initializedKey === key) return;
 		initializedKey = key;
 		sentKey = '';
@@ -124,35 +149,35 @@
 	const builtConfig = $derived.by((): TrustedPublisherCreateConfig | null => {
 		const permissions = permissionsFromBooleans(allowPublish, allowStagePublish);
 		if (permissions.length === 0) return null;
-		const env = environment.trim() || undefined;
+		const env = values.environment.trim() || undefined;
 		if (provider === 'github') {
-			if (!repoOwner.trim() || !repoName.trim() || !workflowFile.trim()) return null;
+			if (!values.repoOwner.trim() || !values.repoName.trim() || !values.workflowFile.trim()) return null;
 			return {
 				type: 'github',
 				permissions,
 				claims: {
-					repository: `${repoOwner.trim()}/${repoName.trim()}`,
-					workflow_ref: { file: workflowFile.trim() },
+					repository: `${values.repoOwner.trim()}/${values.repoName.trim()}`,
+					workflow_ref: { file: values.workflowFile.trim() },
 					...(env ? { environment: env } : {}),
 				},
 			};
 		}
 		if (provider === 'gitlab') {
-			if (!repoOwner.trim() || !repoName.trim()) return null;
+			if (!values.repoOwner.trim() || !values.repoName.trim()) return null;
 			return {
 				type: 'gitlab',
 				permissions,
 				claims: {
-					project_path: `${repoOwner.trim()}/${repoName.trim()}`,
-					...(ciFilePath.trim() ? { ci_config_ref_uri: ciFilePath.trim() } : {}),
+					project_path: `${values.repoOwner.trim()}/${values.repoName.trim()}`,
+					...(values.ciFilePath.trim() ? { ci_config_ref_uri: values.ciFilePath.trim() } : {}),
 					...(env ? { environment: env } : {}),
 				},
 			};
 		}
-		if (!orgId.trim() || !circleProjectId.trim() || !pipelineDefinitionId.trim() || !vcsOrigin.trim()) {
+		if (!values.orgId.trim() || !values.circleProjectId.trim() || !values.pipelineDefinitionId.trim() || !values.vcsOrigin.trim()) {
 			return null;
 		}
-		const contexts = contextIds
+		const contexts = values.contextIds
 			.split(',')
 			.map((value) => value.trim())
 			.filter(Boolean);
@@ -160,11 +185,11 @@
 			type: 'circleci',
 			permissions,
 			claims: {
-				'oidc.circleci.com/org-id': orgId.trim(),
-				'oidc.circleci.com/project-id': circleProjectId.trim(),
-				'oidc.circleci.com/pipeline-definition-id': pipelineDefinitionId.trim(),
+				'oidc.circleci.com/org-id': values.orgId.trim(),
+				'oidc.circleci.com/project-id': values.circleProjectId.trim(),
+				'oidc.circleci.com/pipeline-definition-id': values.pipelineDefinitionId.trim(),
 				...(contexts.length ? { 'oidc.circleci.com/context-ids': contexts } : {}),
-				'oidc.circleci.com/vcs-origin': vcsOrigin.trim(),
+				'oidc.circleci.com/vcs-origin': values.vcsOrigin.trim(),
 			},
 		};
 	});
@@ -180,8 +205,8 @@
 	});
 </script>
 
-<div class="flex flex-col gap-3 rounded-md border border-border bg-muted/20 p-3">
-	<div class="flex flex-wrap gap-1">
+<div class="@container flex flex-col gap-3 rounded-md border border-border bg-muted/20 p-3">
+	<ButtonGroup>
 		{#each providers as item (item.value)}
 			<Button
 				type="button"
@@ -193,107 +218,62 @@
 				{$_(item.labelKey)}
 			</Button>
 		{/each}
+	</ButtonGroup>
+
+	<!--
+		Field grid — container-query responsive (NOT viewport). The form lives
+		inside variable-width hosts (EventCard body, GroupEventCard, dialog),
+		so it must react to its OWN width:
+		  - < 28rem: 1 column   (narrow phone / tight dialog)
+		  - ≥ 28rem: 2 columns  (default card width)
+		  - ≥ 44rem: 4 columns  (wide dialog / full page; rarely reached)
+	-->
+	<div class="grid grid-cols-1 gap-3 @[28rem]:grid-cols-2 @[44rem]:grid-cols-4">
+		{#each providerFields as field (field.id)}
+			{@const placeholder = field.placeholderKey ? $_(field.placeholderKey) : (field.placeholder ?? '')}
+			<div class="flex flex-col gap-1">
+				{#if mode === 'compact'}
+					<!-- Compact: floating-label input (no separate label/help line). -->
+					<LabelInput
+						id={`${eventId}-${field.id}`}
+						label={$_(field.labelKey)}
+						bind:value={values[field.key]}
+						{placeholder}
+						{disabled}
+						spellcheck="false"
+					/>
+				{:else}
+					<!-- Full: explicit label + input + optional help description. -->
+					<Label for={`${eventId}-${field.id}`}>{$_(field.labelKey)}</Label>
+					<Input
+						id={`${eventId}-${field.id}`}
+						bind:value={values[field.key]}
+						{placeholder}
+						{disabled}
+						spellcheck="false"
+					/>
+					{#if field.helpKey}
+						<p class="text-[10px] leading-snug text-muted-foreground/70">{$_(field.helpKey)}</p>
+					{/if}
+				{/if}
+			</div>
+		{/each}
 	</div>
-
-	{#if mode === 'compact'}
-		{#if provider === 'github'}
-			<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-				<LabelInput id={`${eventId}-compact-owner`} label={$_('trustedPublishing.repositoryOwner')} bind:value={repoOwner} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-repo`} label={$_('trustedPublishing.repositoryName')} bind:value={repoName} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-workflow`} label={$_('trustedPublishing.workflowFilename')} bind:value={workflowFile} placeholder={$_('trustedPublishing.workflowFilePlaceholder')} disabled={disabled} spellcheck="false" />
-			</div>
-		{:else if provider === 'gitlab'}
-			<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-				<LabelInput id={`${eventId}-compact-namespace`} label={$_('trustedPublishing.namespace')} bind:value={repoOwner} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-project`} label={$_('trustedPublishing.projectName')} bind:value={repoName} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-ci`} label={$_('trustedPublishing.ciFilePath')} bind:value={ciFilePath} placeholder={$_('trustedPublishing.ciFilePathPlaceholder')} disabled={disabled} spellcheck="false" />
-			</div>
-		{:else}
-			<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-				<LabelInput id={`${eventId}-compact-org`} label={$_('trustedPublishing.orgId')} bind:value={orgId} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-project-id`} label={$_('trustedPublishing.projectId')} bind:value={circleProjectId} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-pipeline`} label={$_('trustedPublishing.pipelineDefinitionId')} bind:value={pipelineDefinitionId} disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-vcs`} label={$_('trustedPublishing.vcsOrigin')} bind:value={vcsOrigin} placeholder="github.com/owner/repo" disabled={disabled} spellcheck="false" />
-				<LabelInput id={`${eventId}-compact-contexts`} label={$_('trustedPublishing.contextIds')} bind:value={contextIds} placeholder={$_('trustedPublishing.contextIdsPlaceholder')} disabled={disabled} spellcheck="false" />
-			</div>
-		{/if}
-
-		{#if provider === 'github' || provider === 'gitlab'}
-			<LabelInput id={`${eventId}-compact-environment`} label={$_('trustedPublishing.environment')} bind:value={environment} placeholder="release" disabled={disabled} spellcheck="false" />
-		{/if}
-	{:else if provider === 'github'}
-		<div class="flex items-end gap-2">
-			<div class="flex-1">
-				<Label for={`${eventId}-owner`}>{$_('trustedPublishing.repositoryOwner')}</Label>
-				<Input id={`${eventId}-owner`} bind:value={repoOwner} disabled={disabled} spellcheck="false" />
-			</div>
-			<span class="pb-2 text-muted-foreground">/</span>
-			<div class="flex-1">
-				<Label for={`${eventId}-repo`}>{$_('trustedPublishing.repositoryName')}</Label>
-				<Input id={`${eventId}-repo`} bind:value={repoName} disabled={disabled} spellcheck="false" />
-			</div>
-		</div>
-		<div>
-			<Label for={`${eventId}-workflow`}>{$_('trustedPublishing.workflowFilename')}</Label>
-			<Input id={`${eventId}-workflow`} bind:value={workflowFile} placeholder={$_('trustedPublishing.workflowFilePlaceholder')} disabled={disabled} spellcheck="false" />
-		</div>
-	{:else if provider === 'gitlab'}
-		<div class="flex items-end gap-2">
-			<div class="flex-1">
-				<Label for={`${eventId}-namespace`}>{$_('trustedPublishing.namespace')}</Label>
-				<Input id={`${eventId}-namespace`} bind:value={repoOwner} disabled={disabled} spellcheck="false" />
-			</div>
-			<span class="pb-2 text-muted-foreground">/</span>
-			<div class="flex-1">
-				<Label for={`${eventId}-project`}>{$_('trustedPublishing.projectName')}</Label>
-				<Input id={`${eventId}-project`} bind:value={repoName} disabled={disabled} spellcheck="false" />
-			</div>
-		</div>
-		<div>
-			<Label for={`${eventId}-ci`}>{$_('trustedPublishing.ciFilePath')}</Label>
-			<Input id={`${eventId}-ci`} bind:value={ciFilePath} placeholder={$_('trustedPublishing.ciFilePathPlaceholder')} disabled={disabled} spellcheck="false" />
-		</div>
-	{:else}
-		<div>
-			<Label for={`${eventId}-org`}>{$_('trustedPublishing.orgId')}</Label>
-			<Input id={`${eventId}-org`} bind:value={orgId} disabled={disabled} spellcheck="false" />
-		</div>
-		<div>
-			<Label for={`${eventId}-project-id`}>{$_('trustedPublishing.projectId')}</Label>
-			<Input id={`${eventId}-project-id`} bind:value={circleProjectId} disabled={disabled} spellcheck="false" />
-		</div>
-		<div>
-			<Label for={`${eventId}-pipeline`}>{$_('trustedPublishing.pipelineDefinitionId')}</Label>
-			<Input id={`${eventId}-pipeline`} bind:value={pipelineDefinitionId} disabled={disabled} spellcheck="false" />
-		</div>
-		<div>
-			<Label for={`${eventId}-vcs`}>{$_('trustedPublishing.vcsOrigin')}</Label>
-			<Input id={`${eventId}-vcs`} bind:value={vcsOrigin} placeholder="github.com/owner/repo" disabled={disabled} spellcheck="false" />
-		</div>
-		<div>
-			<Label for={`${eventId}-contexts`}>{$_('trustedPublishing.contextIds')}</Label>
-			<Input id={`${eventId}-contexts`} bind:value={contextIds} placeholder={$_('trustedPublishing.contextIdsPlaceholder')} disabled={disabled} spellcheck="false" />
-		</div>
-	{/if}
-
-	{#if provider === 'github' || provider === 'gitlab'}
-		<div>
-			<Label for={`${eventId}-environment`}>{$_('trustedPublishing.environment')}</Label>
-			<Input id={`${eventId}-environment`} bind:value={environment} placeholder="release" disabled={disabled} spellcheck="false" />
-		</div>
-	{/if}
 
 	<div class="flex flex-col gap-2 rounded-md border border-border p-3 text-xs">
 		<label class="flex items-center justify-between gap-3" for={`${eventId}-allow-publish`}>
 			<span>{$_('trustedPublishing.allowPublish')}</span>
 			<Switch id={`${eventId}-allow-publish`} bind:checked={allowPublish} disabled={disabled} />
 		</label>
+		{#if mode === 'full'}
+			<p class="text-[10px] leading-snug text-muted-foreground/70">{$_('trustedPublishing.allowPublishHelp')}</p>
+		{/if}
 		<label class="flex items-center justify-between gap-3" for={`${eventId}-allow-stage`}>
 			<span>{$_('trustedPublishing.allowStagePublish')}</span>
 			<Switch id={`${eventId}-allow-stage`} bind:checked={allowStagePublish} disabled={disabled} />
 		</label>
-		{#if !valid}
-			<p class="text-[11px] text-destructive">{$_('trustedPublishing.formIncomplete')}</p>
+		{#if mode === 'full'}
+			<p class="text-[10px] leading-snug text-muted-foreground/70">{$_('trustedPublishing.allowStagePublishHelp')}</p>
 		{/if}
 	</div>
 </div>

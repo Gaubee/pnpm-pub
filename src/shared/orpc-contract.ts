@@ -260,6 +260,17 @@ export const webRpcContract = {
         }),
       )
       .output(OkResponseSchema),
+    /** Toggle a group configure-trust member between inherit (uses the group
+     *  default config) and custom (carries its own). The inheritance flag is
+     *  the single source of truth — config presence does NOT imply custom. */
+    setMemberInherit: oc
+      .input(
+        z.object({
+          eventId: z.string().min(1),
+          inherit: z.boolean(),
+        }),
+      )
+      .output(OkResponseSchema),
     create: oc
       .input(
         z.object({
@@ -325,9 +336,7 @@ export const webRpcContract = {
    * re-evaluating auto-close eligibility.
    */
   preferences: {
-    set: oc
-      .input(z.object({ patch: PreferencesSchema.partial() }))
-      .output(OkResponseSchema),
+    set: oc.input(z.object({ patch: PreferencesSchema.partial() })).output(OkResponseSchema),
   },
 } as const;
 

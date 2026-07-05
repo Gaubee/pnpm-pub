@@ -58,16 +58,16 @@ export function deriveGroupKind(events: PubEvent[]): GroupKind {
 export function aggregateGroupStatus(events: PubEvent[]): EventStatus {
   if (events.length === 0) return "success";
   let hasPending = false;
-  let hasSuccess = false;
   let firstNonSuccess: EventStatus | null = null;
   for (const e of events) {
     if (e.status === "pending") hasPending = true;
-    else if (e.status === "success") hasSuccess = true;
-    else if (firstNonSuccess === null) firstNonSuccess = e.status;
+    else if (e.status !== "success" && firstNonSuccess === null) firstNonSuccess = e.status;
   }
   if (hasPending) return "pending";
   if (firstNonSuccess) return firstNonSuccess;
-  return hasSuccess ? "success" : "success";
+  // No pending, no failed/expired/rejected ⇒ every member is success (the
+  // empty case was handled above).
+  return "success";
 }
 
 /**

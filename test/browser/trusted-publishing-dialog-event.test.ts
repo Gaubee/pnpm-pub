@@ -170,8 +170,11 @@ async function readDialogState(): Promise<DialogState> {
     `(() => {
 			const dialog = document.querySelector('[data-slot="dialog-content"]');
 			const text = dialog?.textContent || '';
-			return JSON.stringify({
-				currentVisible: text.includes('myorg/myrepo') || text.includes('GitHub'),
+				return JSON.stringify({
+					// The current config renders as a multiline TrustedPublishingReadonly
+					// (Label: Value rows) inside this dialog. The owner/repo appear as
+					// separate field values, so match them independently.
+					currentVisible: (text.includes('myorg') && text.includes('myrepo')) || text.includes('GitHub'),
         hasCurrentTab: text.includes('Current'),
         hasOidcTab: text.includes('OIDC'),
 				hasUpdate: text.includes('Update'),

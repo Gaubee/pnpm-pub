@@ -18,6 +18,7 @@
 	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import TrustedPublishingStatus from '$lib/components/trusted-publishing-status.svelte';
 	import { createTrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
+	import { trustedPublisherSummary } from '$lib/trusted-publishing.js';
 	import type { NpmPackage, TrustedPublisherConfig } from '$lib/types.js';
 	import { goto } from '$app/navigation';
 	import { flip } from 'svelte/animate';
@@ -196,14 +197,9 @@
 		if (status === 'none') return $_('trustedPublishing.notConfigured');
 		const cfg = trustedPublishing.configs(name)[0];
 		if (!cfg) return $_('trustedPublishing.notConfigured');
-		const repo =
-			cfg.type === 'github'
-				? cfg.claims.repository
-				: cfg.type === 'gitlab'
-					? cfg.claims.project_path
-					: cfg.claims['oidc.circleci.com/vcs-origin'];
-		const env = cfg.type === 'github' || cfg.type === 'gitlab' ? cfg.claims.environment : undefined;
-		return [cfg.type, repo, env].filter(Boolean).join(' · ');
+		// Unified with the rest of the app (incl. GitLab ci_config_ref_uri,
+		// which the previous hand-rolled join omitted).
+		return trustedPublisherSummary(cfg);
 	}
 
 	function gotoDetail(pkg: NpmPackage): void {

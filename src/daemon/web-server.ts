@@ -172,6 +172,7 @@ export class WebServer {
     this.rpcHandler = new RPCHandler(this.createRpcRouter());
     // Relay store events to every authed WebUI client.
     this.deps.store.on("event", (msg) => this.broadcast(msg));
+    this.deps.store.on("group-trust-draft", (msg) => this.broadcast(msg));
     this.deps.store.on("profiles", (msg) => this.broadcast(msg));
     this.deps.store.on("workspaces", (msg) => this.broadcast(msg));
     this.deps.store.on("preferences", (preferences) =>
@@ -444,25 +445,27 @@ export class WebServer {
           const updated = this.deps.store.updateEventArgs(input.id, input.args);
           return updated ? { ok: true } : { ok: false, error: "No such pending event." };
         }),
-        updateConfigureTrustDraft: rpc.events.updateConfigureTrustDraft.handler(
-          ({ input }) => {
-            const updated = this.deps.store.updateConfigureTrustDraft(input.id, input.config);
-            return updated
-              ? { ok: true }
-              : { ok: false, error: "No pending configure-trust event." };
-          },
-        ),
+        updateConfigureTrustDraft: rpc.events.updateConfigureTrustDraft.handler(({ input }) => {
+          const updated = this.deps.store.updateConfigureTrustDraft(input.id, input.config);
+          return updated ? { ok: true } : { ok: false, error: "No pending configure-trust event." };
+        }),
         updateConfigureTrustGroupDraft: rpc.events.updateConfigureTrustGroupDraft.handler(
           ({ input }) => {
-            const updated = this.deps.store.updateConfigureTrustGroupDraft(
+            const memberIds = this.deps.store.updateConfigureTrustGroupDraft(
               input.groupId,
               input.config,
             );
-            return updated.length > 0
+            return memberIds.length > 0
               ? { ok: true }
               : { ok: false, error: "No pending configure-trust events in this group." };
           },
         ),
+        setMemberInherit: rpc.events.setMemberInherit.handler(({ input }) => {
+          const groupId = this.deps.store.setMemberInherit(input.eventId, input.inherit);
+          return groupId
+            ? { ok: true }
+            : { ok: false, error: "No pending configure-trust group member found." };
+        }),
         create: rpc.events.create.handler(async ({ input }) => ({
           messages: await this.collectMessages((send) =>
             this.createProactiveEvent(input.kind, input.payload, send, input.groupId),
@@ -512,7 +515,11 @@ export class WebServer {
           return result;
         }),
         writeWorkflow: rpc.setupOidc.writeWorkflow.handler(async ({ input }) => {
-          const result = await writePublishWorkflow(input.packagePath, input.config, input.force ?? false);
+          const result = await writePublishWorkflow(
+            input.packagePath,
+            input.config,
+            input.force ?? false,
+          );
           return result;
         }),
       },
@@ -543,6 +550,16 @@ export class WebServer {
     const queue: WsServerMessage[] = [
       { type: "hello", webTokenRequired: true },
       { type: "events", events: this.deps.store.getEvents() },
+      // One group-trust-draft frame per pending group, so a WebUI refresh
+      // recovers the group default config + inherit flags (Chapter 6.2.5).
+      ...this.deps.store.getAllGroupTrustDrafts().map(
+        (d): WsServerMessage => ({
+          type: "group-trust-draft",
+          groupId: d.groupId,
+          defaultConfig: d.defaultConfig,
+          inheritMembers: d.inheritMembers,
+        }),
+      ),
       {
         type: "profiles",
         default: this.deps.store.getDefault(),
@@ -595,8 +612,7 @@ export class WebServer {
     // shell, so `~` would otherwise be treated as a literal directory name and
     // the open would silently fail (e.g. opening a downloaded file from
     // `~/Downloads`). Also normalize `~user` is intentionally unsupported.
-    const resolved =
-      target === "~" ? os.homedir() : target.replace(/^~(?=\/|\\)/, os.homedir());
+    const resolved = target === "~" ? os.homedir() : target.replace(/^~(?=\/|\\)/, os.homedir());
     const cmd =
       process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
     const args = process.platform === "win32" ? ["", resolved] : [resolved];

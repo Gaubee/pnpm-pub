@@ -261,7 +261,7 @@ describe("DaemonStore events (Chapter 6.2)", () => {
     expect(store.updateEventArgs(evt.id, ["--access", "public"])).toBeUndefined();
   });
 
-  it("Scenario: Given grouped configure-trust events, When updating the draft, Then every pending group member receives it", async () => {
+  it("Scenario: Given grouped configure-trust events, When updating the group draft, Then it is stored ONCE (no fan-out into members) and inherit members resolve to it", async () => {
     const store = new DaemonStore();
     await store.load();
     const groupId = "configure-trust-group";
@@ -289,15 +289,35 @@ describe("DaemonStore events (Chapter 6.2)", () => {
       claims: { repository: "o/r", workflow_ref: { file: "publish.yml" } },
     };
 
-    const updated = store.updateConfigureTrustGroupDraft(groupId, config);
+    // New members default to inherit.
+    expect(store.isInheritMember(first.id, groupId)).toBe(true);
+    expect(store.isInheritMember(second.id, groupId)).toBe(true);
 
-    expect(updated.map((event) => event.id).sort()).toEqual([first.id, second.id].sort());
+    const memberIds = store.updateConfigureTrustGroupDraft(groupId, config);
+    expect(memberIds.sort()).toEqual([first.id, second.id].sort());
+
+    // The default is stored ONCE; member payloads are NOT mutated (no fan-out).
+    expect(store.getGroupTrustDraft(groupId).defaultConfig).toEqual(config);
     for (const event of [first, second]) {
       expect(event.payload?.kind).toBe("configure-trust");
       if (event.payload?.kind === "configure-trust") {
-        expect(event.payload.data.config).toEqual(config);
+        expect(event.payload.data.config).toBeUndefined();
       }
     }
+
+    // Inherit members resolve to the group default at confirm/display time.
+    expect(store.resolveConfigureTrustConfig(first).config).toEqual(config);
+    expect(store.resolveConfigureTrustConfig(second).config).toEqual(config);
+
+    // Flipping a member to custom + writing its own config makes it resolve
+    // independently, while the other still inherits.
+    store.setMemberInherit(first.id, false);
+    expect(store.isInheritMember(first.id, groupId)).toBe(false);
+    expect(store.isInheritMember(second.id, groupId)).toBe(true);
+    const custom = { ...config, claims: { ...config.claims, repository: "o/other" } };
+    store.updateConfigureTrustDraft(first.id, custom);
+    expect(store.resolveConfigureTrustConfig(first).config).toEqual(custom);
+    expect(store.resolveConfigureTrustConfig(second).config).toEqual(config);
   });
 
   it("Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)", async () => {

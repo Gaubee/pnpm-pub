@@ -21,6 +21,7 @@ import {
   type EventPayload,
   type Preferences,
   type TrustedPublisherCreateConfig,
+  type ConfigureTrustContext,
 } from "../shared/index.js";
 import {
   profilesPath,
@@ -68,6 +69,26 @@ export class DaemonStore extends EventEmitter {
   private events: PubEvent[] = [];
   private credentials = new Map<string, CredentialPool>();
   private eventDb: DatabaseType | null = null;
+  /**
+   * Trusted-publishing group inheritance state (in-memory, follows the group's
+   * pending lifecycle). Kept here as the SINGLE SOURCE OF TRUTH so it survives
+   * WebUI refreshes (re-sent on hello) and so confirm-time resolution is
+   * unambiguous.
+   *
+   *   - `groupTrustDefaults`: the ONE shared draft config per group. Editing
+   *     the group's default form updates ONLY this — it never fans out into
+   *     member payloads (that fan-out was the root cause of the per-keystroke
+   *     N×echo / 100% CPU loop).
+   *   - `groupInheritMembers`: the EXPLICIT set of member ids that inherit the
+   *     group default (rather than carrying their own `payload.data.config`).
+   *     `config` presence on a member is NOT used to infer inheritance — that
+   *     would couple two concerns. This set is the explicit marker.
+   *
+   * Resolution (`resolveConfigureTrustConfig`): inherit member → group default;
+   * custom member → its own `payload.data.config`.
+   */
+  private groupTrustDefaults = new Map<string, TrustedPublisherCreateConfig>();
+  private groupInheritMembers = new Map<string, Set<string>>();
 
   constructor() {
     super();
@@ -301,7 +322,9 @@ export class DaemonStore extends EventEmitter {
     const merged = {
       ...this.preferences,
       ...patch,
-      values: patch.values ? { ...this.preferences.values, ...patch.values } : this.preferences.values,
+      values: patch.values
+        ? { ...this.preferences.values, ...patch.values }
+        : this.preferences.values,
     };
     if (JSON.stringify(merged) === JSON.stringify(this.preferences)) return;
     this.preferences = merged;
@@ -312,13 +335,27 @@ export class DaemonStore extends EventEmitter {
   // ----- events (Chapter 6.2) -----
 
   /**
-   * Pending events for the live WebUI projection. History is fetched via
-   * queryEvents() over oRPC (paginated from SQLite), so this snapshot only
-   * carries live pending items.
+   * Events for the live WebUI projection.
+   *
+   * Always includes every pending event. Additionally, when a group has ANY
+   * pending member, ALL of that group's members are included (even resolved
+   * ones) so the WebUI can render a complete GroupEvent card — e.g. a batch
+   * where 3 packages already succeeded and 2 are still pending shows all 5.
+   *
+   * History beyond these active groups is fetched via queryEvents() over oRPC
+   * (paginated from SQLite), so this snapshot stays small.
    */
   getEvents(): PubEvent[] {
-    return this.events
-      .filter((e) => e.status === "pending")
+    const all = this.events;
+    // Collect groupIds that have at least one pending member.
+    const activeGroupIds = new Set<string>();
+    for (const e of all) {
+      if (e.status === "pending" && e.groupId) activeGroupIds.add(e.groupId);
+    }
+    return all
+      .filter(
+        (e) => e.status === "pending" || (e.groupId !== undefined && activeGroupIds.has(e.groupId)),
+      )
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
@@ -360,6 +397,20 @@ export class DaemonStore extends EventEmitter {
     };
     this.events.unshift(evt);
     if (this.eventDb) insertEvent(this.eventDb, evt);
+    // A new configure-trust group member inherits the group default by default.
+    // (Only "add" / "update" members participate — "remove" members have no
+    // editable config.) This is the explicit inheritance marker — see the
+    // groupInheritMembers comment above.
+    if (
+      opts.groupId &&
+      opts.payload?.kind === "configure-trust" &&
+      opts.payload.data.action !== "remove"
+    ) {
+      const set = this.groupInheritMembers.get(opts.groupId);
+      if (set) set.add(evt.id);
+      else this.groupInheritMembers.set(opts.groupId, new Set([evt.id]));
+      this.emitGroupTrustDraft(opts.groupId);
+    }
     this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
@@ -383,12 +434,34 @@ export class DaemonStore extends EventEmitter {
     }
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit("event", { type: "event" as const, event: evt });
+    this.cleanupGroupTrustState(evt);
     return evt;
   }
 
   /**
-   * Update a pending publish event's CLI args in place. Only honored for events
-   * still in `pending` whose payload is a publish context — the scheduler holds
+   * Drop the resolved member from its group's inheritance set, and if no
+   * pending members remain in the group, drop the group's default + inheritance
+   * state entirely (the group is done). Keeps the in-memory maps bounded.
+   */
+  private cleanupGroupTrustState(evt: PubEvent): void {
+    const groupId = evt.groupId;
+    if (!groupId) return;
+    const set = this.groupInheritMembers.get(groupId);
+    if (set) {
+      set.delete(evt.id);
+      if (set.size === 0) this.groupInheritMembers.delete(groupId);
+    }
+    const hasPending = this.events.some((e) => e.groupId === groupId && e.status === "pending");
+    if (!hasPending) {
+      this.groupTrustDefaults.delete(groupId);
+      if (this.groupInheritMembers.has(groupId)) {
+        this.groupInheritMembers.delete(groupId);
+      }
+    }
+  }
+
+  /**
+   * Update a pending publish event's CLI args in place. The scheduler holds
    * the SAME PubEvent instance in `this.pending`, and re-reads `args` live at
    * confirm time, so mutating the shared object makes the edit take effect on
    * the next confirm without any extra wiring. Returns the event on success, or
@@ -415,29 +488,160 @@ export class DaemonStore extends EventEmitter {
     if (!evt || evt.status !== "pending") return undefined;
     if (evt.payload?.kind !== "configure-trust") return undefined;
     evt.payload.data.config = config;
+    // Writing a member's own config is, by definition, a custom edit. Ensure
+    // the member is NOT marked inherit (defense-in-depth: the UI toggles first,
+    // but a stale inherit flag would otherwise hide this config at resolve time).
+    if (evt.groupId) {
+      const set = this.groupInheritMembers.get(evt.groupId);
+      if (set && set.delete(id)) this.emitGroupTrustDraft(evt.groupId);
+    }
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
 
-  updateConfigureTrustGroupDraft(
-    groupId: string,
-    config: TrustedPublisherCreateConfig,
-  ): PubEvent[] {
-    const updated: PubEvent[] = [];
+  /**
+   * Update the group's SHARED default trusted-publishing draft. Stores ONE copy
+   * (per group) and emits a SINGLE lightweight `group-trust-draft` frame — it
+   * does NOT fan the config out into every member's payload, and does NOT emit
+   * per-member `"event"` frames. (The previous fan-out was the root cause of
+   * per-keystroke N×echo / 100% CPU when editing the default form.) Inherit
+   * members resolve to this default at display time and confirm time.
+   *
+   * Returns the member ids currently participating in the group (pending
+   * configure-trust add/update members), for the caller's response.
+   */
+  updateConfigureTrustGroupDraft(groupId: string, config: TrustedPublisherCreateConfig): string[] {
+    this.groupTrustDefaults.set(groupId, config);
+    this.emitGroupTrustDraft(groupId);
+    return this.groupMemberIds(groupId);
+  }
+
+  /** Member ids of pending configure-trust add/update members in a group. */
+  private groupMemberIds(groupId: string): string[] {
+    const ids: string[] = [];
     for (const evt of this.events) {
       if (evt.status !== "pending") continue;
       if (evt.groupId !== groupId) continue;
       if (evt.payload?.kind !== "configure-trust") continue;
       if (evt.payload.data.action === "remove") continue;
-      evt.payload.data.config = config;
-      if (this.eventDb) updateEvent(this.eventDb, evt);
-      updated.push(evt);
+      ids.push(evt.id);
     }
-    for (const event of updated) {
-      this.emit("event", { type: "event" as const, event });
+    return ids;
+  }
+
+  /** Snapshot of a group's trust-draft state for WS broadcast / hello. */
+  getGroupTrustDraft(groupId: string): {
+    defaultConfig: TrustedPublisherCreateConfig | undefined;
+    inheritMembers: string[];
+  } {
+    return {
+      defaultConfig: this.groupTrustDefaults.get(groupId),
+      inheritMembers: [...(this.groupInheritMembers.get(groupId) ?? [])],
+    };
+  }
+
+  /** Snapshots for ALL groups that currently have pending members (hello frame). */
+  getAllGroupTrustDrafts(): {
+    groupId: string;
+    defaultConfig: TrustedPublisherCreateConfig;
+    inheritMembers: string[];
+  }[] {
+    const out: {
+      groupId: string;
+      defaultConfig: TrustedPublisherCreateConfig;
+      inheritMembers: string[];
+    }[] = [];
+    for (const [groupId, defaultConfig] of this.groupTrustDefaults) {
+      out.push({
+        groupId,
+        defaultConfig,
+        inheritMembers: [...(this.groupInheritMembers.get(groupId) ?? [])],
+      });
     }
-    return updated;
+    return out;
+  }
+
+  /** Whether a member currently inherits its group's default config. */
+  isInheritMember(eventId: string, groupId: string): boolean {
+    return this.groupInheritMembers.get(groupId)?.has(eventId) ?? false;
+  }
+
+  /**
+   * Explicitly toggle a member between inherit (uses the group default) and
+   * custom (carries its own `payload.data.config`). This is the SINGLE source of
+   * truth for inheritance — `config` presence is NOT used to infer it.
+   *
+   *   - inherit=true : add to the set; clear any prior custom config on the
+   *     member so it no longer carries a stale override.
+   *   - inherit=false: remove from the set; the member's own config is then
+   *     authored by the per-member form (`updateConfigureTrustDraft`).
+   *
+   * Returns the member's groupId (for the broadcast) or undefined if the member
+   * is not a pending configure-trust add/update member of a group.
+   */
+  setMemberInherit(eventId: string, inherit: boolean): string | undefined {
+    const evt = this.events.find((e) => e.id === eventId);
+    if (!evt || evt.status !== "pending") return undefined;
+    if (evt.payload?.kind !== "configure-trust") return undefined;
+    if (evt.payload.data.action === "remove") return undefined;
+    const groupId = evt.groupId;
+    if (!groupId) return undefined;
+    let set = this.groupInheritMembers.get(groupId);
+    if (!set) {
+      set = new Set();
+      this.groupInheritMembers.set(groupId, set);
+    }
+    if (inherit) {
+      set.add(eventId);
+      // Returning to inherit: drop any custom override so the member no longer
+      // carries a stale per-member config alongside the inherited default.
+      if (evt.payload.data.config) {
+        delete evt.payload.data.config;
+        if (this.eventDb) updateEvent(this.eventDb, evt);
+        this.emit("event", { type: "event" as const, event: evt });
+      }
+    } else {
+      set.delete(eventId);
+    }
+    this.emitGroupTrustDraft(groupId);
+    return groupId;
+  }
+
+  /**
+   * Resolve the EFFECTIVE trusted-publishing config for an event at confirm (or
+   * display) time, applying the inheritance rule:
+   *   - inherit member → the group's shared default;
+   *   - custom member  → the member's own `payload.data.config`.
+   * Returns the (possibly synthesized) ConfigureTrustContext. Callers that need
+   * only the config value can read `.config`.
+   */
+  resolveConfigureTrustConfig(evt: PubEvent): ConfigureTrustContext {
+    const ctx: ConfigureTrustContext | undefined =
+      evt.payload?.kind === "configure-trust" ? evt.payload.data : undefined;
+    if (!ctx) return undefined as unknown as ConfigureTrustContext;
+    // remove actions have no editable config and never inherit.
+    if (ctx.action === "remove") return ctx;
+    // Custom member: use its own config as-is.
+    if (evt.groupId && !this.isInheritMember(evt.id, evt.groupId)) {
+      return ctx;
+    }
+    // Inherit member (or a standalone event with no group): fall back to the
+    // group default when the member has no own config.
+    const def = evt.groupId ? this.groupTrustDefaults.get(evt.groupId) : undefined;
+    if (def) return { ...ctx, config: def };
+    return ctx;
+  }
+
+  /** Emit a single `group-trust-draft` frame for a group (no per-member echo). */
+  private emitGroupTrustDraft(groupId: string): void {
+    const draft = this.getGroupTrustDraft(groupId);
+    this.emit("group-trust-draft", {
+      type: "group-trust-draft" as const,
+      groupId,
+      defaultConfig: draft.defaultConfig,
+      inheritMembers: draft.inheritMembers,
+    });
   }
 
   invalidateTrustedPublishing(names: string[]): void {

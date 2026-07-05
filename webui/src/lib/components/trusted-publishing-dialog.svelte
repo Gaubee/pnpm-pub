@@ -10,7 +10,7 @@
     } from "$lib/components/ui/dialog/index.js";
     import { Button } from "$lib/components/ui/button/index.js";
     import { actions, getRpcClient, pushToast } from "$lib/store.js";
-    import { trustedPublisherSummary } from "$lib/trusted-publishing.js";
+    import TrustedPublishingReadonly from "$lib/components/trusted-publishing-readonly.svelte";
     import type {
         TrustedPublisherConfig,
         TrustedPublishingTarget,
@@ -277,12 +277,11 @@
                                     class="block truncate font-mono text-foreground"
                                     >{target.name}</span
                                 >
-                                <span
-                                    class="mt-1 block truncate text-muted-foreground"
-                                >
-                                    {trustedPublisherSummary(
-                                        target.currentConfig,
-                                    )}
+                                <span class="mt-1 block">
+                                    <TrustedPublishingReadonly
+                                        config={target.currentConfig}
+                                        mode="compact"
+                                    />
                                 </span>
                             </span>
                         </label>
@@ -332,18 +331,14 @@
                         class="overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{workflowContent}</pre>
                 {/if}
             {:else if config}
-                <!-- Current-config summary (also reused when no workflow tab). -->
-                <div
-                    class="rounded-md border border-border bg-muted/30 p-3 text-xs"
-                >
-                    <div class="mb-2 flex items-center gap-2 font-medium">
-                        <IconShield class="h-4 w-4 text-brand" />
-                        {$_("trustedPublishing.currentConfig")}
-                    </div>
-                    <p class="break-words font-mono text-muted-foreground">
-                        {trustedPublisherSummary(config)}
-                    </p>
+                <!-- Current-config block (also reused when no workflow tab).
+                     Multi-line: this dialog is reached to review an existing
+                     config, and there's room, so one row per field reads best. -->
+                <div class="mb-2 flex items-center gap-2 text-xs font-medium">
+                    <IconShield class="h-4 w-4 text-brand" />
+                    {$_("trustedPublishing.currentConfig")}
                 </div>
+                <TrustedPublishingReadonly {config} mode="multiline" />
             {:else if configLoading}
                 <div
                     class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
