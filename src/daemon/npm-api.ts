@@ -3,7 +3,7 @@
  *
  * All write operations are funnelled through here so the daemon can keep a
  * single chokepoint for credentials, error parsing, and clock-drift recovery.
- * Login/token creation is delegated to `npm-profile`; publish/OIDC operations
+ * Login/token creation is delegated to `npm-profile`; publish/Trusted Publishing operations
  * stay on raw registry fetches so Verdaccio and the real registry share the
  * same wire format.
  */
@@ -332,53 +332,6 @@ export async function publishPackage(opts: {
     error: errorMsg,
     stdout: "",
     stderr: bodyToText(errorBody),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// 8.5 — OIDC / Trusted Publish binding
-// ---------------------------------------------------------------------------
-
-/**
- * Configure Trusted Publish (provenance) prerequisites for a package on NPM.
- *
- * NPM provenance is established at *publish* time via the `--provenance` flag
- * from an OIDC-enabled GitHub Actions environment — there is no separate
- * "enable provenance" REST endpoint. The real prerequisite this daemon CAN set
- * is the **2FA-required** flag on the package (which the npm registry exposes
- * at `POST /-/package/<scope>/<name>/-volatile/2fa-required`), so that
- * provenance-bound publishes from CI are the only path.
- *
- * The GitHub Actions workflow (with `--provenance`) is emitted separately by
- * oidc-template.ts. This function therefore performs the registry-side half of
- * "Setup OIDC" (Chapter 8.5 step 9) using a genuine npm endpoint.
- */
-export async function configureOidc(opts: {
-  registry: string;
-  token: string;
-  totpSecret: string;
-  name: string;
-}): Promise<PublishResult> {
-  const { registry, token, totpSecret, name } = opts;
-  // 2fa-required endpoint: scope and name are URL-encoded, scope keeps its '@'.
-  const scoped = name.startsWith("@");
-  const encoded = scoped ? name.replace(/^@([^/]+)\//, "@$1%2F") : encodeURIComponent(name);
-  const url = `${registry.replace(/\/$/, "")}/-/package/${encoded}/-volatile/2fa-required`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-      "npm-otp": generateTotp(totpSecret),
-    },
-  });
-  const body = await readRegistryBody(res);
-  return {
-    ok: res.ok,
-    status: res.status,
-    error: res.ok ? undefined : (parseNpmError(body) ?? `HTTP ${res.status}`),
-    stdout: res.ok ? `[oidc] enabled provenance for ${name}` : "",
-    stderr: res.ok ? "" : bodyToText(body),
   };
 }
 

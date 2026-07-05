@@ -40,7 +40,10 @@ const protocolMirrorIsExact: [
   AssertEqual<WebPubEvent, SharedPubEvent>,
   AssertEqual<WebBackupBundle, SharedBackupBundle>,
   AssertEqual<WebEventPayloadData<"publish">, SharedEventPayloadData<"publish">>,
-  AssertEqual<WebEventPayloadData<"setup-oidc">, SharedEventPayloadData<"setup-oidc">>,
+  AssertEqual<
+    WebEventPayloadData<"configure-trust">,
+    SharedEventPayloadData<"configure-trust">
+  >,
   AssertEqual<
     WebEventPayloadData<"create-placeholder">,
     SharedEventPayloadData<"create-placeholder">

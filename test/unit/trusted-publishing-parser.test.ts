@@ -8,7 +8,7 @@
  * permissions is required (defaults to createPackage+createStagedPackage when absent).
  */
 import { describe, it, expect } from "vite-plus/test";
-import { parseTrustedPublisher } from "../../src/daemon/oidc-trust.js";
+import { parseTrustedPublisher } from "../../src/daemon/trusted-publishing-api.js";
 
 describe("parseTrustedPublisher", () => {
   // The actual npm response shape for opentray (GitHub Actions):

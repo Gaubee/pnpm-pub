@@ -5780,3 +5780,85 @@ Status: complete
 ### Residuals
 
 - Native visual timing was not re-smoked in this round; the focused proof locks the exact WAAPI keyframe contract.
+
+## Milestone 237 — Trusted Publishing Event refactor round
+
+Status: complete
+
+### Delivered
+
+- Replaced the old `setup-oidc` write ontology with `trusted-publishing` and `batch-trusted-publishing` Events in the shared schemas, WebUI protocol mirror, and oRPC contract.
+- Removed the direct OIDC write RPC/workflow-template path so registry-side Trusted Publishing mutations conserve to pending Event confirmation.
+- Kept the dialog as projection and intent collection: current-config packages open an update/remove dialog, and batch operations open a selectable target list with current-config previews.
+- Added an Event-card draft form for add/update/batch Trusted Publishing configuration before confirmation.
+- Executed single and batch Trusted Publishing Events in the scheduler via npm `/trust` add/remove adapters, including update-by-add-then-remove and cache invalidation after mutation.
+- Renamed the active Trusted Publishing UI/protocol residue from OIDC product names: dialog/status/hook files, oRPC read namespace, browser test host, and the internal npm `/trust` adapter.
+- Updated specs/compliance notes and regression coverage for add, update, remove, batch, failure, missing draft, and WebUI/shared protocol parity.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/237-trusted-publishing-dialog-bypasses-event-wall.md`.
+
+### Verification
+
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec vitest run test/unit/proactive-events.test.ts test/unit/store.test.ts test/unit/webui-protocol-types.test.ts --reporter=verbose`
+- `rg -n "setup-oidc|OidcContext|oidc-template|OIDC_WORKFLOW|renderPublishWorkflow|canWriteWorkflow|configureOidc" src webui/src test -S`
+- `rg -n "oidc-dialog|oidc-status|use-oidc|oidc-trust|client\\.oidc|rpc\\.oidc|oidc\\.listTrust|workspaces\\.oidc|batchOidc|packageDetail\\.oidcHint" src webui/src test -S`
+- `rg -n "addTrust|removeTrust" src webui/src test -S`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+
+### Residuals
+
+- superseded by Milestone 238 for the final `configure-trust` / `setup-oidc` split.
+
+## Milestone 238 — configure-trust and setup-oidc Q&A correction
+
+Status: complete
+
+### Delivered
+
+- Replaced temporary `trusted-publishing` / `batch-trusted-publishing` Event kinds with the single `configure-trust` Event ontology.
+- Changed batch Trusted Publishing confirmation to create N independent `configure-trust` Events sharing one `groupId`.
+- Restored `setup-oidc` as local workflow preview/write RPC through `src/daemon/oidc-workflow.ts`; it no longer performs npm `/trust` writes and does not go through Events.
+- Added the backend `preferences.values` free-form record and wired EventCard compact/full Trusted Publishing form mode with Zod `safeParse` fallback.
+- Installed and integrated the requested `LabelInput` component for compact mode.
+- Added the WorkspaceDetail OIDC tool button for packages with Current Trusted Publishing config.
+- Updated specs/compliance notes and closed `tasks/pnpm-pub-v1/.issues/closed/238-configure-trust-event-and-setup-oidc-rpc-correction.md`.
+
+### Verification
+
+- Svelte MCP autofixer on `label-input.svelte`, `trusted-publishing-draft-form.svelte`, `event-card.svelte`, and `trusted-publishing-dialog.svelte`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm exec vitest run test/unit/proactive-events.test.ts test/unit/store.test.ts test/unit/webui-protocol-types.test.ts test/unit/trusted-publishing-parser.test.ts test/unit/oidc-workflow.test.ts --reporter=verbose`
+- `pnpm exec vitest run test/browser/trusted-publishing-dialog-event.test.ts --reporter=verbose`
+
+### Residuals
+
+- none
+
+## Milestone 239 — Trusted Publishing UI polish and residue correction
+
+Status: complete
+
+### Delivered
+
+- Gated the current-config dialog's OIDC workflow tab behind a real local package path source, so package-list/package-detail current dialogs stay as the intended Update/Remove surface.
+- Added grouped `configure-trust` draft propagation through `events.updateConfigureTrustGroupDraft`, keeping batch-created Events aligned under their shared `groupId`.
+- Localized the Trusted Publishing draft form labels, provider buttons, permission switches, and incomplete-form message through `trustedPublishing.*` i18n keys.
+- Hardened local workflow overwrite UX with a two-step overwrite confirmation and localized copy/write/error toasts.
+- Updated the browser regression so it protects the generic current-config dialog from reintroducing a pathless OIDC workflow tab.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/239-trusted-publishing-ui-polish-residue.md`.
+
+### Verification
+
+- Svelte MCP autofixer on `trusted-publishing-dialog.svelte` and `trusted-publishing-draft-form.svelte`
+- `pnpm exec agent-browser --session pnpm-pub-ui-polish doctor --offline --quick`
+- Browser screenshot: `/tmp/pnpm-pub-trusted-dialog-current-no-workflow.png`
+- `pnpm exec vitest run test/unit/store.test.ts --reporter=verbose`
+- `pnpm --filter ./webui run check`
+- `pnpm exec vitest run test/browser/trusted-publishing-dialog-event.test.ts --reporter=verbose`
+
+### Residuals
+
+- Full visual review of real daemon-backed active EventCards remains dependent on a seeded pending `configure-trust` Event; covered here by grouped draft unit proof and WebUI type/Svelte checks.

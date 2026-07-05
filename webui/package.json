@@ -18,7 +18,8 @@
     "marked": "^18.0.5",
     "mode-watcher": "^1.0.0",
     "svelte-i18n": "^4.0.1",
-    "tailwind-merge": "^3.0.0"
+    "tailwind-merge": "^3.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@internationalized/date": "^3.12.2",

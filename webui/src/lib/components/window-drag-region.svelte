@@ -29,11 +29,21 @@
 	import IconLanguages from '@lucide/svelte/icons/languages';
 	import IconPin from '@lucide/svelte/icons/pin';
 	import IconPinOff from '@lucide/svelte/icons/pin-off';
+	import IconSettings from '@lucide/svelte/icons/settings';
 	import { _, locale } from 'svelte-i18n';
 	import { localeNames, locales, setAppLocale, type AppLocale } from '$lib/i18n.js';
-	import { daemon, actions } from '$lib/store.js';
+	import { daemon, actions, openSettings } from '$lib/store.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
+
+	/**
+	 * Toolbar variant. The onboarding (add-profile) shell shows language +
+	 * theme (the user may need to switch language before authenticating); the
+	 * main shell replaces the language picker with a Settings entry, since
+	 * language is otherwise reachable from Settings → 通用.
+	 */
+	type Variant = 'onboarding' | 'main';
+	let { variant = 'main' }: { variant?: Variant } = $props();
 
 	/**
 	 * The three theme states the titlebar toggle cycles through. Mirrors
@@ -181,7 +191,7 @@
 			size="sm"
 			class="pin-toggle no-drag hover:bg-transparent hover:[backdrop-filter:contrast(1)] dark:hover:bg-transparent {counting ? 'counting' : ''}"
 			style="left: {safeLeft + 6}px"
-			onclick={() => actions.setPin(!pinned)}
+			onclick={() => actions.setPreferences({ keepOnTop: !pinned })}
 			onpointerdown={(e) => e.stopPropagation()}
 			aria-label={pinLabel}
 			aria-pressed={pinned}
@@ -196,25 +206,44 @@
 			<span class="pin-countdown" aria-hidden="true">{pinCountdown}</span>
 		{/if}
 	</Button>
-	<div
-		class="locale-picker no-drag"
-		style="right: {safeRight + 36}px"
-		role="group"
-		aria-label={$_('common.language')}
-		onpointerdown={(e) => e.stopPropagation()}
-	>
-		<IconLanguages />
-		<select
-			value={currentLocale}
+	{#if variant === 'onboarding'}
+		<div
+			class="locale-picker no-drag"
+			style="right: {safeRight + 36}px"
+			role="group"
 			aria-label={$_('common.language')}
-			title={$_('common.language')}
-			onchange={onLocaleChange}
+			onpointerdown={(e) => e.stopPropagation()}
 		>
-			{#each locales as lang (lang)}
-				<option value={lang}>{localeNames[lang]}</option>
-			{/each}
-		</select>
-	</div>
+			<IconLanguages />
+			<select
+				value={currentLocale}
+				aria-label={$_('common.language')}
+				title={$_('common.language')}
+				onchange={onLocaleChange}
+			>
+				{#each locales as lang (lang)}
+					<option value={lang}>{localeNames[lang]}</option>
+				{/each}
+			</select>
+		</div>
+	{:else}
+		<!--
+			Settings entry — replaces the language picker on the main shell.
+			Language is still reachable from Settings → 通用. Same hover affordance
+			as the theme toggle (contrast backdrop) and same edge anchoring.
+		-->
+		<button
+			type="button"
+			class="theme-toggle no-drag"
+			style="right: {safeRight + 36}px"
+			onclick={openSettings}
+			onpointerdown={(e) => e.stopPropagation()}
+			aria-label={$_('settings.title')}
+			title={$_('settings.title')}
+		>
+			<IconSettings />
+		</button>
+	{/if}
 	<button
 		type="button"
 		class="theme-toggle no-drag"

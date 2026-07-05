@@ -22,7 +22,7 @@
 
 	function onSuccess(username: string): void {
 		// The new profile arrives over the WS. Land on its detail page so the user
-		// can review / adjust settings (auto-renew, OIDC, …). replaceState keeps
+		// can review / adjust settings (auto-renew, Trusted Publishing, …). replaceState keeps
 		// back from bouncing to this onboarding page.
 		goto(`/profiles/${encodeURIComponent(username)}${window.location.hash}`, { replaceState: true });
 	}

@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  applyToken,
-  configureOidc,
-  isExpiredToken,
-  publishPackage,
-} from "../../src/daemon/npm-api.js";
+import { applyToken, isExpiredToken, publishPackage } from "../../src/daemon/npm-api.js";
 
 const npmProfileMocks = vi.hoisted(() => ({
   loginWithPassword: vi.fn(),
@@ -267,57 +262,4 @@ describe("registry response body projection", () => {
     expect(isExpiredToken(403, circular)).toBe(false);
   });
 
-  it("Scenario: Given OIDC setup returns non-JSON failure, When projecting stderr, Then the registry text is preserved", async () => {
-    fetchSpy.mockImplementation(async () => {
-      return new Response("not-json", {
-        status: 500,
-        headers: { "content-type": "text/plain" },
-      });
-    });
-
-    await expect(
-      configureOidc({
-        registry: "https://registry.example.test/",
-        token: "npm_token",
-        totpSecret: "JBSWY3DPEHPK3PXP",
-        name: "@scope/pkg",
-      }),
-    ).resolves.toEqual({
-      ok: false,
-      status: 500,
-      error: "HTTP 500",
-      stdout: "",
-      stderr: "not-json",
-    });
-  });
-
-  it("Scenario: Given OIDC setup returns an npm errors array, When projecting the failure, Then the first structured message is used", async () => {
-    fetchSpy.mockImplementation(async () => {
-      return new Response(
-        JSON.stringify({
-          errors: [{ summary: "2FA flag rejected", detail: "package requires owner access" }],
-        }),
-        {
-          status: 403,
-          headers: { "content-type": "application/json" },
-        },
-      );
-    });
-
-    await expect(
-      configureOidc({
-        registry: "https://registry.example.test/",
-        token: "npm_token",
-        totpSecret: "JBSWY3DPEHPK3PXP",
-        name: "@scope/pkg",
-      }),
-    ).resolves.toEqual({
-      ok: false,
-      status: 403,
-      error: "2FA flag rejected: package requires owner access",
-      stdout: "",
-      stderr:
-        '{"errors":[{"summary":"2FA flag rejected","detail":"package requires owner access"}]}',
-    });
-  });
 });

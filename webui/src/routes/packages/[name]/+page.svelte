@@ -5,18 +5,18 @@
 	 * Backed by the `packages.detail` oRPC procedure (daemon merges the registry
 	 * packument, collaborators, and weekly downloads). Renders the README via
 	 * marked → safeSetHTML (DOM Sanitizer API), a metadata sidebar, a
-	 * collaborators row, and a Trusted Publishing (OIDC) config card — the same
+	 * collaborators row, and a Trusted Publishing config card — the same
 	 * affordance the Workspaces detail page offers for on-disk packages.
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { getRpcClient } from '$lib/store.js';
 	import { safeSetHtml } from '$lib/safe-html.js';
-	import { createOidcStatus } from '$lib/hooks/use-oidc.svelte.js';
+	import { createTrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import OidcDialog from '$lib/components/oidc-dialog.svelte';
-	import OidcStatus from '$lib/components/oidc-status.svelte';
+	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
+	import TrustedPublishingStatus from '$lib/components/trusted-publishing-status.svelte';
 	import { marked } from 'marked';
 	import type { PackageDetail, TrustedPublisherConfig } from '$lib/types.js';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -109,37 +109,37 @@
 		return n.toLocaleString();
 	}
 
-	// ----- OIDC -----
-	const oidc = createOidcStatus();
+	// ----- Trusted Publishing -----
+	const trustedPublishing = createTrustedPublishingStatus();
 	$effect(() => {
 		const n = name;
-		if (n && (detail || !loading)) oidc.fetch(n);
+		if (n && (detail || !loading)) trustedPublishing.fetch(n);
 	});
 
-	let oidcDialogOpen = $state(false);
-	// Reactive: reads from the OIDC store so a config arriving after the dialog
+	let trustedPublishingDialogOpen = $state(false);
+	// Reactive: reads from the Trusted Publishing store so a config arriving after the dialog
 	// opens (opened while loading) flows in and syncs the form.
-	let oidcDialogConfig = $derived(oidc.configs(name)[0] ?? null);
+	let trustedPublishingDialogConfig = $derived(trustedPublishing.configs(name)[0] ?? null);
 
-	function openOidcDialog(_e?: MouseEvent): void {
-		oidcDialogOpen = true;
+	function openTrustedPublishingDialog(_e?: MouseEvent): void {
+		trustedPublishingDialogOpen = true;
 	}
-	function onOidcChanged(): void {
-		oidc.invalidate(name);
+	function onTrustedPublishingChanged(): void {
+		trustedPublishing.invalidate(name);
 	}
 
-	function oidcStatus(): 'configured' | 'loading' | 'none' {
+	function trustedPublishingStatus(): 'configured' | 'loading' | 'none' {
 		const n = name;
-		if (oidc.isConfigured(n)) return 'configured';
-		if (oidc.isLoading(n)) return 'loading';
+		if (trustedPublishing.isConfigured(n)) return 'configured';
+		if (trustedPublishing.isLoading(n)) return 'loading';
 		return 'none';
 	}
-	function oidcText(): string {
-		const status = oidcStatus();
-		if (status === 'loading') return $_('oidc.loading');
-		if (status === 'none') return $_('oidc.notConfigured');
-		const cfg = oidc.configs(name)[0];
-		if (!cfg) return $_('oidc.notConfigured');
+	function trustedPublishingText(): string {
+		const status = trustedPublishingStatus();
+		if (status === 'loading') return $_('trustedPublishing.loading');
+		if (status === 'none') return $_('trustedPublishing.notConfigured');
+		const cfg = trustedPublishing.configs(name)[0];
+		if (!cfg) return $_('trustedPublishing.notConfigured');
 		const repo =
 			cfg.type === 'github'
 				? cfg.claims.repository
@@ -206,7 +206,7 @@
 		</header>
 
 		<div class="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_240px]">
-			<!-- Main column: README + OIDC -->
+			<!-- Main column: README + Trusted Publishing -->
 			<div class="flex min-w-0 flex-col gap-5">
 				<!-- README -->
 				<section class="rounded-lg border border-border bg-card p-4">
@@ -222,7 +222,7 @@
 					{/if}
 				</section>
 
-				<!-- Trusted Publishing (OIDC) card -->
+				<!-- Trusted Publishing card -->
 				<section class="rounded-lg border border-border bg-card p-4">
 					<div class="mb-3 flex items-center justify-between gap-2">
 						<div class="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -230,16 +230,16 @@
 							{$_('packageDetail.trustedPublishing')}
 						</div>
 					</div>
-					<OidcStatus
-						status={oidcStatus()}
-						text={oidcText()}
+					<TrustedPublishingStatus
+						status={trustedPublishingStatus()}
+						text={trustedPublishingText()}
 						buttonLabel={$_('packageDetail.configure')}
-						onconfigure={openOidcDialog}
+						onconfigure={openTrustedPublishingDialog}
 					/>
 					{#if !repoHint}
 						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.repositoryHint')}</p>
 					{:else}
-						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.oidcHint')}</p>
+						<p class="mt-2 text-[11px] text-muted-foreground/70">{$_('packageDetail.trustedPublishingHint')}</p>
 					{/if}
 				</section>
 			</div>
@@ -321,10 +321,10 @@
 	{/if}
 </div>
 
-<OidcDialog
-	bind:open={oidcDialogOpen}
+<TrustedPublishingDialog
+	bind:open={trustedPublishingDialogOpen}
 	packageName={name}
-	config={oidcDialogConfig}
+	config={trustedPublishingDialogConfig}
 	repositoryHint={repoHint}
-	onChanged={onOidcChanged}
+	onChanged={onTrustedPublishingChanged}
 />

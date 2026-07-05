@@ -22,8 +22,10 @@
 	import TarballTree from '$lib/components/tarball-tree.svelte';
 	import RecursiveTargetList from '$lib/components/recursive-target-list.svelte';
 	import AutoCloseBar from '$lib/components/auto-close-bar.svelte';
+	import TrustedPublishingDraftForm from '$lib/components/trusted-publishing-draft-form.svelte';
+	import { trustedPublisherSummary } from '$lib/trusted-publishing.js';
 	import IconPublish from '@lucide/svelte/icons/upload';
-	import IconOidc from '@lucide/svelte/icons/shield-check';
+	import IconTrustedPublishing from '@lucide/svelte/icons/shield-check';
 	import IconLayers from '@lucide/svelte/icons/layers';
 	import IconPlaceholder from '@lucide/svelte/icons/package';
 	import IconRefresh from '@lucide/svelte/icons/refresh-cw';
@@ -41,6 +43,7 @@
 	import IconAlertTriangle from '@lucide/svelte/icons/triangle-alert';
 	import IconFolderOpen from '@lucide/svelte/icons/folder-open';
 	import { _ } from 'svelte-i18n';
+	import { z } from 'zod';
 
 	let {
 		event,
@@ -73,7 +76,7 @@
 	const iconFor = (kind: PubEvent['kind']) =>
 		({
 			publish: IconPublish,
-			'setup-oidc': IconOidc,
+			'configure-trust': IconTrustedPublishing,
 			'recursive-publish': IconLayers,
 			'create-placeholder': IconPlaceholder,
 			'refresh-token': IconRefresh,
@@ -164,7 +167,7 @@
 				? ({ target: makePlaceholderTarget(event.payload.data.name) })
 				: null,
 	);
-	const oidcCtx = $derived(event.payload?.kind === 'setup-oidc' ? event.payload.data : null);
+	const configureTrustCtx = $derived(event.payload?.kind === 'configure-trust' ? event.payload.data : null);
 	const unpublishCtx = $derived(event.payload?.kind === 'unpublish' ? event.payload.data : null);
 	const recursiveCtx = $derived(event.payload?.kind === 'recursive-publish' ? event.payload.data : null);
 
@@ -187,11 +190,11 @@
 	// the event kind and the data it carries.
 	let repoInfo = $state<RepoInfo | null>(null);
 	// The raw repository string to resolve, drawn from whichever event kind
-	// carries one (publish.target.repository, setup-oidc's repo field, or any
+	// carries one (publish.target.repository, trusted publishing target, or any
 	// recursive-publish target's repository).
 	const repoRaw = $derived(
 		publishData?.target.repository
-			?? oidcCtx?.repo
+			?? configureTrustCtx?.target.repository
 			?? recursiveCtx?.targets.find((t) => t.repository)?.repository
 			?? '',
 	);
@@ -201,14 +204,15 @@
 		void actions.repoInfo(repoRaw).then((info) => { repoInfo = info; });
 	});
 	// The local package directory (for "open folder"). Publish → source path;
-	// setup-oidc → its path; recursive-publish → workspace root. Unpublish /
+	// trusted publishing → its path; recursive-publish → workspace root. Unpublish /
 	// placeholder have no local path.
-	const sourcePath = $derived(publishData?.source.path ?? recursiveCtx?.source.path ?? oidcCtx?.path ?? '');
+	const sourcePath = $derived(publishData?.source.path ?? recursiveCtx?.source.path ?? configureTrustCtx?.target.path ?? '');
 	// The npm registry page link. For publish, derived from target name/version.
 	// For unpublish, from its name/version. For create-placeholder, name only.
 	const packageName = $derived(
 		unpublishCtx?.name
 			?? publishTarget?.target.name
+			?? configureTrustCtx?.target.name
 			?? (event.payload?.kind === 'create-placeholder' ? event.payload.data.name : ''),
 	);
 	const packageVersion = $derived(
@@ -228,12 +232,25 @@
 	// Whether the right-corner group has any action to show at all.
 	const hasCornerActions = $derived(!!repoInfo || !!sourcePath || !!npmUrl || overrideActive);
 	const isRetryableStatus = $derived(event.status === 'failed' || event.status === 'expired' || event.status === 'rejected');
-	const isRetryable = $derived((isPublish || event.payload?.kind === 'unpublish' || event.payload?.kind === 'recursive-publish') && isRetryableStatus);
+	const isConfigureTrust = $derived(!!configureTrustCtx);
+	const isRetryable = $derived((isPublish || event.payload?.kind === 'unpublish' || event.payload?.kind === 'recursive-publish' || isConfigureTrust) && isRetryableStatus);
 	/** Whether the inline Retry button renders (publish + recursive-publish;
 	 *  unpublish retry goes through the ConfirmAction two-step instead). */
-	const hasRetryButton = $derived(isRetryableStatus && (isPublish || event.payload?.kind === 'recursive-publish'));
+	const hasRetryButton = $derived(
+		isRetryableStatus && (isPublish || event.payload?.kind === 'recursive-publish' || isConfigureTrust),
+	);
 	const isUnpublishable = $derived(isPublish && event.status === 'success');
 	let confirmUnpublish = $state(false);
+	let trustedPublishingDraftValid = $state(false);
+	const TRUST_FORM_MODE_KEY = 'trustedPublishing.formMode';
+	const TrustFormModeSchema = z.enum(['full', 'compact']);
+	const trustFormMode = $derived.by((): 'full' | 'compact' => {
+		const result = TrustFormModeSchema.safeParse($daemon.preferences.values?.[TRUST_FORM_MODE_KEY]);
+		return result.success ? result.data : 'full';
+	});
+	function setTrustFormMode(mode: 'full' | 'compact'): void {
+		actions.setPreferenceValue(TRUST_FORM_MODE_KEY, mode);
+	}
 	// Confirm/Reject are fire-and-forget WS sends — the daemon drives the actual
 	// status transition. These flags give immediate "working…" feedback and are
 	// cleared the moment the event leaves `pending` (i.e. the daemon replied).
@@ -265,6 +282,8 @@
 			actions.createEvent('publish', publishData, event.groupId);
 		} else if (recursiveCtx) {
 			actions.createEvent('recursive-publish', recursiveCtx, event.groupId);
+		} else if (configureTrustCtx) {
+			actions.createEvent('configure-trust', configureTrustCtx, event.groupId);
 		} else if (unpublishCtx) {
 			actions.createEvent('unpublish', unpublishCtx, event.groupId);
 		}
@@ -335,7 +354,15 @@
 	// publish-branch mismatch gate: blocks the Confirm button client-side.
 	const branchMismatch = $derived(publishBranchOn && !!currentBranch && publishBranchValue !== currentBranch);
 	const branchNoCurrent = $derived(publishBranchOn && !currentBranch);
-	const canConfirm = $derived(isPending && !branchMismatch);
+	const trustedPublishingReady = $derived(
+		!configureTrustCtx ||
+			configureTrustCtx.action === 'remove' ||
+			!!configureTrustCtx.config ||
+			trustedPublishingDraftValid,
+	);
+	const canConfirm = $derived(
+		isPending && !branchMismatch && trustedPublishingReady,
+	);
 
 	/** Whether the advanced-options panel should render at all. */
 	const hasAdvancedOptions = $derived(isPublish || !!recursiveCtx);
@@ -384,7 +411,7 @@
 					<span class="truncate text-sm font-semibold">
 						{#if recursiveCtx}
 							{$_('eventCard.recursivePublish')}
-						{:else if publishTarget}{publishTarget.target.name}{:else if oidcCtx}{oidcCtx.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
+						{:else if publishTarget}{publishTarget.target.name}{:else if configureTrustCtx}{configureTrustCtx.target.name}{:else if unpublishCtx}{unpublishCtx.name}{:else}{event.kind}{/if}
 					</span>
 					{#if publishTarget}
 						<Badge variant="outline" class="h-5 font-mono text-[10px]">@{publishTarget.target.version}</Badge>
@@ -420,8 +447,8 @@
 
 		<!-- Right-corner actions — a unified ButtonGroup on every card. Which
 		     actions appear depends on the event kind + the data it carries:
-		     a repo link (publish / setup-oidc), an open-folder button (publish /
-		     setup-oidc), or an npm page link (unpublish / placeholder). A
+		     a repo link (publish / trusted publishing), an open-folder button
+		     (publish / trusted publishing), or an npm page link (unpublish / placeholder). A
 		     context-override identity chip leads the group when relevant. -->
 		{#if hasCornerActions}
 		<ButtonGroup>
@@ -489,11 +516,36 @@
 				{#if publishTarget.target.description}
 					<p class="text-xs text-muted-foreground">{publishTarget.target.description}</p>
 				{/if}
-		{:else if oidcCtx}
+		{:else if configureTrustCtx}
 			<div class="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
-				{$_('eventCard.configureOidc', { values: { name: oidcCtx.name } })} <span class="font-mono">{oidcCtx.name}</span>
-				{#if oidcCtx.repo}· repo <span class="font-mono">{oidcCtx.repo}</span>{/if}
+				{$_('eventCard.trustedPublishingAction', { values: { action: configureTrustCtx.action, name: configureTrustCtx.target.name } })}
+				{#if configureTrustCtx.target.repository}· repo <span class="font-mono">{configureTrustCtx.target.repository}</span>{/if}
 			</div>
+		{/if}
+
+		{#if configureTrustCtx}
+			{#if configureTrustCtx.action === 'remove'}
+				<div class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+					{$_('eventCard.removeTrustedPublishing')} <span class="font-mono">{trustedPublisherSummary(configureTrustCtx.target.currentConfig)}</span>
+				</div>
+			{:else if isPending}
+				<div class="flex justify-end">
+					<ButtonGroup>
+						<Button variant={trustFormMode === 'compact' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => setTrustFormMode('compact')}>{$_('trustedPublishing.formModeCompact')}</Button>
+						<Button variant={trustFormMode === 'full' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => setTrustFormMode('full')}>{$_('trustedPublishing.formModeFull')}</Button>
+					</ButtonGroup>
+				</div>
+				<TrustedPublishingDraftForm
+					eventId={event.id}
+					groupId={event.groupId}
+					config={configureTrustCtx.config}
+					currentConfig={configureTrustCtx.target.currentConfig}
+					repositoryHint={configureTrustCtx.target.repository ?? ''}
+					mode={trustFormMode}
+					disabled={confirming}
+					bind:valid={trustedPublishingDraftValid}
+				/>
+			{/if}
 		{/if}
 
 		{#if recursiveCtx}
@@ -662,12 +714,12 @@
 			{/if}
 			<div class="pt-1">
 				<ButtonGroup>
-					<Button variant={event.kind === 'unpublish' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={doConfirm}>
+					<Button variant={event.kind === 'unpublish' || configureTrustCtx?.action === 'remove' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={doConfirm}>
 						{#if confirming}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconCheck class="h-3.5 w-3.5" />{/if}
 						{#if confirming}
 							{$_('eventCard.confirming')}
-						{:else if event.kind === 'setup-oidc'}
-							{$_('eventCard.confirmSetupOidc')}
+						{:else if event.kind === 'configure-trust'}
+							{configureTrustCtx?.action === 'remove' ? $_('eventCard.confirmRemoveTrustedPublishing') : $_('eventCard.confirmTrustedPublishing')}
 						{:else if event.kind === 'recursive-publish'}
 							{$_('eventCard.confirmRecursivePublish')}
 						{:else if event.kind === 'refresh-token'}

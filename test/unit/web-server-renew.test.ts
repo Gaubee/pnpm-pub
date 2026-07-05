@@ -37,7 +37,6 @@ vi.mock("../../src/daemon/npm-api.js", () => ({
   applyToken: mocks.applyTokenMock,
   verifyCredentials: mocks.verifyCredentialsMock,
   publishPackage: vi.fn(),
-  configureOidc: vi.fn(),
   isExpiredToken: vi.fn(),
 }));
 

@@ -1,5 +1,5 @@
 /**
- * npm Trusted Publishing (OIDC) trusted-publisher management — powered by
+ * npm Trusted Publishing trusted-publisher management — powered by
  * safe-npm-sdk (replaces all hand-written fetch + parse logic).
  *
  * The SDK handles auth headers, OTP injection, scoped-name escaping, retries,

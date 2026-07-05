@@ -5,6 +5,16 @@
  * no Node-only code. Keep in sync with the daemon side.
  */
 
+/**
+ * App-wide preferences (mirrors `Preferences` in src/shared/schemas.ts). The
+ * keep-open pin is a typed preference; `values` is a non-security free-form
+ * record for small UI preferences parsed defensively by each consumer.
+ */
+export interface Preferences {
+  keepOnTop: boolean;
+  values: Record<string, unknown>;
+}
+
 export interface Profile {
   username: string;
   registry?: string;
@@ -122,16 +132,8 @@ export interface RecursivePublishContext {
   branch?: string;
 }
 
-export interface OidcContext {
-  repo: string;
-  name: string;
-  branch?: string;
-  path: string;
-  force?: boolean;
-}
-
 /**
- * npm Trusted Publishing (OIDC) trusted-publisher config — mirrors the
+ * npm Trusted Publishing trusted-publisher config — mirrors the
  * `TrustedPublisherConfig` in src/shared/index.ts (the daemon owns the network
  * call; the webui only ever mirrors these types).
  */
@@ -160,6 +162,22 @@ export interface GitlabCiPublisher extends TrustedPublisherBase {
   claims: { project_path: string; ci_config_ref_uri?: string; environment?: string };
 }
 export type TrustedPublisherConfig = GithubActionsPublisher | CircleCiPublisher | GitlabCiPublisher;
+export type TrustedPublisherCreateConfig =
+  | Omit<GithubActionsPublisher, "id">
+  | Omit<CircleCiPublisher, "id">
+  | Omit<GitlabCiPublisher, "id">;
+export type TrustedPublishingOperation = "add" | "update" | "remove";
+export interface TrustedPublishingTarget {
+  name: string;
+  path?: string;
+  repository?: string;
+  currentConfig?: TrustedPublisherConfig;
+}
+export interface ConfigureTrustContext {
+  action: TrustedPublishingOperation;
+  target: TrustedPublishingTarget;
+  config?: TrustedPublisherCreateConfig;
+}
 
 export interface CreatePlaceholderContext {
   name: string;
@@ -176,7 +194,7 @@ export interface UnpublishContext {
 
 export type EventKind =
   | "publish"
-  | "setup-oidc"
+  | "configure-trust"
   | "create-placeholder"
   | "refresh-token"
   | "unpublish"
@@ -192,7 +210,7 @@ export type EventStatus =
 
 export type EventPayload =
   | { kind: "publish"; data: PublishContext }
-  | { kind: "setup-oidc"; data: OidcContext }
+  | { kind: "configure-trust"; data: ConfigureTrustContext }
   | { kind: "create-placeholder"; data: CreatePlaceholderContext }
   | { kind: "refresh-token"; data: RefreshTokenContext }
   | { kind: "unpublish"; data: UnpublishContext }
@@ -256,8 +274,8 @@ export type WsServerMessage =
   | { type: "toast"; level: "info" | "success" | "error" | "warning"; message: string }
   | {
       type: "pin";
-      pinned: boolean;
       exitRequested: boolean;
       visibility: "hidden" | "shown";
       hasActiveEvents: boolean;
-    };
+    }
+  | { type: "preferences"; preferences: Preferences };

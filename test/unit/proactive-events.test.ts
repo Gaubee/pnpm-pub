@@ -1,7 +1,7 @@
 /**
  * Feature: WebUI-created proactive events
  *
- * Scenario: Given a workspace action creates an OIDC event, when the user
+ * Scenario: Given a workspace action creates a Trusted Publishing event, when the user
  * confirms it, then the scheduler executes it through the same pending wall as
  * CLI-originated publish events.
  */
@@ -14,7 +14,8 @@ import { promisify } from "node:util";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
-import { configureOidc, publishPackage } from "../../src/daemon/npm-api.js";
+import { publishPackage } from "../../src/daemon/npm-api.js";
+import { addTrustedPublisher, removeTrustedPublisher } from "../../src/daemon/trusted-publishing-api.js";
 import {
   packPackage,
   readPackageTarball,
@@ -29,8 +30,12 @@ import {
 } from "../../src/daemon/publisher.js";
 
 vi.mock("../../src/daemon/npm-api.js", () => ({
-  configureOidc: vi.fn(),
   publishPackage: vi.fn(),
+}));
+
+vi.mock("../../src/daemon/trusted-publishing-api.js", () => ({
+  addTrustedPublisher: vi.fn(),
+  removeTrustedPublisher: vi.fn(),
 }));
 
 vi.mock("../../src/daemon/packer.js", () => ({
@@ -48,7 +53,8 @@ vi.mock("../../src/daemon/publisher.js", () => ({
 }));
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-proactive-${process.pid}-${Date.now()}`);
-const configureOidcMock = vi.mocked(configureOidc);
+const addTrustedPublisherMock = vi.mocked(addTrustedPublisher);
+const removeTrustedPublisherMock = vi.mocked(removeTrustedPublisher);
 const publishPackageMock = vi.mocked(publishPackage);
 const packPackageMock = vi.mocked(packPackage);
 const readPackageTarballMock = vi.mocked(readPackageTarball);
@@ -73,12 +79,11 @@ beforeEach(async () => {
   await fsp.rm(sandbox, { recursive: true, force: true });
   await fsp.mkdir(sandbox, { recursive: true });
   setHomeOverride(sandbox);
-  configureOidcMock.mockResolvedValue({
+  addTrustedPublisherMock.mockResolvedValue({
     ok: true,
     status: 200,
-    stdout: "[oidc] enabled provenance for @scope/pkg",
-    stderr: "",
   });
+  removeTrustedPublisherMock.mockResolvedValue({ ok: true, status: 200 });
   publishPackageMock.mockResolvedValue({
     ok: true,
     status: 200,
@@ -117,43 +122,36 @@ afterEach(async () => {
 });
 
 describe("Feature: WebUI-created proactive events", () => {
-  it("Scenario: Given a setup-oidc event, When confirmed, Then it executes from the pending wall", async () => {
-    const packageDir = path.join(sandbox, "pkg");
-    await fsp.mkdir(packageDir, { recursive: true });
-
+  it("Scenario: Given a configure-trust event, When confirmed, Then it executes from the pending wall", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
-      path: packageDir,
+    const config = {
+      type: "github" as const,
+      permissions: ["createPackage" as const],
+      claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+    };
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "add",
+      target: { name: "@scope/pkg", repository: "owner/repo" },
+      config,
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-    expect(configureOidcMock).toHaveBeenCalledWith({
-      registry: "http://registry.test/",
-      token: "npm_token",
-      totpSecret: "JBSWY3DPEHPK3PXP",
-      name: "@scope/pkg",
-    });
+    expect(addTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/pkg",
+      config,
+    );
 
     const event = store.getEvent(created.event.id);
     expect(event?.status).toBe("success");
-    const workflow = await fsp.readFile(
-      path.join(packageDir, ".github/workflows/publish.yml"),
-      "utf8",
-    );
-    expect(workflow).toContain("id-token: write");
-    expect(workflow).toContain("npm publish --provenance");
-    expect(workflow).not.toContain("NODE_AUTH_TOKEN");
-    expect(workflow).not.toContain("NPM_TOKEN");
   });
 
   it("Scenario: Given an Events action input, When it is submitted, Then the payload is source-backed and not a demo literal", async () => {
@@ -175,23 +173,22 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(evt.payload.data.name).toBe("reserved-name");
   });
 
-  it("Scenario: Given scanned package metadata, When routed from Workspaces, Then the OIDC repo comes from the package source", async () => {
+  it("Scenario: Given scanned package metadata, When routed from Workspaces, Then the trust repo comes from the package source", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice" });
     const scheduler = new PublishScheduler(store);
 
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "acme/repo",
-      path: "/workspace/pkg",
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "add",
+      target: { name: "@scope/pkg", repository: "acme/repo", path: "/workspace/pkg" },
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    expect(created.event.payload?.kind).toBe("setup-oidc");
-    if (created.event.payload?.kind !== "setup-oidc") return;
-    expect(created.event.payload.data.repo).toBe("acme/repo");
+    expect(created.event.payload?.kind).toBe("configure-trust");
+    if (created.event.payload?.kind !== "configure-trust") return;
+    expect(created.event.payload.data.target.repository).toBe("acme/repo");
   });
 
   it("Scenario: Given a WebUI-created publish event, When rejected, Then no registry action runs", async () => {
@@ -217,106 +214,140 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(publishPackageMock).not.toHaveBeenCalled();
   });
 
-  it("Scenario: Given an existing OIDC workflow, When setup is confirmed without force, Then no registry action is performed", async () => {
-    const packageDir = path.join(sandbox, "pkg-existing-workflow");
-    const workflowPath = path.join(packageDir, ".github/workflows/publish.yml");
-    await fsp.mkdir(path.dirname(workflowPath), { recursive: true });
-    await fsp.writeFile(workflowPath, "name: Existing\n", "utf8");
-
+  it("Scenario: Given an existing trusted publisher, When update is confirmed, Then the new config is added before the old id is removed", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
-      path: packageDir,
+    const config = {
+      type: "github" as const,
+      permissions: ["createPackage" as const],
+      claims: { repository: "owner/repo", workflow_ref: { file: "release.yml" } },
+    };
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "update",
+      target: {
+        name: "@scope/pkg",
+        currentConfig: {
+          id: "old-id",
+          type: "github",
+          permissions: ["createPackage"],
+          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+        },
+      },
+      config,
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-    expect(configureOidcMock).not.toHaveBeenCalled();
-    expect(await fsp.readFile(workflowPath, "utf8")).toBe("name: Existing\n");
+    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    expect(removeTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/pkg",
+      "old-id",
+    );
     const event = store.getEvent(created.event.id);
-    expect(event?.status).toBe("failed");
-    expect(event?.result).toContain("already exists");
+    expect(event?.status).toBe("success");
   });
 
-  it("Scenario: Given OIDC registry setup succeeds but workflow write fails, Then the Event fails", async () => {
-    const packagePath = path.join(sandbox, "oidc-file-parent");
-    await fsp.writeFile(packagePath, "not a directory", "utf8");
-
+  it("Scenario: Given a remove configure-trust event, When confirmed, Then the trusted publisher id is deleted", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
-      path: packagePath,
-      force: true,
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "remove",
+      target: {
+        name: "@scope/pkg",
+        currentConfig: {
+          id: "remove-id",
+          type: "github",
+          permissions: ["createPackage"],
+          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+        },
+      },
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-    expect(configureOidcMock).toHaveBeenCalledOnce();
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
+    expect(removeTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/pkg",
+      "remove-id",
+    );
     const event = store.getEvent(created.event.id);
-    expect(event?.status).toBe("failed");
-    expect(event?.result).toContain("[oidc] could not write workflow:");
+    expect(event?.status).toBe("success");
   });
 
-  it("Scenario: Given workflow writing rejects with a non-Error value, When OIDC is confirmed, Then the source text is preserved", async () => {
-    const packageDir = path.join(sandbox, "oidc-non-error-write");
-    await fsp.mkdir(packageDir, { recursive: true });
+  it("Scenario: Given update cleanup fails after add succeeds, When confirmed, Then the partial side effect is reported as failure", async () => {
+    removeTrustedPublisherMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      error: "old config still present",
+    });
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
-      path: packageDir,
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "update",
+      target: {
+        name: "@scope/pkg",
+        currentConfig: {
+          id: "old-id",
+          type: "github",
+          permissions: ["createPackage"],
+          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+        },
+      },
+      config: {
+        type: "github",
+        permissions: ["createPackage"],
+        claims: { repository: "owner/repo", workflow_ref: { file: "release.yml" } },
+      },
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const writeFileSpy = vi.spyOn(fsp, "writeFile").mockRejectedValueOnce("disk quota exhausted");
-    try {
-      await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-      const event = store.getEvent(created.event.id);
-      expect(event?.status).toBe("failed");
-      expect(event?.result).toBe("[oidc] could not write workflow: disk quota exhausted");
-    } finally {
-      writeFileSpy.mockRestore();
-    }
+    await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
+    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    const event = store.getEvent(created.event.id);
+    expect(event?.status).toBe("failed");
+    expect(event?.result).toBe("old config still present");
   });
 
-  it("Scenario: Given OIDC registry setup rejects with a non-Error value, When confirmed, Then the source text is preserved", async () => {
-    const packageDir = path.join(sandbox, "oidc-non-error-registry");
-    await fsp.mkdir(packageDir, { recursive: true });
-    configureOidcMock.mockRejectedValueOnce("registry oidc offline");
-
+  it("Scenario: Given configure-trust add fails, When confirmed, Then the registry text is preserved", async () => {
+    addTrustedPublisherMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      error: "registry trust offline",
+    });
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
-      path: packageDir,
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "add",
+      target: { name: "@scope/pkg" },
+      config: {
+        type: "github",
+        permissions: ["createPackage"],
+        claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+      },
     });
 
     expect(created.ok).toBe(true);
@@ -325,7 +356,79 @@ describe("Feature: WebUI-created proactive events", () => {
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
     const event = store.getEvent(created.event.id);
     expect(event?.status).toBe("failed");
-    expect(event?.result).toBe("registry oidc offline");
+    expect(event?.result).toBe("registry trust offline");
+  });
+
+  it("Scenario: Given grouped configure-trust events, When confirmed, Then each selected package is its own audited action", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+
+    const scheduler = new PublishScheduler(store);
+    const config = {
+      type: "github" as const,
+      permissions: ["createPackage" as const],
+      claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+    };
+    const groupId = "trust-group-1";
+    const first = await scheduler.createProactiveEvent(
+      "configure-trust",
+      "alice",
+      {
+        action: "add",
+        target: { name: "@scope/a" },
+        config,
+      },
+      groupId,
+    );
+    const second = await scheduler.createProactiveEvent(
+      "configure-trust",
+      "alice",
+      {
+        action: "update",
+        target: {
+          name: "@scope/b",
+          currentConfig: {
+            id: "old-b",
+            type: "github",
+            permissions: ["createPackage"],
+            claims: { repository: "owner/repo", workflow_ref: { file: "old.yml" } },
+          },
+        },
+        config,
+      },
+      groupId,
+    );
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(first.event.groupId).toBe(groupId);
+    expect(second.event.groupId).toBe(groupId);
+
+    await expect(scheduler.confirm(first.event.id)).resolves.toBe(true);
+    await expect(scheduler.confirm(second.event.id)).resolves.toBe(true);
+    expect(addTrustedPublisherMock).toHaveBeenCalledTimes(2);
+    expect(addTrustedPublisherMock).toHaveBeenNthCalledWith(
+      1,
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/a",
+      config,
+    );
+    expect(addTrustedPublisherMock).toHaveBeenNthCalledWith(
+      2,
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/b",
+      config,
+    );
+    expect(removeTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/b",
+      "old-b",
+    );
+    expect(store.getEvent(first.event.id)?.status).toBe("success");
+    expect(store.getEvent(second.event.id)?.status).toBe("success");
   });
 
   it("Scenario: Given an invalid proactive payload, When mounted, Then no executable event is created", async () => {
@@ -334,7 +437,7 @@ describe("Feature: WebUI-created proactive events", () => {
     await store.upsertProfile({ username: "alice" });
     const scheduler = new PublishScheduler(store);
 
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
       name: "@scope/pkg",
     });
 
@@ -342,20 +445,25 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(store.getEvents()).toEqual([]);
   });
 
-  it("Scenario: Given an OIDC payload without package path, When mounted, Then no daemon-cwd fallback event is created", async () => {
+  it("Scenario: Given a configure-trust event without a draft config, When confirmed, Then no registry action is performed", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.upsertProfile({ username: "alice" });
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
     const scheduler = new PublishScheduler(store);
 
-    const created = await scheduler.createProactiveEvent("setup-oidc", "alice", {
-      name: "@scope/pkg",
-      repo: "owner/repo",
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "add",
+      target: { name: "@scope/pkg" },
     });
 
-    expect(created.ok).toBe(false);
-    expect(store.getEvents()).toEqual([]);
-    expect(configureOidcMock).not.toHaveBeenCalled();
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
+    const event = store.getEvent(created.event.id);
+    expect(event?.status).toBe("failed");
+    expect(event?.result).toContain("config is required");
   });
 
   it("Scenario: Given an unknown profile, When mounting a proactive action, Then no orphan Event is created", async () => {
@@ -442,7 +550,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(event?.result).toBe("Credentials for alice are missing. Re-apply them in the tray.");
     expect(packPackageMock).not.toHaveBeenCalled();
     expect(publishPackageMock).not.toHaveBeenCalled();
-    expect(configureOidcMock).not.toHaveBeenCalled();
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
   });
 
   it("Scenario: Given a refresh-token event, When confirmed, Then it requires credential input", async () => {
@@ -464,7 +572,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(event?.status).toBe("action-required");
     expect(event?.result).toBe("Token refresh for alice requires credential re-apply.");
     expect(publishPackageMock).not.toHaveBeenCalled();
-    expect(configureOidcMock).not.toHaveBeenCalled();
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
   });
 
   it("Scenario: Given a refresh-token event without loaded credentials, When confirmed, Then it still requires credential input", async () => {
@@ -485,7 +593,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(event?.status).toBe("action-required");
     expect(event?.result).toBe("Token refresh for alice requires credential re-apply.");
     expect(publishPackageMock).not.toHaveBeenCalled();
-    expect(configureOidcMock).not.toHaveBeenCalled();
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
   });
 
   it("Scenario: Given a publish with an explicit profile override, When intercepted, Then the pending event stores that override", async () => {

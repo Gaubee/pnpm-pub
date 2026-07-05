@@ -192,44 +192,55 @@
       opacity: 0;
     }
   }
+  /*
+   * Animations use the INDIVIDUAL `scale` / `translate` / `opacity` CSS
+   * properties — never `transform`. This is deliberate: DialogContent centers
+   * itself with `-translate-x/y-1/2` utilities (which compile to `transform`).
+   * If a keyframe set `transform: scale(...)`, `animation-fill-mode: both`
+   * would let that `transform` override the centering utilities, throwing the
+   * dialog off-center and — worse — shifting the trigger that a portalled
+   * Popover anchors to, so the popover drifts. Using `scale:` (a separate
+   * property) leaves `transform` untouched, so centering holds and the popover
+   * stays anchored.
+   */
   @keyframes pp-zoom-in {
     from {
       opacity: 0;
-      transform: translate(-50%, -50%) scale(0.95);
+      scale: 0.95;
     }
     to {
       opacity: 1;
-      transform: translate(-50%, -50%) scale(1);
+      scale: 1;
     }
   }
   @keyframes pp-zoom-out {
     from {
       opacity: 1;
-      transform: translate(-50%, -50%) scale(1);
+      scale: 1;
     }
     to {
       opacity: 0;
-      transform: translate(-50%, -50%) scale(0.95);
+      scale: 0.95;
     }
   }
   @keyframes pp-slide-in-top {
     from {
       opacity: 0;
-      transform: translate(-50%, calc(-50% - 8px));
+      translate: 0 -8px;
     }
     to {
       opacity: 1;
-      transform: translate(-50%, -50%);
+      translate: 0 0;
     }
   }
   @keyframes pp-slide-out-top {
     from {
       opacity: 1;
-      transform: translate(-50%, -50%);
+      translate: 0 0;
     }
     to {
       opacity: 0;
-      transform: translate(-50%, calc(-50% - 8px));
+      translate: 0 -8px;
     }
   }
   @keyframes pp-spin {

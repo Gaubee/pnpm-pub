@@ -247,15 +247,57 @@ describe("DaemonStore events (Chapter 6.2)", () => {
     }
   });
 
-  it("Scenario: Given a non-publish event (setup-oidc), When updating args, Then it is rejected (undefined)", async () => {
+  it("Scenario: Given a non-publish event (configure-trust), When updating args, Then it is rejected (undefined)", async () => {
     const store = new DaemonStore();
     await store.load();
     const evt = store.createEvent({
-      kind: "setup-oidc",
+      kind: "configure-trust",
       profile: "alice",
-      payload: { kind: "setup-oidc", data: { repo: "o/r", name: "@scope/pkg", path: "/p" } },
+      payload: {
+        kind: "configure-trust",
+        data: { action: "add", target: { name: "@scope/pkg", path: "/p", repository: "o/r" } },
+      },
     });
     expect(store.updateEventArgs(evt.id, ["--access", "public"])).toBeUndefined();
+  });
+
+  it("Scenario: Given grouped configure-trust events, When updating the draft, Then every pending group member receives it", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const groupId = "configure-trust-group";
+    const first = store.createEvent({
+      kind: "configure-trust",
+      profile: "alice",
+      groupId,
+      payload: {
+        kind: "configure-trust",
+        data: { action: "add", target: { name: "@scope/a", path: "/a", repository: "o/r" } },
+      },
+    });
+    const second = store.createEvent({
+      kind: "configure-trust",
+      profile: "alice",
+      groupId,
+      payload: {
+        kind: "configure-trust",
+        data: { action: "update", target: { name: "@scope/b", path: "/b", repository: "o/r" } },
+      },
+    });
+    const config = {
+      type: "github" as const,
+      permissions: ["createPackage" as const],
+      claims: { repository: "o/r", workflow_ref: { file: "publish.yml" } },
+    };
+
+    const updated = store.updateConfigureTrustGroupDraft(groupId, config);
+
+    expect(updated.map((event) => event.id).sort()).toEqual([first.id, second.id].sort());
+    for (const event of [first, second]) {
+      expect(event.payload?.kind).toBe("configure-trust");
+      if (event.payload?.kind === "configure-trust") {
+        expect(event.payload.data.config).toEqual(config);
+      }
+    }
   });
 
   it("Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)", async () => {
@@ -282,13 +324,13 @@ describe("DaemonStore preferences (Chapter 6.4)", () => {
   it("defaults keepOnTop to false on first run (no file)", async () => {
     const store = new DaemonStore();
     await store.load();
-    expect(store.getPreferences()).toEqual({ keepOnTop: false });
+    expect(store.getPreferences()).toEqual({ keepOnTop: false, values: {} });
   });
 
   it("persists keepOnTop across reloads", async () => {
     const store = new DaemonStore();
     await store.load();
-    await store.setKeepOnTop(true);
+    await store.setPreferences({ keepOnTop: true });
 
     const reloaded = new DaemonStore();
     await reloaded.load();
@@ -300,9 +342,21 @@ describe("DaemonStore preferences (Chapter 6.4)", () => {
     await store.load();
     const seen: Preferences[] = [];
     store.on("preferences", (prefs: Preferences) => seen.push(prefs));
-    await store.setKeepOnTop(true);
-    await store.setKeepOnTop(true); // no-op, no second emit
-    expect(seen).toEqual([{ keepOnTop: true }]);
+    await store.setPreferences({ keepOnTop: true });
+    await store.setPreferences({ keepOnTop: true }); // no-op, no second emit
+    expect(seen).toEqual([{ keepOnTop: true, values: {} }]);
+  });
+
+  it("Scenario: Given free-form UI preference values, When patched independently, Then existing keys are conserved", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.setPreferences({ values: { "trustedPublishing.formMode": "compact" } });
+    await store.setPreferences({ values: { "other.preference": true } });
+
+    expect(store.getPreferences().values).toEqual({
+      "trustedPublishing.formMode": "compact",
+      "other.preference": true,
+    });
   });
 });
 

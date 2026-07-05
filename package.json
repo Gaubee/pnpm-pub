@@ -13,8 +13,8 @@
     "tray",
     "trusted-publish"
   ],
-  "license": "ISC",
-  "author": "",
+  "license": "MIT",
+  "author": "Gaubee",
   "bin": {
     "pnpm-pub": "./dist/cli.js"
   },

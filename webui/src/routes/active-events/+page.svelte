@@ -22,7 +22,7 @@
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-	import OidcDialog from '$lib/components/oidc-dialog.svelte';
+	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import { actions } from '$lib/store.js';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
@@ -33,9 +33,9 @@
 
 	let actionsOpen = $state(false);
 	let placeholderName = $state('');
-	// OIDC 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
-	let oidcName = $state('');
-	let oidcDialogOpen = $state(false);
+	// Trusted Publishing 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
+	let trustedPublishingName = $state('');
+	let trustedPublishingDialogOpen = $state(false);
 
 	// Resolved events briefly linger at the top so the user can see the result
 	// (success/failed) instead of having it vanish to history instantly.
@@ -160,10 +160,10 @@
 		placeholderName = '';
 	}
 
-	function openOidcDialog(): void {
-		if (!oidcName.trim()) return;
+	function openTrustedPublishingDialog(): void {
+		if (!trustedPublishingName.trim()) return;
 		actionsOpen = false;
-		oidcDialogOpen = true;
+		trustedPublishingDialogOpen = true;
 	}
 </script>
 
@@ -190,9 +190,9 @@
 					</div>
 					<div class="space-y-1.5 border-t border-border pt-3">
 						<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>
-						<Label class="sr-only" for="oidc-name">{$_('events.packageName')}</Label>
-						<Input id="oidc-name" bind:value={oidcName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && openOidcDialog()} />
-						<Button variant="brand" size="sm" class="w-full" disabled={!oidcName.trim()} onclick={openOidcDialog}>{$_('events.configureTrustedPublish')}</Button>
+						<Label class="sr-only" for="trusted-publishing-name">{$_('events.packageName')}</Label>
+						<Input id="trusted-publishing-name" bind:value={trustedPublishingName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && openTrustedPublishingDialog()} />
+						<Button variant="brand" size="sm" class="w-full" disabled={!trustedPublishingName.trim()} onclick={openTrustedPublishingDialog}>{$_('events.configureTrustedPublish')}</Button>
 					</div>
 				</div>
 			</DropdownMenu.Content>
@@ -255,10 +255,10 @@
 	</section>
 </div>
 
-<!-- OIDC Trusted Publishing 配置对话框（从 New Action 菜单触发）。 -->
-<OidcDialog
-	bind:open={oidcDialogOpen}
-	packageName={oidcName.trim()}
+<!-- Trusted Publishing 配置对话框（从 New Action 菜单触发）。 -->
+<TrustedPublishingDialog
+	bind:open={trustedPublishingDialogOpen}
+	packageName={trustedPublishingName.trim()}
 	config={null}
 	onChanged={() => {}}
 />

@@ -10,13 +10,23 @@ import { z } from "zod";
 import {
   BackupBundleSchema,
   PackageDetailSchema,
+  PreferencesSchema,
   PubEventSchema,
+  TrustedPublisherCreateConfigSchema,
   TrustedPublisherConfigSchema,
   WsServerMessageSchema,
 } from "./schemas.js";
 
 const OkResponseSchema = z.object({
   ok: z.boolean(),
+  error: z.string().optional(),
+});
+
+const OidcWorkflowResponseSchema = z.object({
+  ok: z.boolean(),
+  path: z.string().optional(),
+  content: z.string().optional(),
+  exists: z.boolean().optional(),
   error: z.string().optional(),
 });
 
@@ -164,11 +174,6 @@ const TrustListResponseSchema = z.object({
   error: z.string().optional(),
 });
 
-export const TrustedPublisherCreateConfigSchema = z.discriminatedUnion("type", [
-  TrustedPublisherConfigSchema.options[0].omit({ id: true }),
-  TrustedPublisherConfigSchema.options[1].omit({ id: true }),
-  TrustedPublisherConfigSchema.options[2].omit({ id: true }),
-]);
 export type TrustedPublisherCreateConfig = z.infer<typeof TrustedPublisherCreateConfigSchema>;
 
 const ScanWorkspaceResponseSchema = z.object({
@@ -239,12 +244,28 @@ export const webRpcContract = {
     update: oc
       .input(z.object({ id: z.string().min(1), args: z.array(z.string()) }))
       .output(OkResponseSchema),
+    updateConfigureTrustDraft: oc
+      .input(
+        z.object({
+          id: z.string().min(1),
+          config: TrustedPublisherCreateConfigSchema,
+        }),
+      )
+      .output(OkResponseSchema),
+    updateConfigureTrustGroupDraft: oc
+      .input(
+        z.object({
+          groupId: z.string().min(1),
+          config: TrustedPublisherCreateConfigSchema,
+        }),
+      )
+      .output(OkResponseSchema),
     create: oc
       .input(
         z.object({
           kind: z.enum([
             "publish",
-            "setup-oidc",
+            "configure-trust",
             "create-placeholder",
             "refresh-token",
             "unpublish",
@@ -270,19 +291,43 @@ export const webRpcContract = {
     openPath: oc.input(z.object({ path: z.string().min(1) })).output(OkResponseSchema),
     openUrl: oc.input(z.object({ url: z.string().min(1) })).output(OkResponseSchema),
   },
-  oidc: {
+  trustedPublishing: {
     listTrust: oc.input(z.object({ package: z.string().min(1) })).output(TrustListResponseSchema),
-    addTrust: oc
-      .input(z.object({ package: z.string().min(1), config: TrustedPublisherCreateConfigSchema }))
-      .output(OkResponseSchema),
-    removeTrust: oc
-      .input(z.object({ package: z.string().min(1), uuid: z.string().min(1) }))
-      .output(OkResponseSchema),
+  },
+  setupOidc: {
+    previewWorkflow: oc
+      .input(
+        z.object({
+          packagePath: z.string().min(1),
+          config: TrustedPublisherConfigSchema,
+        }),
+      )
+      .output(OidcWorkflowResponseSchema),
+    writeWorkflow: oc
+      .input(
+        z.object({
+          packagePath: z.string().min(1),
+          config: TrustedPublisherConfigSchema,
+          force: z.boolean().optional(),
+        }),
+      )
+      .output(OidcWorkflowResponseSchema),
   },
   tray: {
-    setPin: oc.input(z.object({ pinned: z.boolean() })).output(OkResponseSchema),
     completeAutoClose: oc.output(OkResponseSchema),
     windowHidden: oc.output(OkResponseSchema),
+  },
+  /**
+   * App-wide preferences (Chapter 6.4). Single read/write source for the
+   * keep-open pin and any future preference field. `patch` is a partial update;
+   * the daemon merges it over the persisted preferences, broadcasts the full
+   * snapshot via the `preferences` WS frame, and TrayHost reacts by
+   * re-evaluating auto-close eligibility.
+   */
+  preferences: {
+    set: oc
+      .input(z.object({ patch: PreferencesSchema.partial() }))
+      .output(OkResponseSchema),
   },
 } as const;
 

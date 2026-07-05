@@ -61,16 +61,24 @@ export type WorkspacesConfig = z.infer<typeof WorkspacesConfigSchema>;
 // Unlike profiles/workspaces this schema is NOT `.strict()`: it uses default
 // strip parsing so a future field added by a newer daemon doesn't reject an
 // older reader, and a missing file yields the defaults below. The only field
-// today is `keepOnTop` — whether the tray window stays pinned on top and is
+// today is `keepOnTop` — whether the tray window stays pinned on top and
 // exempt from blur auto-hide.
+//
+// ⚠️ MAINTAINER NOTE: when you add a field here you MUST:
+//   1. Add it to `DEFAULT_PREFERENCES`.
+//   2. Add a matching control in the WebUI SettingsDialog 「偏好 / Preferences」
+//      tab (`webui/src/lib/components/settings/preferences-tab.svelte`). Every
+//      persisted preference must be user-editable from that tab — preferences is
+//      the single read/write source, so an unexposed field would be unchangeable.
 // ---------------------------------------------------------------------------
-
-export const DEFAULT_PREFERENCES = { keepOnTop: false } as const;
 
 export const PreferencesSchema = z.object({
   keepOnTop: z.boolean(),
+  values: z.record(z.string(), z.unknown()).default({}),
 });
 export type Preferences = z.infer<typeof PreferencesSchema>;
+
+export const DEFAULT_PREFERENCES: Preferences = { keepOnTop: false, values: {} };
 
 // ---------------------------------------------------------------------------
 // Backup bundle (Chapter 8.2)
@@ -143,7 +151,7 @@ export type IpcRequest = IpcHandshake | IpcPublishRequest | IpcManagementRequest
 
 export const EventKindSchema = z.enum([
   "publish",
-  "setup-oidc",
+  "configure-trust",
   "create-placeholder",
   "refresh-token",
   "unpublish",
@@ -197,15 +205,6 @@ export const PublishContextSchema = z.object({
 });
 export type PublishContext = z.infer<typeof PublishContextSchema>;
 
-export const OidcContextSchema = z.object({
-  repo: z.string(),
-  name: z.string(),
-  branch: z.string().optional(),
-  path: z.string(),
-  force: z.boolean().optional(),
-});
-export type OidcContext = z.infer<typeof OidcContextSchema>;
-
 export const CreatePlaceholderContextSchema = z.object({
   name: z.string(),
 });
@@ -242,18 +241,6 @@ export const RecursivePublishContextSchema = z.object({
 });
 export type RecursivePublishContext = z.infer<typeof RecursivePublishContextSchema>;
 
-export const EventPayloadSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("publish"), data: PublishContextSchema }),
-  z.object({ kind: z.literal("setup-oidc"), data: OidcContextSchema }),
-  z.object({ kind: z.literal("create-placeholder"), data: CreatePlaceholderContextSchema }),
-  z.object({ kind: z.literal("refresh-token"), data: RefreshTokenContextSchema }),
-  z.object({ kind: z.literal("unpublish"), data: UnpublishContextSchema }),
-  z.object({ kind: z.literal("recursive-publish"), data: RecursivePublishContextSchema }),
-]);
-export type EventPayload = z.infer<typeof EventPayloadSchema>;
-
-export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>["data"];
-
 // ---------------------------------------------------------------------------
 // Tarball file-tree summary — cached on publish events so the WebUI can
 // preview the packed contents without re-packing.
@@ -274,30 +261,8 @@ export const TarballSummarySchema = z.object({
 });
 export type TarballSummary = z.infer<typeof TarballSummarySchema>;
 
-export const PubEventSchema = z.object({
-  id: z.string(),
-  kind: EventKindSchema,
-  status: EventStatusSchema,
-  profile: z.string(),
-  profileOverride: z.string().optional(),
-  createdAt: z.number().int().nonnegative(),
-  resolvedAt: z.number().int().nonnegative().optional(),
-  payload: EventPayloadSchema.optional(),
-  result: z.string().optional(),
-  clockDriftRecovered: z.boolean().optional(),
-  /** Batch correlation id — events sharing a groupId were created together. */
-  groupId: z.string().optional(),
-  /** Packed-tarball file list, cached when the publish runs (dry or real). */
-  tarballSummary: TarballSummarySchema.optional(),
-  /** Per-target tarball summaries for a recursive publish (one per target). */
-  tarballSummaries: z
-    .array(z.object({ name: z.string(), version: z.string(), summary: TarballSummarySchema }))
-    .optional(),
-});
-export type PubEvent = z.infer<typeof PubEventSchema>;
-
 // ---------------------------------------------------------------------------
-// Trusted Publishing (OIDC) — npm /trust API
+// Trusted Publishing — npm /trust API
 // ---------------------------------------------------------------------------
 
 export const TrustedPublisherTypeSchema = z.enum(["github", "circleci", "gitlab"]);
@@ -315,7 +280,7 @@ const TrustedPublisherBaseSchema = z.object({
 
 // Field names mirror the npm registry wire format (what safe-npm-sdk sends
 // and what GET returns), NOT the human-friendly names on npm's HTML form. The
-// form layer (oidc-dialog.svelte) splits these into separate inputs and
+// form layer splits these into separate inputs and
 // reassembles them in buildConfig().
 export const GithubActionsPublisherSchema = TrustedPublisherBaseSchema.extend({
   type: z.literal("github"),
@@ -355,6 +320,65 @@ export const TrustedPublisherConfigSchema = z.discriminatedUnion("type", [
   GitlabCiPublisherSchema,
 ]);
 export type TrustedPublisherConfig = z.infer<typeof TrustedPublisherConfigSchema>;
+
+export const TrustedPublisherCreateConfigSchema = z.discriminatedUnion("type", [
+  GithubActionsPublisherSchema.omit({ id: true }),
+  CircleCiPublisherSchema.omit({ id: true }),
+  GitlabCiPublisherSchema.omit({ id: true }),
+]);
+export type TrustedPublisherCreateConfig = z.infer<typeof TrustedPublisherCreateConfigSchema>;
+
+export const TrustedPublishingOperationSchema = z.enum(["add", "update", "remove"]);
+export type TrustedPublishingOperation = z.infer<typeof TrustedPublishingOperationSchema>;
+
+export const TrustedPublishingTargetSchema = z.object({
+  name: z.string().min(1),
+  path: z.string().optional(),
+  repository: z.string().optional(),
+  currentConfig: TrustedPublisherConfigSchema.optional(),
+});
+export type TrustedPublishingTarget = z.infer<typeof TrustedPublishingTargetSchema>;
+
+export const ConfigureTrustContextSchema = z.object({
+  action: TrustedPublishingOperationSchema,
+  target: TrustedPublishingTargetSchema,
+  config: TrustedPublisherCreateConfigSchema.optional(),
+});
+export type ConfigureTrustContext = z.infer<typeof ConfigureTrustContextSchema>;
+
+export const EventPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("publish"), data: PublishContextSchema }),
+  z.object({ kind: z.literal("configure-trust"), data: ConfigureTrustContextSchema }),
+  z.object({ kind: z.literal("create-placeholder"), data: CreatePlaceholderContextSchema }),
+  z.object({ kind: z.literal("refresh-token"), data: RefreshTokenContextSchema }),
+  z.object({ kind: z.literal("unpublish"), data: UnpublishContextSchema }),
+  z.object({ kind: z.literal("recursive-publish"), data: RecursivePublishContextSchema }),
+]);
+export type EventPayload = z.infer<typeof EventPayloadSchema>;
+
+export type EventPayloadData<K extends EventKind> = Extract<EventPayload, { kind: K }>["data"];
+
+export const PubEventSchema = z.object({
+  id: z.string(),
+  kind: EventKindSchema,
+  status: EventStatusSchema,
+  profile: z.string(),
+  profileOverride: z.string().optional(),
+  createdAt: z.number().int().nonnegative(),
+  resolvedAt: z.number().int().nonnegative().optional(),
+  payload: EventPayloadSchema.optional(),
+  result: z.string().optional(),
+  clockDriftRecovered: z.boolean().optional(),
+  /** Batch correlation id — events sharing a groupId were created together. */
+  groupId: z.string().optional(),
+  /** Packed-tarball file list, cached when the publish runs (dry or real). */
+  tarballSummary: TarballSummarySchema.optional(),
+  /** Per-target tarball summaries for a recursive publish (one per target). */
+  tarballSummaries: z
+    .array(z.object({ name: z.string(), version: z.string(), summary: TarballSummarySchema }))
+    .optional(),
+});
+export type PubEvent = z.infer<typeof PubEventSchema>;
 
 // ---------------------------------------------------------------------------
 // Package detail (PackageDetail page) — projection of a registry packument.
@@ -409,13 +433,23 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
    * Tray/window state projection. Sent on connect and whenever TrayHost facts
    * change. `exitRequested` is the daemon's authorization for the page-owned
    * opacity timeline; the WebUI derives the visible 5→0 countdown from WAAPI.
+   * NOTE: the "keep open" pin (`pinned`) is NOT part of this frame — it is a
+   * persisted preference and travels via the `preferences` frame below.
    */
   z.object({
     type: z.literal("pin"),
-    pinned: z.boolean(),
     exitRequested: z.boolean(),
     visibility: z.enum(["hidden", "shown"]),
     hasActiveEvents: z.boolean(),
+  }),
+  /**
+   * App-wide preferences snapshot (Chapter 6.4). Sent on connect and whenever
+   * preferences change (single read/write source for the keep-open pin and any
+   * future preference field). The WebUI derives `pinned` from `keepOnTop`.
+   */
+  z.object({
+    type: z.literal("preferences"),
+    preferences: PreferencesSchema,
   }),
   z.object({
     type: z.literal("packages"),

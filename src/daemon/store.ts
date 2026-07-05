@@ -20,6 +20,7 @@ import {
   type EventKind,
   type EventPayload,
   type Preferences,
+  type TrustedPublisherCreateConfig,
 } from "../shared/index.js";
 import {
   profilesPath,
@@ -46,7 +47,7 @@ import {
 
 const DEFAULT_CONFIG: PnpmPubConfig = { default: "", profiles: [] };
 const DEFAULT_WORKSPACES: WorkspacesConfig = { paths: [] };
-const DEFAULT_PREFS: Preferences = { ...DEFAULT_PREFERENCES };
+const DEFAULT_PREFS: Preferences = structuredClone(DEFAULT_PREFERENCES);
 
 type EventResolutionMetadata = Pick<PubEvent, "clockDriftRecovered"> & {
   tarballSummary?: PubEvent["tarballSummary"];
@@ -63,7 +64,7 @@ export interface CredentialPool {
 export class DaemonStore extends EventEmitter {
   private config: PnpmPubConfig = { ...DEFAULT_CONFIG };
   private workspaces: WorkspacesConfig = { ...DEFAULT_WORKSPACES };
-  private preferences: Preferences = { ...DEFAULT_PREFS };
+  private preferences: Preferences = structuredClone(DEFAULT_PREFS);
   private events: PubEvent[] = [];
   private credentials = new Map<string, CredentialPool>();
   private eventDb: DatabaseType | null = null;
@@ -289,10 +290,21 @@ export class DaemonStore extends EventEmitter {
     return { ...this.preferences };
   }
 
-  /** Persist the keepOnTop pin and emit a 'preferences' event. */
-  async setKeepOnTop(keepOnTop: boolean): Promise<void> {
-    if (this.preferences.keepOnTop === keepOnTop) return;
-    this.preferences = { keepOnTop };
+  /**
+   * Persist a partial preferences patch and emit a 'preferences' event. The
+   * patch is merged over the current preferences so callers only name the
+   * field(s) they change; a no-op patch (yielding the same object) emits
+   * nothing. This is the single write path for all app-wide preferences — the
+   * keep-open pin and any future field.
+   */
+  async setPreferences(patch: Partial<Preferences>): Promise<void> {
+    const merged = {
+      ...this.preferences,
+      ...patch,
+      values: patch.values ? { ...this.preferences.values, ...patch.values } : this.preferences.values,
+    };
+    if (JSON.stringify(merged) === JSON.stringify(this.preferences)) return;
+    this.preferences = merged;
     await this.writeJson(preferencesPath(), this.preferences);
     this.emit("preferences", this.getPreferences());
   }
@@ -394,6 +406,45 @@ export class DaemonStore extends EventEmitter {
     this.emit("event", { type: "event" as const, event: evt });
     return evt;
   }
+
+  updateConfigureTrustDraft(
+    id: string,
+    config: TrustedPublisherCreateConfig,
+  ): PubEvent | undefined {
+    const evt = this.events.find((e) => e.id === id);
+    if (!evt || evt.status !== "pending") return undefined;
+    if (evt.payload?.kind !== "configure-trust") return undefined;
+    evt.payload.data.config = config;
+    if (this.eventDb) updateEvent(this.eventDb, evt);
+    this.emit("event", { type: "event" as const, event: evt });
+    return evt;
+  }
+
+  updateConfigureTrustGroupDraft(
+    groupId: string,
+    config: TrustedPublisherCreateConfig,
+  ): PubEvent[] {
+    const updated: PubEvent[] = [];
+    for (const evt of this.events) {
+      if (evt.status !== "pending") continue;
+      if (evt.groupId !== groupId) continue;
+      if (evt.payload?.kind !== "configure-trust") continue;
+      if (evt.payload.data.action === "remove") continue;
+      evt.payload.data.config = config;
+      if (this.eventDb) updateEvent(this.eventDb, evt);
+      updated.push(evt);
+    }
+    for (const event of updated) {
+      this.emit("event", { type: "event" as const, event });
+    }
+    return updated;
+  }
+
+  invalidateTrustedPublishing(names: string[]): void {
+    const unique = [...new Set(names.filter((name) => name.trim().length > 0))];
+    if (unique.length === 0) return;
+    this.emit("trusted-publishing", { names: unique });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -432,10 +483,12 @@ function parseWorkspacesConfig(value: unknown): WorkspacesConfig | null {
  * Parse preferences.json with default-strip semantics. Missing file or a parse
  * failure yields null (caller falls back to DEFAULT_PREFS). A partial file
  * (e.g. only `keepOnTop`) merges over defaults so a forward-compatible field
- * added by a newer daemon doesn't break this reader.
+ * added by a newer daemon doesn't break this reader. The parsed data is passed
+ * through directly (not reconstructed field-by-field) so newly added
+ * PreferencesSchema fields are picked up without touching this function.
  */
 function parsePreferences(value: unknown): Preferences | null {
   const result = PreferencesSchema.safeParse(value);
   if (!result.success) return null;
-  return { keepOnTop: result.data.keepOnTop };
+  return result.data;
 }

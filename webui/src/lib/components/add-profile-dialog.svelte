@@ -28,7 +28,7 @@
 
 	function setOpen(next: boolean): void {
 		if (!next && !hasProfiles) return;
-		ui.set({ addProfileOpen: next });
+		ui.update((s) => ({ ...s, addProfileOpen: next }));
 	}
 
 	function handleSuccess(username: string): void {

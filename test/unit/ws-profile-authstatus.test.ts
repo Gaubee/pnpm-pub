@@ -49,7 +49,6 @@ vi.mock("../../src/daemon/npm-api.js", () => ({
     check: { authValid: true, requires2FA: true, otpValid: true, message: "auth valid, OTP valid" },
   }),
   publishPackage: vi.fn(),
-  configureOidc: vi.fn(),
   isExpiredToken: vi.fn(),
 }));
 

@@ -14,11 +14,11 @@ Status legend: ✅ implemented · ⚠️ intentional deviation (documented) · �
 | Thin CLI, `pnpm publish`-compatible                  | ✅     | `src/cli/cli.ts:323-333` forwards args 1:1                                |
 | No silent publish; every Write needs a GUI click     | ✅     | `src/daemon/scheduler.ts:64-98` (intercept → pending)                     |
 | Daemonize, credentials in memory                     | ✅     | `src/daemon/main.ts:12`; in-memory pool `src/daemon/store.ts:125-135`     |
-| OIDC file never overwrites without `--force`         | ✅     | `src/daemon/oidc-template.ts:49-54`, enforced `scheduler.ts:218-230`      |
+| Trusted Publishing writes require Event confirmation | ✅     | `src/daemon/scheduler.ts` (`configure-trust`; batch uses shared `groupId`) |
 | Native layer is pure K/V                             | ✅     | `src/daemon/keychain.ts:115-151`                                          |
 | Tray icon = NPM logo + user avatar merge             | ✅     | SVG composite `src/daemon/avatar.ts:69-92` (npm mark over clipped avatar) |
 | Sidebar aggregating profiles, smooth switch          | ✅     | `webui/src/lib/components/app-sidebar.svelte:106-162`                     |
-| One-click generate `publish.yml` + apply NPM binding | ✅     | `oidc-template.ts:13-42`; `npm-api.ts:293-320` (2fa-required)             |
+| Trusted Publishing add/update/remove through npm `/trust` | ✅ | `src/daemon/trusted-publishing-api.ts`; confirmed by scheduler pending Events |
 | `--profile` override                                 | ✅     | `cli.ts:261-284`; `scheduler.ts:65-76`                                    |
 | Auto onboarding (user+pass+totp → token)             | ✅     | `npm-api.ts:74-116`; `web-server.ts:346-385`                              |
 | Password burned after exchange                       | ✅     | `npm-api.ts:81,114` (`burnBuffer`)                                        |
@@ -146,7 +146,7 @@ Status legend: ✅ implemented · ⚠️ intentional deviation (documented) · �
 | full publish-intercept sequence                             | ✅     | E2E `publish-intercept.test.ts:174-235`                                                     |
 | clock-drift: 403 OTP → Date header → corrected TOTP → retry | ✅     | `npm-api.ts:241-270`; `drift.test.ts`; E2E `:246-310`                                       |
 | clockDriftRecovered flag                                    | ✅     | `npm-api.ts:252`; `scheduler.ts:179-181`; `event-card.svelte:88-90`                         |
-| OIDC dashboard flow                                         | ✅     | `npm-api.ts:293-320`; `scheduler.ts:202-253`                                                |
+| Trusted Publishing dashboard flow                           | ✅     | `trusted-publishing-api.ts`; `scheduler.ts`; `webui/src/lib/components/trusted-publishing-dialog.svelte` |
 
 ## Chapter 9 — Build & Distribution (`spec/09.md`)
 

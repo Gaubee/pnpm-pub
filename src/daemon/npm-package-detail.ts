@@ -21,7 +21,7 @@ import {
 } from "safe-npm-sdk";
 import type { PackageCollaborator, PackageDetail } from "../shared/index.js";
 
-/** Credentials needed to construct a one-shot SDK client (mirrors oidc-trust). */
+/** Credentials needed to construct a one-shot SDK client (mirrors trusted-publishing-api). */
 export interface PackageDetailAuth {
   registry: string;
   token: string;

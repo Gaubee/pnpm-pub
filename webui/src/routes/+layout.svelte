@@ -12,6 +12,7 @@
 	} from '$lib/window-size.js';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
 	import AddProfileDialog from '$lib/components/add-profile-dialog.svelte';
+	import SettingsDialog from '$lib/components/settings-dialog.svelte';
 	import Island from '$lib/components/island.svelte';
 	import { TooltipProvider } from '$lib/components/ui/tooltip/index.js';
 	import { bridgeDaemonToast } from '$lib/notify.js';
@@ -103,13 +104,15 @@
 		root background lets the native window blur read through, and the route
 		page renders its own centred card. Children = the /add-profile page.
 	-->
-	<div class="flex h-screen w-screen flex-col overflow-hidden bg-background/60 text-foreground backdrop-blur-xl">
-		<!-- Keep the titlebar drag affordance even on the onboarding page. -->
-		<WindowDragRegion />
-		<main class="min-h-0 overflow-auto">
-			{@render children?.()}
-		</main>
-	</div>
+		<div class="flex h-screen w-screen flex-col overflow-hidden bg-background/60 text-foreground backdrop-blur-xl">
+			<!-- Keep the titlebar drag affordance even on the onboarding page.
+			     Onboarding shows language + theme (user may need to switch language
+			     before authenticating); the main shell shows theme + Settings. -->
+			<WindowDragRegion variant="onboarding" />
+			<main class="min-h-0 overflow-auto">
+				{@render children?.()}
+			</main>
+		</div>
 {:else}
 	<!--
 		Glass layering (overlay-window-controls window style):
@@ -120,8 +123,8 @@
 		layers its own more-opaque translucent fill on top, with internal scroll.
 	-->
 	<div class="flex h-screen w-screen flex-col overflow-hidden bg-background/60 text-foreground backdrop-blur-xl">
-		<!-- Overlay-chrome titlebar: native drag via startAppRegionDrag (Chapter 6.1.3). -->
-		<WindowDragRegion />
+			<!-- Overlay-chrome titlebar: native drag via startAppRegionDrag (Chapter 6.1.3). -->
+			<WindowDragRegion variant="main" />
 
 		<div class="flex min-h-0 flex-1">
 			<!-- Sidebar-07 shell: transparent — lets the root blur read through. -->
@@ -143,6 +146,9 @@
 
 <!-- Single instance of the Add Profile dialog (driven by the `ui` store). -->
 <AddProfileDialog />
+
+<!-- Single instance of the Settings dialog (general / preferences / export). -->
+<SettingsDialog />
 
 <!-- Global notification surface (Dynamic Island), centred in the titlebar. -->
 <Island />

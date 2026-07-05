@@ -13,10 +13,12 @@ import type {
   WsServerMessage,
   PubEvent,
   Profile,
+  Preferences,
   WorkspaceEntry,
   PublishTarget,
   EventKind,
   EventPayloadData,
+  TrustedPublisherCreateConfig,
 } from "./types";
 import type { RepoInfo } from "./components/repo-info-types.js";
 import { filterVisibleEvents, sortEvents } from "./event-projection.js";
@@ -88,9 +90,16 @@ export interface DaemonState {
   /** Staged confirmation token for a risky-workspace add (Chapter 5.3.2). */
   riskyConfirmationToken: string | null;
   /**
+   * App-wide preferences (Chapter 6.4) — single read source. The keep-open pin
+   * and any future preference field live here. `pinned` below is a convenience
+   * projection of `preferences.keepOnTop` so existing consumers don't change.
+   */
+  preferences: Preferences;
+  /**
    * Tray window keepOnTop pin state (Chapter 6.4). When true the window stays
-   * on top and is exempt from blur auto-hide. `exitRequested`, `windowVisibility`,
-   * and `hasActiveEvents` are daemon facts; `pinCountdown` is a local projection
+   * on top and is exempt from blur auto-hide. Derived from
+   * `preferences.keepOnTop`. `exitRequested`, `windowVisibility`, and
+   * `hasActiveEvents` are daemon facts; `pinCountdown` is a local projection
    * derived from the page-owned WebAnimation auto-close timeline.
    */
   pinned: boolean;
@@ -114,6 +123,7 @@ function createState(): DaemonState {
     scannedRoot: null,
     isPnpmWorkspace: false,
     riskyConfirmationToken: null,
+    preferences: { keepOnTop: false, values: {} },
     pinned: false,
     exitRequested: false,
     windowVisibility: "hidden",
@@ -130,10 +140,13 @@ export const daemon = writable<DaemonState>(createState());
  * (used when at least one profile exists and the user adds another). When there
  * are NO profiles, the app forces the dedicated `/add-profile` route instead.
  */
-export const ui = writable<{ addProfileOpen: boolean }>({ addProfileOpen: false });
+export const ui = writable<{ addProfileOpen: boolean; settingsOpen: boolean }>({
+  addProfileOpen: false,
+  settingsOpen: false,
+});
 
 export function openAddProfile(): void {
-  ui.set({ addProfileOpen: true });
+  ui.update((s) => ({ ...s, addProfileOpen: true }));
 }
 
 export function closeAddProfile(force = false): void {
@@ -141,7 +154,16 @@ export function closeAddProfile(force = false): void {
     const { profiles } = get(daemon);
     if (profiles.length === 0) return;
   }
-  ui.set({ addProfileOpen: false });
+  ui.update((s) => ({ ...s, addProfileOpen: false }));
+}
+
+/** Open the global Settings dialog (general / preferences / export tabs). */
+export function openSettings(): void {
+  ui.update((s) => ({ ...s, settingsOpen: true }));
+}
+
+export function closeSettings(): void {
+  ui.update((s) => ({ ...s, settingsOpen: false }));
 }
 
 let socket: WebSocket | null = null;
@@ -317,11 +339,17 @@ function handleServerMessage(msg: WsServerMessage): void {
     case "pin":
       daemon.update((s) => ({
         ...s,
-        pinned: msg.pinned,
         exitRequested: msg.exitRequested,
         windowVisibility: msg.visibility,
         hasActiveEvents: msg.hasActiveEvents,
         pinCountdown: msg.exitRequested ? s.pinCountdown : null,
+      }));
+      break;
+    case "preferences":
+      daemon.update((s) => ({
+        ...s,
+        preferences: msg.preferences,
+        pinned: msg.preferences.keepOnTop,
       }));
       break;
   }
@@ -337,7 +365,7 @@ function dispatchMessages(messages: WsServerMessage[]): void {
   for (const msg of messages) handleServerMessage(msg);
 }
 
-function pushToast(level: "info" | "success" | "error" | "warning", message: string): void {
+export function pushToast(level: "info" | "success" | "error" | "warning", message: string): void {
   handleServerMessage({ type: "toast", level, message });
 }
 
@@ -427,13 +455,28 @@ export const actions = {
       if (!res.ok && res.error) pushToast("error", res.error);
     });
   },
+  updateConfigureTrustDraft(id: string, config: TrustedPublisherCreateConfig): void {
+    void rpc?.events.updateConfigureTrustDraft({ id, config }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
+  },
+  updateConfigureTrustGroupDraft(groupId: string, config: TrustedPublisherCreateConfig): void {
+    void rpc?.events.updateConfigureTrustGroupDraft({ groupId, config }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
+  },
   /**
-   * Toggle the tray window's keep-open pin (Chapter 6.4). The daemon persists
-   * it, re-evaluates auto-close eligibility, and projects the new frame back
-   * via the `pin` server message.
+   * Patch app-wide preferences (Chapter 6.4) — the single write path. The
+   * daemon merges the patch, persists it, broadcasts a `preferences` frame
+   * (every client + the titlebar pin + the Settings 「偏好」 tab react), and
+   * TrayHost re-evaluates auto-close eligibility for the keep-open pin.
    */
-  setPin(pinned: boolean): void {
-    void rpc?.tray.setPin({ pinned });
+  setPreferences(patch: Partial<Preferences>): void {
+    void rpc?.preferences.set({ patch });
+  },
+  setPreferenceValue(key: string, value: unknown): void {
+    const current = get(daemon).preferences.values ?? {};
+    void rpc?.preferences.set({ patch: { values: { ...current, [key]: value } } });
   },
   /** Called when the page-owned WAAPI exit timeline has actually completed. */
   completeAutoClose(): void {

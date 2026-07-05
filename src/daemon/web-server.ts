@@ -55,11 +55,8 @@ import {
 import { exportBundle, importBundle } from "./crypto.js";
 import { getCachedAvatarPath, lookupNpmProfileIdentity } from "./avatar.js";
 import { recordTokenCreatedAt } from "./auto-renew.js";
-import {
-  listTrustedPublishers,
-  addTrustedPublisher,
-  removeTrustedPublisher,
-} from "./oidc-trust.js";
+import { listTrustedPublishers } from "./trusted-publishing-api.js";
+import { previewPublishWorkflow, writePublishWorkflow } from "./oidc-workflow.js";
 import { kvGet, kvSet } from "./event-db.js";
 
 export interface WebServerDeps {
@@ -175,6 +172,12 @@ export class WebServer {
     this.deps.store.on("event", (msg) => this.broadcast(msg));
     this.deps.store.on("profiles", (msg) => this.broadcast(msg));
     this.deps.store.on("workspaces", (msg) => this.broadcast(msg));
+    this.deps.store.on("preferences", (preferences) =>
+      this.broadcast({ type: "preferences", preferences }),
+    );
+    this.deps.store.on("trusted-publishing", (event: { names: string[] }) => {
+      for (const name of event.names) this.invalidateTrust(name);
+    });
   }
 
   /** Attach the tray host so WebUI projection frames can include tray state. */
@@ -439,6 +442,25 @@ export class WebServer {
           const updated = this.deps.store.updateEventArgs(input.id, input.args);
           return updated ? { ok: true } : { ok: false, error: "No such pending event." };
         }),
+        updateConfigureTrustDraft: rpc.events.updateConfigureTrustDraft.handler(
+          ({ input }) => {
+            const updated = this.deps.store.updateConfigureTrustDraft(input.id, input.config);
+            return updated
+              ? { ok: true }
+              : { ok: false, error: "No pending configure-trust event." };
+          },
+        ),
+        updateConfigureTrustGroupDraft: rpc.events.updateConfigureTrustGroupDraft.handler(
+          ({ input }) => {
+            const updated = this.deps.store.updateConfigureTrustGroupDraft(
+              input.groupId,
+              input.config,
+            );
+            return updated.length > 0
+              ? { ok: true }
+              : { ok: false, error: "No pending configure-trust events in this group." };
+          },
+        ),
         create: rpc.events.create.handler(async ({ input }) => ({
           messages: await this.collectMessages((send) =>
             this.createProactiveEvent(input.kind, input.payload, send, input.groupId),
@@ -474,39 +496,41 @@ export class WebServer {
         openPath: rpc.repo.openPath.handler(({ input }) => this.openExternal(input.path)),
         openUrl: rpc.repo.openUrl.handler(({ input }) => this.openExternal(input.url)),
       },
-      oidc: {
-        listTrust: rpc.oidc.listTrust.handler(async ({ input }) => {
+      trustedPublishing: {
+        listTrust: rpc.trustedPublishing.listTrust.handler(async ({ input }) => {
           const result = await this.listTrustCached(input.package);
           return result.ok
             ? { ok: true, configs: result.configs }
             : { ok: false, error: result.error, needsReauth: result.needsReauth };
         }),
-        addTrust: rpc.oidc.addTrust.handler(async ({ input }) => {
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return authDeniedBody(auth);
-          const result = await addTrustedPublisher(auth, input.package, input.config);
-          this.invalidateTrust(input.package);
-          return { ok: result.ok, error: result.error };
+      },
+      setupOidc: {
+        previewWorkflow: rpc.setupOidc.previewWorkflow.handler(async ({ input }) => {
+          const result = await previewPublishWorkflow(input.packagePath, input.config);
+          return result;
         }),
-        removeTrust: rpc.oidc.removeTrust.handler(async ({ input }) => {
-          const auth = await this.resolveTrustAuth();
-          if (!authIsOk(auth)) return authDeniedBody(auth);
-          const result = await removeTrustedPublisher(auth, input.package, input.uuid);
-          this.invalidateTrust(input.package);
-          return { ok: result.ok, error: result.error };
+        writeWorkflow: rpc.setupOidc.writeWorkflow.handler(async ({ input }) => {
+          const result = await writePublishWorkflow(input.packagePath, input.config, input.force ?? false);
+          return result;
         }),
       },
       tray: {
-        setPin: rpc.tray.setPin.handler(async ({ input }) => {
-          if (this.trayHost) await this.trayHost.setPin(input.pinned);
-          return { ok: true };
-        }),
         completeAutoClose: rpc.tray.completeAutoClose.handler(() => {
           this.trayHost?.completeAutoClose();
           return { ok: true };
         }),
         windowHidden: rpc.tray.windowHidden.handler(() => {
           this.trayHost?.markHidden();
+          return { ok: true };
+        }),
+      },
+      preferences: {
+        set: rpc.preferences.set.handler(async ({ input }) => {
+          // Single write path for all app-wide preferences. The store merge +
+          // emit drives the broadcast (every client, including the WebUI's
+          // 「偏好」 tab and the titlebar pin) and TrayHost's auto-close
+          // re-evaluation via its preferences subscription.
+          await this.deps.store.setPreferences(input.patch);
           return { ok: true };
         }),
       },
@@ -523,6 +547,9 @@ export class WebServer {
         profiles: this.deps.store.getProfiles(),
       },
       { type: "workspaces", workspaces: this.deps.store.getWorkspaces() },
+      // Preferences is the single read source for the keep-open pin and any
+      // future preference field; the WebUI derives `pinned` from `keepOnTop`.
+      { type: "preferences", preferences: this.deps.store.getPreferences() },
     ];
     if (this.trayHost) {
       queue.push({ type: "pin", ...this.trayHost.getPinState() });

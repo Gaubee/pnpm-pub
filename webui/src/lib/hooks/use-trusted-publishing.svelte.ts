@@ -1,11 +1,11 @@
 /**
- * Reusable Trusted Publishing (OIDC) status cache + fetch helpers.
+ * Reusable Trusted Publishing status cache + fetch helpers.
  *
  * Mirrors the per-package cache that the Workspaces detail page keeps inline
- * (`oidcState` + `maybeFetchOidc` + `onOidcChanged`), lifted into a factory so
+ * (`trustedPublishingState` + `maybeFetchTrustedPublishing` + `onTrustedPublishingChanged`), lifted into a factory so
  * the Packages list and PackageDetail pages can share the same discipline:
  *   - 30s TTL per package (errors are cached too, to avoid retry storms),
- *   - in-flight dedup (one oidc.listTrust call per package at a time),
+ *   - in-flight dedup (one trustedPublishing.listTrust call per package at a time),
  *   - explicit invalidation after a config add/remove.
  *
  * Must live in a `.svelte.ts` module — it relies on Svelte 5 runes (`$state`).
@@ -13,16 +13,16 @@
 import { getRpcClient } from "../store.js";
 import type { TrustedPublisherConfig } from "../types.js";
 
-const OIDC_TTL = 30_000;
+const TRUSTED_PUBLISHING_TTL = 30_000;
 
-interface OidcEntry {
+interface TrustedPublishingEntry {
   configs: TrustedPublisherConfig[];
   fetchedAt: number;
 }
 
-/** Build a fresh per-page OIDC status store. */
-export function createOidcStatus() {
-  let state = $state<Record<string, OidcEntry>>({});
+/** Build a fresh per-page Trusted Publishing status store. */
+export function createTrustedPublishingStatus() {
+  let state = $state<Record<string, TrustedPublishingEntry>>({});
   let inFlight = $state<Set<string>>(new Set());
 
   function isLoading(name: string): boolean {
@@ -41,7 +41,7 @@ export function createOidcStatus() {
   function fetch(name: string): void {
     if (inFlight.has(name)) return;
     const cached = state[name];
-    if (cached && Date.now() - cached.fetchedAt < OIDC_TTL) return;
+    if (cached && Date.now() - cached.fetchedAt < TRUSTED_PUBLISHING_TTL) return;
     inFlight = new Set(inFlight).add(name);
     const client = getRpcClient();
     if (!client) {
@@ -51,7 +51,7 @@ export function createOidcStatus() {
       inFlight = next;
       return;
     }
-    client.oidc
+    client.trustedPublishing
       .listTrust({ package: name })
       .then((json) => {
         state = {
@@ -94,4 +94,4 @@ export function createOidcStatus() {
   };
 }
 
-export type OidcStatus = ReturnType<typeof createOidcStatus>;
+export type TrustedPublishingStatus = ReturnType<typeof createTrustedPublishingStatus>;

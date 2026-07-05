@@ -8,16 +8,16 @@
 	 *   - shows local stale data instantly, then swaps in fresh registry data,
 	 *   - animates list changes with `flip` + `fade` for smooth reordering,
 	 *   - links each card to the in-app PackageDetail page,
-	 *   - surfaces per-card Trusted Publishing (OIDC) status + a Configure button.
+	 *   - surfaces per-card Trusted Publishing status + a Configure button.
 	 */
 	import { activeProfile, getRpcClient } from '$lib/store.js';
 	import { consumeEventIterator } from '@orpc/client';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import OidcDialog from '$lib/components/oidc-dialog.svelte';
-	import OidcStatus from '$lib/components/oidc-status.svelte';
-	import { createOidcStatus } from '$lib/hooks/use-oidc.svelte.js';
+	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
+	import TrustedPublishingStatus from '$lib/components/trusted-publishing-status.svelte';
+	import { createTrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
 	import type { NpmPackage, TrustedPublisherConfig } from '$lib/types.js';
 	import { goto } from '$app/navigation';
 	import { flip } from 'svelte/animate';
@@ -144,10 +144,10 @@
 		}
 	}
 
-	// ----- Per-card OIDC -----
-	const oidc = createOidcStatus();
+	// ----- Per-card Trusted Publishing -----
+	const trustedPublishing = createTrustedPublishingStatus();
 
-	// Rebuild the `repositoryHint` the OIDC dialog infers owner/name + provider
+	// Rebuild the `repositoryHint` the Trusted Publishing dialog infers owner/name + provider
 	// from. The list's `repository` field is already `owner/repo` for GitHub.
 	function repoHint(pkg: NpmPackage): string {
 		const repo = pkg.repository;
@@ -157,45 +157,45 @@
 		return repo;
 	}
 
-	let oidcDialogOpen = $state(false);
-	let oidcDialogPkg = $state('');
-	let oidcDialogRepoHint = $state('');
-	// Reactive: reads from the OIDC store so a config that arrives AFTER the
+	let trustedPublishingDialogOpen = $state(false);
+	let trustedPublishingDialogPkg = $state('');
+	let trustedPublishingDialogRepoHint = $state('');
+	// Reactive: reads from the Trusted Publishing store so a config that arrives AFTER the
 	// dialog opens (opened while still loading) flows in and syncs the form.
-	let oidcDialogConfig = $derived(oidc.configs(oidcDialogPkg)[0] ?? null);
+	let trustedPublishingDialogConfig = $derived(trustedPublishing.configs(trustedPublishingDialogPkg)[0] ?? null);
 
-	function openOidcDialog(e: MouseEvent | KeyboardEvent, pkg: NpmPackage): void {
+	function openTrustedPublishingDialog(e: MouseEvent | KeyboardEvent, pkg: NpmPackage): void {
 		// Stop the click/keyup from bubbling into the card's outer button (which
-		// navigates to the detail route) so opening the OIDC dialog stays put.
+		// navigates to the detail route) so opening the Trusted Publishing dialog stays put.
 		e.stopPropagation();
-		oidcDialogPkg = pkg.name;
-		oidcDialogRepoHint = repoHint(pkg);
-		oidcDialogOpen = true;
+		trustedPublishingDialogPkg = pkg.name;
+		trustedPublishingDialogRepoHint = repoHint(pkg);
+		trustedPublishingDialogOpen = true;
 	}
 
-	function onOidcChanged(): void {
-		oidc.invalidate(oidcDialogPkg);
+	function onTrustedPublishingChanged(): void {
+		trustedPublishing.invalidate(trustedPublishingDialogPkg);
 	}
 
-	// Prefetch OIDC status for the currently visible page so the indicator is
+	// Prefetch Trusted Publishing status for the currently visible page so the indicator is
 	// ready before the user hovers a card.
 	$effect(() => {
 		const items = data?.items ?? [];
-		for (const pkg of items) oidc.fetch(pkg.name);
+		for (const pkg of items) trustedPublishing.fetch(pkg.name);
 	});
 
-	function oidcStatusFor(name: string): 'configured' | 'loading' | 'none' {
-		if (oidc.isConfigured(name)) return 'configured';
-		if (oidc.isLoading(name)) return 'loading';
+	function trustedPublishingStatusFor(name: string): 'configured' | 'loading' | 'none' {
+		if (trustedPublishing.isConfigured(name)) return 'configured';
+		if (trustedPublishing.isLoading(name)) return 'loading';
 		return 'none';
 	}
 
-	function oidcText(name: string): string {
-		const status = oidcStatusFor(name);
-		if (status === 'loading') return $_('oidc.loading');
-		if (status === 'none') return $_('oidc.notConfigured');
-		const cfg = oidc.configs(name)[0];
-		if (!cfg) return $_('oidc.notConfigured');
+	function trustedPublishingText(name: string): string {
+		const status = trustedPublishingStatusFor(name);
+		if (status === 'loading') return $_('trustedPublishing.loading');
+		if (status === 'none') return $_('trustedPublishing.notConfigured');
+		const cfg = trustedPublishing.configs(name)[0];
+		if (!cfg) return $_('trustedPublishing.notConfigured');
 		const repo =
 			cfg.type === 'github'
 				? cfg.claims.repository
@@ -303,23 +303,23 @@
 							class="shrink-0 self-stretch rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
 							aria-label={$_('packages.openDetail', { values: { name: pkg.name } })}
 							title={$_('packages.openDetail', { values: { name: pkg.name } })}
-							onpointerenter={() => oidc.fetch(pkg.name)}
+							onpointerenter={() => trustedPublishing.fetch(pkg.name)}
 							onclick={() => gotoDetail(pkg)}
 						>
 							<IconChevronRight class="h-4 w-4" />
 						</button>
 					</div>
 
-				<!-- OIDC status row + Configure action. The configure click stops
+				<!-- Trusted Publishing status row + Configure action. The configure click stops
 				     propagation so opening the dialog never navigates to the detail
 				     route. Configuration is always allowed — the repository, when
 				     missing, is just entered manually inside the dialog. -->
 					<div class="mt-2 border-t border-border/60 pt-2">
-						<OidcStatus
-							status={oidcStatusFor(pkg.name)}
-							text={oidcText(pkg.name)}
-							buttonLabel={$_('packages.configureOidc')}
-							onconfigure={(e) => openOidcDialog(e, pkg)}
+						<TrustedPublishingStatus
+							status={trustedPublishingStatusFor(pkg.name)}
+							text={trustedPublishingText(pkg.name)}
+							buttonLabel={$_('packages.configureTrustedPublishing')}
+							onconfigure={(e) => openTrustedPublishingDialog(e, pkg)}
 						/>
 					</div>
 				</div>
@@ -345,10 +345,10 @@
 	{/if}
 </div>
 
-<OidcDialog
-	bind:open={oidcDialogOpen}
-	packageName={oidcDialogPkg}
-	config={oidcDialogConfig}
-	repositoryHint={oidcDialogRepoHint}
-	onChanged={onOidcChanged}
+<TrustedPublishingDialog
+	bind:open={trustedPublishingDialogOpen}
+	packageName={trustedPublishingDialogPkg}
+	config={trustedPublishingDialogConfig}
+	repositoryHint={trustedPublishingDialogRepoHint}
+	onChanged={onTrustedPublishingChanged}
 />

@@ -1,8 +1,8 @@
 <script lang="ts">
 	/**
-	 * One-line Trusted Publishing (OIDC) status indicator: a shield icon + a
+	 * One-line Trusted Publishing status indicator: a shield icon + a
 	 * status label (configured summary / loading shimmer / not-configured), with
-	 * an optional "Configure" button. Lifts the per-card OIDC row the Workspaces
+	 * an optional "Configure" button. Lifts the per-card trust row the Workspaces
 	 * detail page renders inline into a reusable component, and ships the
 	 * `.shiny-text` loading animation (previously scoped to that page).
 	 */

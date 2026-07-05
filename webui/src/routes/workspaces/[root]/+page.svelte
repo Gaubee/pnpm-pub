@@ -7,8 +7,8 @@
 	 *
 	 * Features:
 	 *   - Filter: plain text = includes(); /pattern/ = RegExp
-	 *   - OIDC status: always-visible line per package (loading shimmer / configured / not configured)
-	 *   - Batch mode: toggle on → cards become selectable → batch OIDC dialog
+	 *   - Trusted Publishing status: always-visible line per package (loading shimmer / configured / not configured)
+	 *   - Batch mode: toggle on → cards become selectable → batch Trusted Publishing dialog
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
@@ -19,7 +19,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import OidcDialog from '$lib/components/oidc-dialog.svelte';
+	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconScan from '@lucide/svelte/icons/scan-search';
 	import IconShield from '@lucide/svelte/icons/shield-check';
@@ -27,8 +27,9 @@
 	import IconSquare from '@lucide/svelte/icons/square';
 	import IconLayers from '@lucide/svelte/icons/layers';
 	import IconPublish from '@lucide/svelte/icons/upload';
+	import IconFileCode from '@lucide/svelte/icons/file-code-2';
 	import { _ } from 'svelte-i18n';
-	import type { PublishTarget, TrustedPublisherConfig } from '$lib/types.js';
+	import type { PublishTarget, TrustedPublisherConfig, TrustedPublishingTarget } from '$lib/types.js';
 
 	// Decode the root path from the URL
 	const rootParam = $derived(page.params.root ?? '');
@@ -69,88 +70,92 @@
 		return pkgPath;
 	}
 
-	// --- OIDC status (mirrors the old workspaces page logic) ---
-	const OIDC_TTL = 30_000;
-	let oidcState = $state<Record<string, { configs: TrustedPublisherConfig[]; fetchedAt: number }>>({});
-	let oidcInFlight = $state<Set<string>>(new Set());
+	// --- Trusted Publishing status ---
+	const TRUSTED_PUBLISHING_TTL = 30_000;
+	let trustedPublishingState = $state<Record<string, { configs: TrustedPublisherConfig[]; fetchedAt: number }>>({});
+	let trustedPublishingInFlight = $state<Set<string>>(new Set());
 
-	function isOidcConfigured(name: string): boolean {
-		return !!oidcState[name] && oidcState[name]!.configs.length > 0;
+	function isTrustedPublishingConfigured(name: string): boolean {
+		return !!trustedPublishingState[name] && trustedPublishingState[name]!.configs.length > 0;
 	}
-	function oidcLoading(name: string): boolean {
-		return oidcInFlight.has(name) && !oidcState[name];
+	function trustedPublishingLoading(name: string): boolean {
+		return trustedPublishingInFlight.has(name) && !trustedPublishingState[name];
 	}
-	function oidcConfigs(name: string): TrustedPublisherConfig[] {
-		return oidcState[name]?.configs ?? [];
+	function trustedPublishingConfigs(name: string): TrustedPublisherConfig[] {
+		return trustedPublishingState[name]?.configs ?? [];
 	}
-	function oidcSummary(cfg: TrustedPublisherConfig): string {
+	function trustedPublishingSummary(cfg: TrustedPublisherConfig): string {
 		const repo = cfg.type === 'gitlab' ? cfg.claims.project_path : cfg.type === 'circleci' ? cfg.claims['oidc.circleci.com/vcs-origin'] : cfg.claims.repository;
 		const env = 'environment' in cfg.claims ? cfg.claims.environment : undefined;
 		return [cfg.type, repo, env].filter(Boolean).join(' · ');
 	}
-	function oidcStatusText(name: string): string {
-		if (oidcLoading(name)) return $_('oidc.loading');
-		if (isOidcConfigured(name)) return oidcSummary(oidcConfigs(name)[0]!);
-		return $_('oidc.notConfigured');
+	function trustedPublishingStatusText(name: string): string {
+		if (trustedPublishingLoading(name)) return $_('trustedPublishing.loading');
+		if (isTrustedPublishingConfigured(name)) return trustedPublishingSummary(trustedPublishingConfigs(name)[0]!);
+		return $_('trustedPublishing.notConfigured');
 	}
 
-	function maybeFetchOidc(name: string): void {
-		if (oidcInFlight.has(name)) return;
-		const cached = oidcState[name];
-		if (cached && Date.now() - cached.fetchedAt < OIDC_TTL) return;
-		oidcInFlight = new Set(oidcInFlight).add(name);
+	function maybeFetchTrustedPublishing(name: string): void {
+		if (trustedPublishingInFlight.has(name)) return;
+		const cached = trustedPublishingState[name];
+		if (cached && Date.now() - cached.fetchedAt < TRUSTED_PUBLISHING_TTL) return;
+		trustedPublishingInFlight = new Set(trustedPublishingInFlight).add(name);
 		const client = getRpcClient();
 		if (!client) {
-			oidcState = { ...oidcState, [name]: { configs: [], fetchedAt: Date.now() } };
-			const next = new Set(oidcInFlight);
+			trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
+			const next = new Set(trustedPublishingInFlight);
 			next.delete(name);
-			oidcInFlight = next;
+			trustedPublishingInFlight = next;
 			return;
 		}
-		client.oidc
+		client.trustedPublishing
 			.listTrust({ package: name })
 			.then((json) => {
 				if (json?.ok && json.configs) {
-					oidcState = { ...oidcState, [name]: { configs: json.configs, fetchedAt: Date.now() } };
+					trustedPublishingState = { ...trustedPublishingState, [name]: { configs: json.configs, fetchedAt: Date.now() } };
 				} else {
 					// Error (403/404 etc) — also cache as empty for 30s to avoid retries.
-					oidcState = { ...oidcState, [name]: { configs: [], fetchedAt: Date.now() } };
+					trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
 				}
 			})
 			.catch(() => {
-				oidcState = { ...oidcState, [name]: { configs: [], fetchedAt: Date.now() } };
+				trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
 			})
 			.finally(() => {
-				const next = new Set(oidcInFlight);
+				const next = new Set(trustedPublishingInFlight);
 				next.delete(name);
-				oidcInFlight = next;
+				trustedPublishingInFlight = next;
 			});
 	}
 
-	// Auto-prefetch OIDC when package list changes
+	// Auto-prefetch Trusted Publishing when package list changes
 	$effect(() => {
 		void scanned;
-		for (const pkg of scanned) maybeFetchOidc(pkg.name);
+		for (const pkg of scanned) maybeFetchTrustedPublishing(pkg.name);
 	});
 
-	// --- OIDC dialog (single-package mode) ---
-	let oidcDialogOpen = $state(false);
-	let oidcDialogPkg = $state('');
-	let oidcDialogRepoHint = $state('');
-	// Reactive: reads from oidcState so a config that arrives AFTER the dialog
+	// --- Trusted Publishing dialog (single-package mode) ---
+	let trustedPublishingDialogOpen = $state(false);
+	let trustedPublishingDialogPkg = $state('');
+	let trustedPublishingDialogPath = $state('');
+	let trustedPublishingDialogRepoHint = $state('');
+	let trustedPublishingDialogInitialTab = $state<'current' | 'workflow'>('current');
+	// Reactive: reads from trustedPublishingState so a config that arrives AFTER the dialog
 	// opens (opened while still loading) flows into the dialog and syncs its form.
-	let oidcDialogConfig = $derived(oidcConfigs(oidcDialogPkg)[0] ?? null);
+	let trustedPublishingDialogConfig = $derived(trustedPublishingConfigs(trustedPublishingDialogPkg)[0] ?? null);
 
-	function openOidcDialog(pkg: PublishTarget): void {
-		oidcDialogPkg = pkg.name;
-		oidcDialogRepoHint = pkg.repository ?? '';
-		oidcDialogOpen = true;
+	function openTrustedPublishingDialog(pkg: PublishTarget, initialTab: 'current' | 'workflow' = 'current'): void {
+		trustedPublishingDialogPkg = pkg.name;
+		trustedPublishingDialogPath = pkg.path;
+		trustedPublishingDialogRepoHint = pkg.repository ?? '';
+		trustedPublishingDialogInitialTab = initialTab;
+		trustedPublishingDialogOpen = true;
 	}
-	function onOidcChanged(): void {
-		if (oidcDialogPkg) {
-			const next = { ...oidcState };
-			delete next[oidcDialogPkg];
-			oidcState = next;
+	function onTrustedPublishingChanged(): void {
+		if (trustedPublishingDialogPkg) {
+			const next = { ...trustedPublishingState };
+			delete next[trustedPublishingDialogPkg];
+			trustedPublishingState = next;
 		}
 	}
 
@@ -169,17 +174,24 @@
 		selected = next;
 	}
 
-	// --- Batch OIDC dialog ---
-	let batchOidcOpen = $state(false);
+	// --- Batch Trusted Publishing dialog ---
+	let batchTrustedPublishingOpen = $state(false);
 	let batchRepoHint = $state('');
+	let batchTrustedPublishingTargets = $state<TrustedPublishingTarget[]>([]);
 
 	/** If all selected packages share the same repository, use it as the hint. */
-	function openBatchOidc(): void {
+	function openBatchTrustedPublishing(): void {
 		if (selected.size === 0) return;
 		const selectedPkgs = scanned.filter((p) => selected.has(p.name));
 		const repos = new Set(selectedPkgs.map((p) => p.repository ?? ''));
 		batchRepoHint = repos.size === 1 ? [...repos][0]! : '';
-		batchOidcOpen = true;
+		batchTrustedPublishingTargets = selectedPkgs.map((pkg) => ({
+			name: pkg.name,
+			path: pkg.path,
+			...(pkg.repository ? { repository: pkg.repository } : {}),
+			...(trustedPublishingConfigs(pkg.name)[0] ? { currentConfig: trustedPublishingConfigs(pkg.name)[0] } : {}),
+		}));
+		batchTrustedPublishingOpen = true;
 	}
 
 	// --- Publish ---
@@ -280,8 +292,8 @@
 					{$_('workspaces.packageCount', { values: { count: filteredPackages.length } })}
 				</span>
 				{#if batchMode && selected.size > 0}
-					<Button variant="brand" size="sm" onclick={openBatchOidc}>
-						<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.batchOidc')} ({selected.size})
+					<Button variant="brand" size="sm" onclick={openBatchTrustedPublishing}>
+						<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.batchTrustedPublishing')} ({selected.size})
 					</Button>
 				{/if}
 			</div>
@@ -311,15 +323,15 @@
 							{#if pkg.repository}
 								<p class="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{pkg.repository}</p>
 							{/if}
-							<!-- OIDC status line — always visible -->
+							<!-- Trusted Publishing status line — always visible -->
 							<div class="mt-1 flex items-center gap-1.5">
-								<IconShield class="h-3 w-3 shrink-0 {isOidcConfigured(pkg.name) ? 'text-success' : 'text-muted-foreground/50'}" />
-								{#if isOidcConfigured(pkg.name)}
-									<span class="truncate text-[11px] text-success/90">{oidcStatusText(pkg.name)}</span>
-								{:else if oidcLoading(pkg.name)}
-									<span class="truncate text-[11px] shiny-text">{oidcStatusText(pkg.name)}</span>
+								<IconShield class="h-3 w-3 shrink-0 {isTrustedPublishingConfigured(pkg.name) ? 'text-success' : 'text-muted-foreground/50'}" />
+								{#if isTrustedPublishingConfigured(pkg.name)}
+									<span class="truncate text-[11px] text-success/90">{trustedPublishingStatusText(pkg.name)}</span>
+								{:else if trustedPublishingLoading(pkg.name)}
+									<span class="truncate text-[11px] shiny-text">{trustedPublishingStatusText(pkg.name)}</span>
 								{:else}
-									<span class="truncate text-[11px] text-muted-foreground/50">{oidcStatusText(pkg.name)}</span>
+									<span class="truncate text-[11px] text-muted-foreground/50">{trustedPublishingStatusText(pkg.name)}</span>
 								{/if}
 							</div>
 							{#if pkg.description}
@@ -349,13 +361,22 @@
 									<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
 								</Button>
 								<Button
-									variant={isOidcConfigured(pkg.name) ? 'brand' : 'outline'}
+									variant={isTrustedPublishingConfigured(pkg.name) ? 'brand' : 'outline'}
 									size="sm"
-									onpointerenter={() => maybeFetchOidc(pkg.name)}
-									onclick={() => openOidcDialog(pkg)}
+									onpointerenter={() => maybeFetchTrustedPublishing(pkg.name)}
+									onclick={() => openTrustedPublishingDialog(pkg)}
 								>
-									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.oidc')}
+									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.trustedPublishing')}
 								</Button>
+								{#if isTrustedPublishingConfigured(pkg.name)}
+									<Button
+										variant="outline"
+										size="sm"
+										onclick={() => openTrustedPublishingDialog(pkg, 'workflow')}
+									>
+										<IconFileCode class="h-3.5 w-3.5" /> OIDC
+									</Button>
+								{/if}
 							</div>
 						{/if}
 					</div>
@@ -365,26 +386,29 @@
 	{/if}
 </div>
 
-<!-- Single-package OIDC dialog -->
-<OidcDialog
-	bind:open={oidcDialogOpen}
-	packageName={oidcDialogPkg}
-	config={oidcDialogConfig}
-	repositoryHint={oidcDialogRepoHint}
-	onChanged={onOidcChanged}
+<!-- Single-package Trusted Publishing dialog -->
+<TrustedPublishingDialog
+	bind:open={trustedPublishingDialogOpen}
+	packageName={trustedPublishingDialogPkg}
+	packagePath={trustedPublishingDialogPath}
+	config={trustedPublishingDialogConfig}
+	repositoryHint={trustedPublishingDialogRepoHint}
+	initialTab={trustedPublishingDialogInitialTab}
+	onChanged={onTrustedPublishingChanged}
 />
 
-<!-- Batch OIDC dialog — submits the same config to every selected package -->
-<OidcDialog
-	bind:open={batchOidcOpen}
+<!-- Batch Trusted Publishing dialog — submits the same config to every selected package -->
+<TrustedPublishingDialog
+	bind:open={batchTrustedPublishingOpen}
 	packageNames={[...selected]}
+	packageTargets={batchTrustedPublishingTargets}
 	config={null}
 	repositoryHint={batchRepoHint}
 	onChanged={() => {
 		// Invalidate all selected packages' cache.
-		const next = { ...oidcState };
+		const next = { ...trustedPublishingState };
 		for (const name of selected) delete next[name];
-		oidcState = next;
+		trustedPublishingState = next;
 		batchMode = false;
 		selected = new Set();
 	}}

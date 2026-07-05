@@ -7,7 +7,7 @@
  *   - the "keep open" pin only gates blur auto-hide (default unpinned)
  *   - blur authorizes page-owned auto-close (unpinned + no active events)
  *   - focus cancels a pending auto-close intent
- *   - setPin persists the preference + re-evaluates auto-close
+ *   - the keep-open pin is a persisted preference (setPreferences), re-evaluated on change
  *   - markHidden (window-hidden WS) keeps toggle() correct after an OS-close
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
@@ -144,9 +144,9 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     expect(window.keepOnTop).toBe(true);
 
     // Toggling the pin does NOT touch keepOnTop (it only gates blur auto-hide).
-    await host.setPin(true);
+    await store.setPreferences({ keepOnTop: true });
     expect(window.keepOnTop).toBe(true);
-    await host.setPin(false);
+    await store.setPreferences({ keepOnTop: false });
     expect(window.keepOnTop).toBe(true);
     await host.destroy();
   });
@@ -155,14 +155,16 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     // Persist a pinned preference, then build a fresh store + host.
     const store1 = new DaemonStore();
     await store1.load();
-    await store1.setKeepOnTop(true);
+    await store1.setPreferences({ keepOnTop: true });
 
     const store = new DaemonStore();
     await store.load();
     expect(store.getPreferences().keepOnTop).toBe(true);
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    expect(host.getPinState().pinned).toBe(true);
+    // The pin is seeded from preferences; getPinState no longer carries it, so
+    // assert against the persisted source.
+    expect(store.getPreferences().keepOnTop).toBe(true);
     await host.destroy();
   });
 
@@ -217,7 +219,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    await host.setPin(true);
+    await store.setPreferences({ keepOnTop: true });
     host.show();
     expect(window.visible).toBe(true);
 
@@ -238,10 +240,10 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(true);
 
-    await host.setPin(true);
+    await store.setPreferences({ keepOnTop: true });
     expect(host.getPinState().exitRequested).toBe(false);
 
-    await host.setPin(false);
+    await store.setPreferences({ keepOnTop: false });
     expect(host.getPinState().exitRequested).toBe(true);
     await host.destroy();
   });
@@ -270,19 +272,19 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await host.destroy();
   });
 
-  it("setPin persists the preference but does NOT touch keepOnTop", async () => {
+  it("setPreferences persists the keep-open pin but does NOT touch keepOnTop", async () => {
     const store = new DaemonStore();
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
     host.show(); // establishes keepOnTop = true (permanent)
 
-    await host.setPin(true);
+    await store.setPreferences({ keepOnTop: true });
     expect(store.getPreferences().keepOnTop).toBe(true);
     // keepOnTop is unaffected by the pin (it only gates blur auto-hide).
     expect(window.keepOnTop).toBe(true);
 
-    await host.setPin(false);
+    await store.setPreferences({ keepOnTop: false });
     expect(store.getPreferences().keepOnTop).toBe(false);
     expect(window.keepOnTop).toBe(true);
     await host.destroy();

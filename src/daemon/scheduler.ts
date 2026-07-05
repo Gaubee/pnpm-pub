@@ -21,7 +21,7 @@ import type {
   EventKind,
   EventPayload,
   IpcPublishRequest,
-  OidcContext,
+  ConfigureTrustContext,
   PublishConfig,
   PublishContext,
   PublishSource,
@@ -29,10 +29,17 @@ import type {
   PubEvent,
   RecursivePublishContext,
   RefreshTokenContext,
+  TrustedPublisherConfig,
+  TrustedPublisherCreateConfig,
+  TrustedPublishingTarget,
   UnpublishContext,
 } from "../shared/index.js";
+import {
+  TrustedPublisherConfigSchema,
+  TrustedPublisherCreateConfigSchema,
+} from "../shared/index.js";
 import type { PackageTarballFile, PackageTarballSummary } from "./packer.js";
-import { publishPackage, configureOidc, unpublishVersion } from "./npm-api.js";
+import { publishPackage, unpublishVersion } from "./npm-api.js";
 import {
   publishPackageViaCli,
   publishRecursiveViaCli,
@@ -40,7 +47,6 @@ import {
   hasPnpm,
   PnpmNotOnPathError,
 } from "./publisher.js";
-import { OIDC_WORKFLOW_PATH, renderPublishWorkflow, canWriteWorkflow } from "./oidc-template.js";
 import { promises as fsp } from "node:fs";
 import { realFs } from "./real-fs.js";
 import {
@@ -52,6 +58,7 @@ import {
 } from "./workspace.js";
 import { parsePackagePublishConfig } from "./package-publish-config.js";
 import { checkPublishGitState } from "./publish-git-checks.js";
+import { addTrustedPublisher, removeTrustedPublisher } from "./trusted-publishing-api.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -155,8 +162,8 @@ function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload 
       const data = parsePublishContext(payload);
       return data ? { kind, data } : null;
     }
-    case "setup-oidc": {
-      const data = parseOidcContext(payload);
+    case "configure-trust": {
+      const data = parseConfigureTrustContext(payload);
       return data ? { kind, data } : null;
     }
     case "create-placeholder": {
@@ -1178,21 +1185,43 @@ async function resolveRecursivePublishRoot(source: PublishSource): Promise<strin
   return found.root ?? start;
 }
 
-function parseOidcContext(value: unknown): OidcContext | null {
+function parseTrustedPublisherCreateConfig(
+  value: unknown,
+): TrustedPublisherCreateConfig | undefined {
+  if (value === undefined) return undefined;
+  const result = TrustedPublisherCreateConfigSchema.safeParse(value);
+  return result.success ? result.data : undefined;
+}
+
+function parseTrustedPublisherConfig(value: unknown): TrustedPublisherConfig | undefined {
+  if (value === undefined) return undefined;
+  const result = TrustedPublisherConfigSchema.safeParse(value);
+  return result.success ? result.data : undefined;
+}
+
+function parseTrustedPublishingTarget(value: unknown): TrustedPublishingTarget | null {
   if (!isRecord(value)) return null;
-  const repo = readString(value, "repo");
   const name = readString(value, "name");
+  if (!name) return null;
   const pathValue = readString(value, "path");
-  if (!repo || !name || !pathValue) return null;
-  const branch = readString(value, "branch");
-  const force = typeof value.force === "boolean" ? value.force : undefined;
+  const repository = readString(value, "repository");
+  const currentConfig = parseTrustedPublisherConfig(value.currentConfig);
   return {
-    repo,
     name,
-    path: pathValue,
-    ...(branch ? { branch } : {}),
-    ...(force !== undefined ? { force } : {}),
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(repository ? { repository } : {}),
+    ...(currentConfig ? { currentConfig } : {}),
   };
+}
+
+function parseConfigureTrustContext(value: unknown): ConfigureTrustContext | null {
+  if (!isRecord(value)) return null;
+  const action = value.action;
+  if (action !== "add" && action !== "update" && action !== "remove") return null;
+  const target = parseTrustedPublishingTarget(value.target);
+  if (!target) return null;
+  const config = parseTrustedPublisherCreateConfig(value.config);
+  return { action, target, ...(config ? { config } : {}) };
 }
 
 function parseCreatePlaceholderContext(value: unknown): CreatePlaceholderContext | null {
@@ -1287,7 +1316,7 @@ export class PublishScheduler {
     if (isProvenancePublish(publishArgs)) {
       client.log(
         "stderr",
-        "> note: --provenance passed through to pnpm. SLSA provenance normally requires a supported CI (GitHub Actions) with OIDC. For trusted publishing from CI, use pnpm-pub's OIDC Trusted-Publish flow.\n",
+        "> note: --provenance passed through to pnpm. SLSA provenance normally requires a supported CI (GitHub Actions) with OIDC. For trusted publishing from CI, use pnpm-pub's Trusted Publishing Event flow.\n",
       );
     }
     await this.collectWorkspaceFromCwd(effectiveCwd, client);
@@ -1578,8 +1607,8 @@ export class PublishScheduler {
         ignoreScripts,
         json,
       );
-    } else if (event.payload?.kind === "setup-oidc") {
-      await this.runOidc(event, client, creds.token, creds.totpSecret, profileRegistry);
+    } else if (event.payload?.kind === "configure-trust") {
+      await this.runConfigureTrust(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === "create-placeholder") {
       await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === "unpublish") {
@@ -2100,55 +2129,93 @@ export class PublishScheduler {
     }
   }
 
-  private async runOidc(
+  private async applyConfigureTrust(
+    ctx: ConfigureTrustContext,
+    token: string,
+    totpSecret: string,
+    registry: string,
+  ): Promise<{ ok: true; message: string; mutated: boolean } | { ok: false; message: string; mutated: boolean }> {
+    if (ctx.action === "remove") {
+      const id = ctx.target.currentConfig?.id;
+      if (!id) return { ok: false, message: "Trusted publisher id is required for removal.", mutated: false };
+      const result = await removeTrustedPublisher(
+        { registry, token, totpSecret },
+        ctx.target.name,
+        id,
+      );
+      return result.ok
+        ? { ok: true, message: `[configure-trust] removed ${ctx.target.name}`, mutated: true }
+        : {
+            ok: false,
+            message: result.error ?? `Failed to remove trusted publisher for ${ctx.target.name}.`,
+            mutated: false,
+          };
+    }
+
+    if (!ctx.config) {
+      return {
+        ok: false,
+        message: "Trusted publisher config is required before confirmation.",
+        mutated: false,
+      };
+    }
+
+    const added = await addTrustedPublisher(
+      { registry, token, totpSecret },
+      ctx.target.name,
+      ctx.config,
+    );
+    if (!added.ok) {
+      return {
+        ok: false,
+        message: added.error ?? `Failed to configure trusted publisher for ${ctx.target.name}.`,
+        mutated: false,
+      };
+    }
+
+    const existingId = ctx.target.currentConfig?.id;
+    if (ctx.action === "update" && existingId) {
+      const removed = await removeTrustedPublisher(
+        { registry, token, totpSecret },
+        ctx.target.name,
+        existingId,
+      );
+      if (!removed.ok) {
+        return {
+          ok: false,
+          message:
+            removed.error ??
+            `Added new trusted publisher for ${ctx.target.name}, but failed to remove the old one.`,
+          mutated: true,
+        };
+      }
+      return { ok: true, message: `[configure-trust] updated ${ctx.target.name}`, mutated: true };
+    }
+
+    return { ok: true, message: `[configure-trust] configured ${ctx.target.name}`, mutated: true };
+  }
+
+  private async runConfigureTrust(
     event: PubEvent,
     client: PendingClient,
     token: string,
     totpSecret: string,
     registry: string,
   ): Promise<void> {
-    if (event.payload?.kind !== "setup-oidc") return;
+    if (event.payload?.kind !== "configure-trust") return;
     const ctx = event.payload.data;
+    client.log("stdout", `configuring trusted publishing for ${ctx.target.name}...\n`);
     try {
-      // Chapter 8.5 step 10 / 1.2.3: write the reference workflow INTO THE
-      // PACKAGE DIRECTORY (never the daemon's cwd), and never blindly overwrite
-      // an existing publish.yml unless --force was set.
-      const targetDir = ctx.path;
-      const workflowFile = path.join(targetDir, OIDC_WORKFLOW_PATH);
-      const exists = await fsp
-        .access(workflowFile)
-        .then(() => true)
-        .catch(() => false);
-      const blockReason = canWriteWorkflow(exists, !!ctx.force);
-      if (blockReason) {
-        client.log("stderr", `[oidc] ${blockReason}\n`);
-        this.store.resolveEvent(event.id, "failed", blockReason);
-        client.exit(1, blockReason);
-        return;
-      }
-
-      // Chapter 8.5 step 9: registry-side OIDC prerequisite (2FA-required).
-      const result = await configureOidc({ registry, token, totpSecret, name: ctx.name });
-
-      try {
-        await fsp.mkdir(path.dirname(workflowFile), { recursive: true });
-        await fsp.writeFile(workflowFile, renderPublishWorkflow(ctx), "utf8");
-        client.log("stdout", `[oidc] wrote ${OIDC_WORKFLOW_PATH}\n`);
-      } catch (error: unknown) {
-        const msg = `[oidc] could not write workflow: ${errorToMessage(error)}`;
-        client.log("stderr", msg + "\n");
-        this.store.resolveEvent(event.id, "failed", msg);
-        client.exit(1, msg);
-        return;
-      }
-      if (result.stdout) client.log("stdout", result.stdout + "\n");
-      if (result.stderr) client.log("stderr", result.stderr + "\n");
+      const result = await this.applyConfigureTrust(ctx, token, totpSecret, registry);
+      if (result.mutated) this.store.invalidateTrustedPublishing([ctx.target.name]);
       if (result.ok) {
-        this.store.resolveEvent(event.id, "success", result.stdout);
+        this.store.resolveEvent(event.id, "success", result.message);
+        client.log("stdout", result.message + "\n");
         client.exit(0);
       } else {
-        this.store.resolveEvent(event.id, "failed", result.error);
-        client.exit(1, result.error);
+        this.store.resolveEvent(event.id, "failed", result.message);
+        client.log("stderr", result.message + "\n");
+        client.exit(1, result.message);
       }
     } catch (error: unknown) {
       const msg = errorToMessage(error);

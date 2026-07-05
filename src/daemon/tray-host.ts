@@ -53,7 +53,6 @@ export type TrayIcon = OpentrayTrayIcon;
 type Visibility = "hidden" | "shown";
 
 export interface TrayPinFrame {
-  pinned: boolean;
   exitRequested: boolean;
   visibility: Visibility;
   hasActiveEvents: boolean;
@@ -117,9 +116,15 @@ export class TrayHost {
   ) {
     this.visibility = opts.initialVisible ? "shown" : "hidden";
     this.focused = opts.initialVisible ?? false;
-    // Seed the pin from persisted preferences (Chapter 6.4). The window was
-    // created with this same value at mount time, so no setStyle is needed.
+    // Seed the pin from persisted preferences (Chapter 6.4) and subscribe so
+    // any later preference change (e.g. from the SettingsDialog) re-evaluates
+    // auto-close. The window was created with this same value at mount time, so
+    // no setStyle is needed. Preferences is the single source of truth for the
+    // keep-open pin — there is no separate `setPin` verb.
     this.pinned = store.getPreferences().keepOnTop;
+    const onPreferences = (p: { keepOnTop: boolean }) => this.onPreferences(p);
+    this.store.on("preferences", onPreferences);
+    this.unsubs.push(() => this.store.off("preferences", onPreferences));
     this.wireUp();
     // Sync the native menu to the initial visibility (createTray ships a static
     // menu; this relabels the primary item to match the real state).
@@ -156,7 +161,6 @@ export class TrayHost {
   private emitPinFrame(): void {
     try {
       this.opts.onPinFrame?.({
-        pinned: this.pinned,
         exitRequested: this.exitRequested,
         visibility: this.visibility,
         hasActiveEvents: this.hasActiveEvents,
@@ -365,27 +369,22 @@ export class TrayHost {
   }
 
   /**
-   * Toggle the "keep open" pin: persist it and re-evaluate auto-close. The
-   * window's keepOnTop style is permanent and NOT affected by the pin — the pin
-   * only gates blur auto-hide. Projected to the WebUI immediately.
+   * React to a persisted-preferences change (the keep-open pin and any future
+   * field). The pin is the only preference TrayHost consumes today: it gates
+   * blur auto-hide. The window's keepOnTop style is permanent and NOT affected
+   * by the pin. Re-evaluates auto-close so a freshly-pinned window cancels any
+   * in-flight exit, and a freshly-unpinned one becomes eligible.
    */
-  async setPin(pinned: boolean): Promise<void> {
-    if (this.pinned === pinned) {
-      this.emitPinFrame();
-      return;
-    }
-    this.pinned = pinned;
-    // Persist (fire-and-forget; the store swallows nothing but writeJson is
-    // atomic + best-effort). Awaited so callers/tests can observe completion.
-    await this.store.setKeepOnTop(pinned);
-    this.log(`keep-open pin set to ${pinned}`);
+  private onPreferences(p: { keepOnTop: boolean }): void {
+    if (this.pinned === p.keepOnTop) return;
+    this.pinned = p.keepOnTop;
+    this.log(`keep-open pin set to ${p.keepOnTop}`);
     this.reevaluateAutoClose();
   }
 
   /** Current tray/window frame (for the WebUI initial snapshot). */
   getPinState(): TrayPinFrame {
     return {
-      pinned: this.pinned,
       exitRequested: this.exitRequested,
       visibility: this.visibility,
       hasActiveEvents: this.hasActiveEvents,
