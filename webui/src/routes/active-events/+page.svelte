@@ -16,7 +16,9 @@
 	import { pendingEvents } from '$lib/store.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
+	import { groupEvents, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
+	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -81,10 +83,13 @@
 		}
 	});
 
-	// Pending events + held (recently-resolved) events, newest-first.
-	const surfaceEvents = $derived.by(() => {
+	// Pending events + held (recently-resolved) events, newest-first, then
+	// collapsed by groupId into EventGroups. Standalone events (no groupId)
+	// form single-member groups (isGroup === false) rendered as plain EventCards.
+	const surfaceGroups = $derived.by((): EventGroup[] => {
 		const merged = [...$pendingEvents, ...held.values()];
-		return merged.sort((a, b) => b.createdAt - a.createdAt);
+		merged.sort((a, b) => b.createdAt - a.createdAt);
+		return groupEvents(merged);
 	});
 
 	// Smooth-scroll to the top when a new event appears at the top of the list
@@ -93,7 +98,7 @@
 	let prevTopId = '';
 	let prevTopIdWasSet = false;
 	$effect(() => {
-		const top = surfaceEvents[0];
+		const top = surfaceGroups[0]?.latest;
 		const topId = top?.id ?? '';
 		if (topId === prevTopId) return;
 		// Skip the very first run (the list may already have content from a
@@ -199,17 +204,26 @@
 		</DropdownMenu.Root>
 	</header>
 
-	<!-- Pending (active) + recently-resolved (lingering) events — full, expanded -->
-	{#if surfaceEvents.length > 0}
+	<!-- Pending (active) + recently-resolved (lingering) events — grouped by
+	     groupId. Multi-member groups render as a GroupEventCard (unified form +
+	     batch confirm); single-member groups render as a plain EventCard. -->
+	{#if surfaceGroups.length > 0}
 		<section class="space-y-2.5">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
-			{#each surfaceEvents as event, i (event.id)}
+			{#each surfaceGroups as g, i (g.id)}
 				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
-				<EventCard
-					{event}
-					autoClose={held.has(event.id)}
-					onAutoClose={() => dismiss(event.id)}
-				/>
+				{#if g.isGroup}
+					<GroupEventCard
+						group={g}
+						surface="pending"
+					/>
+				{:else}
+					<EventCard
+						event={g.latest}
+						autoClose={held.has(g.latest.id)}
+						onAutoClose={() => dismiss(g.latest.id)}
+					/>
+				{/if}
 				</div>
 			{/each}
 		</section>

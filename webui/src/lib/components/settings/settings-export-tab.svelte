@@ -14,6 +14,7 @@
     import * as Tabs from "$lib/components/ui/tabs/index.js";
     import TooltipButton from "$lib/components/tooltip-button.svelte";
     import CopyButton from "$lib/components/copy-button.svelte";
+    import DownloadButton from "$lib/components/download-button.svelte";
 
     let { onImported }: { onImported?: (imported: string[]) => void } =
         $props();
@@ -144,16 +145,6 @@
         }
     }
 
-    function download(): void {
-        if (!exportResult) return;
-        const blob = new Blob([exportResult], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = BACKUP_FILENAME;
-        a.click();
-        URL.revokeObjectURL(url);
-    }
 </script>
 
 <Tabs.Root value="export" class="gap-3">
@@ -253,14 +244,14 @@
                                 copiedLabel={$_("common.copied")}
                                 tabindex={-1}
                             />
-                            <TooltipButton
-                                variant="brand"
-                                label={BACKUP_FILENAME}
-                                side="top"
-                                onclick={download}
-                            >
-                                <IconDownload class="size-4" />
-                            </TooltipButton>
+                            <DownloadButton
+                                value={() => exportResult ?? ""}
+                                filename={BACKUP_FILENAME}
+                                mime="application/json"
+                                label={$_("common.download")}
+                                doneLabel={BACKUP_FILENAME}
+                                tabindex={-1}
+                            />
                         </InputGroup.Addon>
                     </InputGroup.Root>
                 {/if}
@@ -280,10 +271,10 @@
                         <Label for="ib">{$_("backup.backupJson")}</Label>
                     </div>
                     <!--
-					InputGroup wraps the multi-line backup JSON textarea with a unified
-					border + focus ring. Both the paste (clipboard) and preview actions
-					live as inline-end addons so the whole thing is one fused control.
-				-->
+						InputGroup wraps the multi-line backup JSON textarea with a unified
+						border + focus ring. The paste (clipboard) and preview actions sit
+						in a block-end (bottom) toolbar, separated by a top border.
+					-->
                     <InputGroup.Root>
                         <InputGroup.Textarea
                             id="ib"

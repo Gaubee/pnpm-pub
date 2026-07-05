@@ -30,6 +30,7 @@
         packageNames = undefined,
         packageTargets = undefined,
         config = undefined,
+        configLoading = false,
         onChanged = () => {},
         repositoryHint = "",
         initialTab = "current",
@@ -40,6 +41,11 @@
         packageNames?: string[];
         packageTargets?: TrustedPublishingTarget[];
         config?: TrustedPublisherConfig | null;
+        /** True while the caller is still resolving `config` from the registry.
+         *  Prevents the single-package "no current config" branch from firing
+         *  before the lookup completes (otherwise a slow registry would turn an
+         *  update/remove into a stray add event). */
+        configLoading?: boolean;
         onChanged?: () => void;
         repositoryHint?: string;
         initialTab?: "current" | "workflow";
@@ -64,7 +70,9 @@
     });
 
     let selected = $state<string[]>([]);
-    let initialized = false;
+    /** Tracks the last `open` value so we only re-seed local UI state on a
+     *  false→true transition, not on every dependent re-render. */
+    let wasOpen = false;
     let activeTab = $state<"current" | "workflow">("current");
     let workflowLoading = $state(false);
     let workflowContent = $state("");
@@ -75,25 +83,39 @@
     let confirmWorkflowOverwrite = $state(false);
 
     $effect(() => {
+        // Only react to the open transition itself; reading other dependents
+        // (batchTargets / canPreviewWorkflow) here would re-run on every keystroke
+        // and re-seed the selection, wiping the user's toggles.
         if (!open) {
-            initialized = false;
+            wasOpen = false;
             return;
         }
-        if (initialized) return;
-        initialized = true;
+        if (wasOpen) return;
+        wasOpen = true;
         selected = batchTargets.map((target) => target.name);
         activeTab =
             canPreviewWorkflow && initialTab === "workflow"
                 ? "workflow"
                 : "current";
         confirmWorkflowOverwrite = false;
-        if (!isBatch && !config && singleTarget.name) {
-            actions.createEvent("configure-trust", {
-                action: "add",
-                target: singleTarget,
-            });
+    });
+
+    // Single-package "no current config" → create an add event. This used to
+    // live inside the open effect, which (a) mutated state during render and
+    // (b) raced the caller's `config` lookup — a slow registry made every
+    // update/remove land as an add. Now it only fires once `configLoading`
+    // settles, and only after a tick so it never runs during render.
+    $effect(() => {
+        if (!open) return;
+        if (isBatch || config || configLoading) return;
+        if (!singleTarget.name) return;
+        const target = singleTarget;
+        // Defer the side effect out of the reactive update phase.
+        queueMicrotask(() => {
+            if (!open || config || configLoading) return;
+            actions.createEvent("configure-trust", { action: "add", target });
             finish();
-        }
+        });
     });
 
     function selectedTargets(): TrustedPublishingTarget[] {
@@ -214,8 +236,12 @@
 </script>
 
 <Dialog bind:open>
-    <DialogContent class="w-130" aria-describedby={undefined}>
-        <DialogHeader>
+    <DialogContent
+        class="w-130 grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
+        aria-describedby={undefined}
+    >
+        <!-- HEADER — fixed, never scrolls or compresses -->
+        <DialogHeader class="border-b px-4 py-3">
             <DialogTitle class="text-base"
                 >{$_("trustedPublishing.title")}</DialogTitle
             >
@@ -230,16 +256,19 @@
             </DialogDescription>
         </DialogHeader>
 
-        {#if isBatch}
-            <div class="max-h-[360px] overflow-y-auto pr-1">
+        <!-- CONTENT — the only scrollable region. min-h-0 lets the grid 1fr
+             row actually shrink so overflow kicks in instead of growing the
+             dialog past its max-height. -->
+        <div class="min-h-0 overflow-y-auto px-4 py-3">
+            {#if isBatch}
                 <div class="flex flex-col gap-2">
                     {#each batchTargets as target (target.name)}
                         <label
-                            class="flex items-start gap-3 rounded-md border border-border p-3 text-xs"
+                            class="flex items-start gap-3 rounded-md border border-border p-3 text-xs transition-colors hover:bg-accent/40"
                         >
                             <input
                                 type="checkbox"
-                                class="mt-0.5 size-4 accent-current"
+                                class="mt-0.5 size-4 shrink-0 cursor-pointer accent-brand"
                                 checked={selected.includes(target.name)}
                                 onchange={() => toggle(target.name)}
                             />
@@ -259,44 +288,51 @@
                         </label>
                     {/each}
                 </div>
-            </div>
-            <DialogFooter>
-                <Button variant="outline" onclick={() => (open = false)}
-                    >{$_("common.cancel")}</Button
-                >
-                <Button
-                    variant="brand"
-                    disabled={selected.length === 0}
-                    onclick={createBatch}
-                >
-                    <IconShield class="h-4 w-4" />
-                    {$_("trustedPublishing.createEvent")}
-                </Button>
-            </DialogFooter>
-        {:else if config}
-            {#if canPreviewWorkflow}
-                <div class="flex gap-1 rounded-md bg-muted/40 p-1">
-                    <Button
-                        variant={activeTab === "current" ? "brand" : "ghost"}
-                        size="sm"
-                        class="flex-1"
-                        onclick={() => (activeTab = "current")}
+            {:else if config && activeTab === "workflow"}
+                {#if workflowLoading}
+                    <div
+                        class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
                     >
-                        <IconShield class="h-4 w-4" />
-                        {$_("trustedPublishing.currentConfig")}
-                    </Button>
-                    <Button
-                        variant={activeTab === "workflow" ? "brand" : "ghost"}
-                        size="sm"
-                        class="flex-1"
-                        onclick={() => (activeTab = "workflow")}
+                        {$_("trustedPublishing.workflowLoading")}
+                    </div>
+                {:else if workflowError}
+                    <div
+                        class="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
                     >
-                        <IconFileCode class="h-4 w-4" />
-                        {$_("trustedPublishing.workflowTab")}
-                    </Button>
-                </div>
-            {/if}
-            {#if activeTab === "current"}
+                        {workflowError}
+                    </div>
+                {:else}
+                    <!-- Overwrite confirmation banner — kept INSIDE the
+                         scrollable content so it never displaces the footer. -->
+                    {#if workflowExists && confirmWorkflowOverwrite}
+                        <div
+                            class="mb-2 flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                        >
+                            <span>{$_("trustedPublishing.overwriteWarning")}</span>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                class="h-6 shrink-0 px-2 text-[11px]"
+                                onclick={() => (confirmWorkflowOverwrite = false)}
+                                >{$_("common.cancel")}</Button
+                            >
+                        </div>
+                    {/if}
+                    <div
+                        class="mb-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground"
+                    >
+                        <span class="font-mono">{workflowPath}</span>
+                        {#if workflowExists}
+                            <span class="ml-2 text-warning"
+                                >{$_("trustedPublishing.workflowExists")}</span
+                            >
+                        {/if}
+                    </div>
+                    <pre
+                        class="overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{workflowContent}</pre>
+                {/if}
+            {:else if config}
+                <!-- Current-config summary (also reused when no workflow tab). -->
                 <div
                     class="rounded-md border border-border bg-muted/30 p-3 text-xs"
                 >
@@ -308,7 +344,65 @@
                         {trustedPublisherSummary(config)}
                     </p>
                 </div>
-                <DialogFooter>
+            {:else if configLoading}
+                <div
+                    class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+                >
+                    {$_("trustedPublishing.loading")}
+                </div>
+            {:else}
+                <div
+                    class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
+                >
+                    {$_("trustedPublishing.createEventPending")}
+                </div>
+            {/if}
+        </div>
+
+        <!-- FOOTER — fixed at the bottom. Only rendered when there are real
+             actions (batch / current-config / workflow). Transient states
+             (loading / pending → auto-creates event) intentionally have no
+             footer, so the grid simply drops its last row. -->
+        {#if isBatch || config}
+        <DialogFooter class="mx-0 mb-0 flex-col items-stretch gap-3 rounded-b-xl sm:flex-row sm:items-center">
+            {#if isBatch}
+                <Button variant="outline" onclick={() => (open = false)}
+                    >{$_("common.cancel")}</Button
+                >
+                <Button
+                    variant="brand"
+                    disabled={selected.length === 0}
+                    onclick={createBatch}
+                >
+                    <IconShield class="h-4 w-4" />
+                    {$_("trustedPublishing.createEvent")}
+                </Button>
+            {:else if config}
+                {#if canPreviewWorkflow}
+                    <!-- Segmented tab switcher lives in the footer so it stays
+                         pinned; switching tabs only reflows the content area. -->
+                    <div class="flex w-full gap-1 rounded-md bg-muted/40 p-1 sm:w-auto">
+                        <Button
+                            variant={activeTab === "current" ? "brand" : "ghost"}
+                            size="sm"
+                            class="flex-1"
+                            onclick={() => (activeTab = "current")}
+                        >
+                            <IconShield class="h-4 w-4" />
+                            {$_("trustedPublishing.currentConfig")}
+                        </Button>
+                        <Button
+                            variant={activeTab === "workflow" ? "brand" : "ghost"}
+                            size="sm"
+                            class="flex-1"
+                            onclick={() => (activeTab = "workflow")}
+                        >
+                            <IconFileCode class="h-4 w-4" />
+                            {$_("trustedPublishing.workflowTab")}
+                        </Button>
+                    </div>
+                {/if}
+                {#if activeTab === "current"}
                     <Button
                         variant="outline"
                         onclick={() => createSingle("update")}
@@ -323,39 +417,7 @@
                         <IconTrash class="h-4 w-4" />
                         {$_("trustedPublishing.remove")}
                     </Button>
-                </DialogFooter>
-            {:else}
-                <div class="space-y-2">
-                    {#if workflowLoading}
-                        <div
-                            class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
-                        >
-                            {$_("trustedPublishing.workflowLoading")}
-                        </div>
-                    {:else if workflowError}
-                        <div
-                            class="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive"
-                        >
-                            {workflowError}
-                        </div>
-                    {:else}
-                        <div
-                            class="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground"
-                        >
-                            <span class="font-mono">{workflowPath}</span>
-                            {#if workflowExists}
-                                <span class="ml-2 text-warning"
-                                    >{$_(
-                                        "trustedPublishing.workflowExists",
-                                    )}</span
-                                >
-                            {/if}
-                        </div>
-                        <pre
-                            class="max-h-72 overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{workflowContent}</pre>
-                    {/if}
-                </div>
-                <DialogFooter>
+                {:else}
                     <Button
                         variant="outline"
                         disabled={!workflowContent}
@@ -385,28 +447,9 @@
                                 : $_("trustedPublishing.writeWorkflow")}
                         </Button>
                     {/if}
-                </DialogFooter>
-                {#if workflowExists && confirmWorkflowOverwrite}
-                    <div
-                        class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                    >
-                        {$_("trustedPublishing.overwriteWarning")}
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            class="ml-2 h-6 px-2 text-[11px]"
-                            onclick={() => (confirmWorkflowOverwrite = false)}
-                            >{$_("common.cancel")}</Button
-                        >
-                    </div>
                 {/if}
             {/if}
-        {:else}
-            <div
-                class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
-            >
-                {$_("trustedPublishing.createEventPending")}
-            </div>
+        </DialogFooter>
         {/if}
     </DialogContent>
 </Dialog>

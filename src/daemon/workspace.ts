@@ -528,10 +528,26 @@ export function filterByProfile(packages: ScannedPackage[], username: string): S
   return packages.filter((pkg) => isPublishableByProfile(pkg, username));
 }
 
-export function isPublishableByProfile(pkg: ScannedPackage, username: string): boolean {
-  if (pkg.private) return false;
-  const scope = username.toLowerCase();
-  const m = pkg.name.match(/^@([^/]+)\//);
-  if (!m) return true;
-  return m[1]!.toLowerCase() === scope;
+/**
+ * Whether a scanned package is publishable by the given profile.
+ *
+ * Only `private: true` is a hard block here — scope ownership is NOT
+ * pre-judged, because npm scopes can be org-owned and the profile's
+ * membership can't be known from the local package.json alone. The real
+ * publishability check happens server-side at `npm publish` time; if the
+ * profile lacks permission the registry rejects it and the scheduler surfaces
+ * the error. Pre-filtering by scope name was a flawed heuristic that blocked
+ * legitimate org-scoped packages.
+ */
+export function isPublishableByProfile(pkg: ScannedPackage, _username: string): boolean {
+  return !pkg.private;
+}
+
+/**
+ * The reason a scanned package is NOT publishable, or `null` when it is.
+ * Currently only `"private"` (package.json `"private": true`). See
+ * {@link isPublishableByProfile} for why scope is not checked.
+ */
+export function unpublishableReason(pkg: ScannedPackage, _username: string): "private" | null {
+  return pkg.private ? "private" : null;
 }

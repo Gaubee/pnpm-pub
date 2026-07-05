@@ -349,6 +349,7 @@
 	bind:open={trustedPublishingDialogOpen}
 	packageName={trustedPublishingDialogPkg}
 	config={trustedPublishingDialogConfig}
+	configLoading={trustedPublishing.isLoading(trustedPublishingDialogPkg)}
 	repositoryHint={trustedPublishingDialogRepoHint}
 	onChanged={onTrustedPublishingChanged}
 />

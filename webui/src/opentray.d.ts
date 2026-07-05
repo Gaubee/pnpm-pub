@@ -59,12 +59,32 @@ export interface OpentrayWindowStylePatch {
 }
 
 /**
+ * Payload of the bridge `downloadcompleted` event. Emitted by the native host
+ * after it finishes saving a page-triggered download to disk (the host owns
+ * the `~/Downloads` write so it can sandbox the path). `filename` is the leaf
+ * name actually written (may include a `(1)`/`(2)` suffix when the host had to
+ * de-duplicate); `success` is false if the write failed. `id` echoes the
+ * download-request id when the host tags one.
+ */
+export interface OpentrayDownloadCompletedEvent {
+  event: "downloadcompleted";
+  id?: number;
+  payload: {
+    filename: string;
+    success: boolean;
+    /** The blob URL the page handed the host (best-effort echo). */
+    url?: string;
+  };
+}
+
+/**
  * The page-facing native window bridge. `startAppRegionDrag()` hands a
  * pointerdown to the native window manager (overlay chrome drag); `overlay`
  * exposes titlebar geometry so the page can reserve space for OS controls;
  * `resizeTo()` lets the page set the OS window size at runtime (used to give
  * each route its preferred default geometry); `setStyle()` lets the WebUI map
- * its page-owned animation timeline onto native window style.
+ * its page-owned animation timeline onto native window style; the
+ * `downloadcompleted` listener lets the page react to native downloads.
  */
 export interface OpentrayWindowBridge {
   readonly overlay?: OpentrayWindowOverlay;
@@ -78,6 +98,15 @@ export interface OpentrayWindowBridge {
   resizeTo?(width: number, height: number): Promise<{ width: number; height: number }>;
   /** Patch native window style. Used here only for opacity animation. */
   setStyle?(style: OpentrayWindowStylePatch): Promise<unknown>;
+  /** Subscribe to a native window event (currently `downloadcompleted`). */
+  addEventListener?(
+    event: "downloadcompleted",
+    handler: (e: OpentrayDownloadCompletedEvent) => void,
+  ): void;
+  removeEventListener?(
+    event: "downloadcompleted",
+    handler: (e: OpentrayDownloadCompletedEvent) => void,
+  ): void;
 }
 
 declare global {

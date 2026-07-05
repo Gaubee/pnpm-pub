@@ -93,5 +93,3 @@ export function createTrustedPublishingStatus() {
     invalidate,
   };
 }
-
-export type TrustedPublishingStatus = ReturnType<typeof createTrustedPublishingStatus>;

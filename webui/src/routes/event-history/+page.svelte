@@ -16,7 +16,9 @@
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
+	import { groupEvents, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
+	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -30,16 +32,9 @@
 
 	const PAGE_SIZE = 20;
 
-	interface Group {
-		id: string;
-		latest: PubEvent;
-		events: PubEvent[];
-		collapsed: boolean;
-	}
-
 	let filterText = $state('');
 	let page = $state(0);
-	let groups = $state<Group[]>([]);
+	let groups = $state<EventGroup[]>([]);
 	let total = $state(0);
 	let loading = $state(true);
 	let expandedGroups = $state<Set<string>>(new Set());
@@ -51,22 +46,6 @@
 
 	const totalPages = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
 
-	function buildGroups(rows: PubEvent[]): Group[] {
-		const byGroup = new Map<string, PubEvent[]>();
-		for (const e of rows) {
-			const key = e.groupId ?? e.id;
-			const arr = byGroup.get(key);
-			if (arr) arr.push(e);
-			else byGroup.set(key, [e]);
-		}
-		return [...byGroup.values()].map((evts) => ({
-			id: evts[0]!.groupId ?? evts[0]!.id,
-			latest: evts[0]!,
-			events: evts,
-			collapsed: evts.length > 1,
-		}));
-	}
-
 	async function fetchEvents(): Promise<void> {
 		loading = true;
 		try {
@@ -77,7 +56,7 @@
 				q: filterText.trim(),
 			});
 			if (!json) throw new Error('events unavailable');
-			groups = buildGroups(json.rows);
+			groups = groupEvents(json.rows);
 			total = json.total;
 			// Mark the newest visible event as "seen".
 			if (json.rows.length > 0) {

@@ -16,6 +16,21 @@ import type { Component } from "svelte";
 
 export type IslandTone = "info" | "success" | "error" | "warning";
 
+/**
+ * An optional action button rendered inside the notification item (e.g. "Open
+ * file" after a download). `run` is a client-side callback — the island is a
+ * pure UI surface, so actions are closures the caller supplies (typically
+ * calling a store action like `actions.openPath`). Clicking the action also
+ * dismisses the item.
+ */
+export interface IslandAction {
+  /** Button label (already i18n-resolved by the caller). */
+  label: string;
+  /** Optional lucide icon component for the button. */
+  icon?: Component;
+  run: () => void | Promise<void>;
+}
+
 export interface IslandItem {
   /** Unique id (monotonic). Stable across renders so keyed-each works. */
   id: number;
@@ -25,6 +40,8 @@ export interface IslandItem {
   icon?: Component;
   /** Lifetime in ms. <= 0 = sticky. Default 4000. */
   durationMs?: number;
+  /** Optional inline action button. */
+  action?: IslandAction;
 }
 
 export interface IslandInput {
@@ -32,6 +49,7 @@ export interface IslandInput {
   message: string;
   icon?: Component;
   durationMs?: number;
+  action?: IslandAction;
 }
 
 export const island = writable<IslandItem[]>([]);

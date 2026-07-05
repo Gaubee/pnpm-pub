@@ -62,6 +62,9 @@ export interface PublishTarget {
   repository?: string;
   publishConfig?: PublishConfig;
   publishable?: boolean;
+  /** Present when `publishable === false`: `"private"` (package.json private).
+   *  Scope ownership is NOT pre-judged — see daemon's isPublishableByProfile. */
+  unpublishableReason?: "private";
 }
 
 /**

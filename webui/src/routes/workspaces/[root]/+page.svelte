@@ -15,10 +15,16 @@
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
-	import { daemon, actions, getRpcClient } from '$lib/store.js';
+	import { daemon, actions } from '$lib/store.js';
+	import { createTrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
+	import { trustedPublisherSummary } from '$lib/trusted-publishing.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
+	import { Toggle } from '$lib/components/ui/toggle/index.js';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconScan from '@lucide/svelte/icons/scan-search';
@@ -27,9 +33,12 @@
 	import IconSquare from '@lucide/svelte/icons/square';
 	import IconLayers from '@lucide/svelte/icons/layers';
 	import IconPublish from '@lucide/svelte/icons/upload';
-	import IconFileCode from '@lucide/svelte/icons/file-code-2';
+	import IconChevronDown from '@lucide/svelte/icons/chevron-down';
+	import IconListChecks from '@lucide/svelte/icons/list-checks';
+	import IconInvert from '@lucide/svelte/icons/flip-horizontal';
+	import IconLayoutList from '@lucide/svelte/icons/layout-list';
 	import { _ } from 'svelte-i18n';
-	import type { PublishTarget, TrustedPublisherConfig, TrustedPublishingTarget } from '$lib/types.js';
+	import type { PublishTarget, TrustedPublishingTarget } from '$lib/types.js';
 
 	// Decode the root path from the URL
 	const rootParam = $derived(page.params.root ?? '');
@@ -49,16 +58,18 @@
 	const filteredPackages = $derived.by(() => {
 		const f = filterText.trim();
 		if (!f) return scanned;
-		// /pattern/ → RegExp
+		// Case-insensitive by default. /pattern/ → RegExp (also case-insensitive
+		// unless the user writes (?-i) inside the pattern).
 		if (f.startsWith('/') && f.endsWith('/') && f.length > 2) {
 			try {
-				const re = new RegExp(f.slice(1, -1));
+				const re = new RegExp(f.slice(1, -1), 'i');
 				return scanned.filter((p) => re.test(p.name));
 			} catch {
 				return scanned;
 			}
 		}
-		return scanned.filter((p) => p.name.includes(f));
+		const lower = f.toLowerCase();
+		return scanned.filter((p) => p.name.toLowerCase().includes(lower));
 	});
 
 	// --- Relative path display ---
@@ -71,67 +82,21 @@
 	}
 
 	// --- Trusted Publishing status ---
-	const TRUSTED_PUBLISHING_TTL = 30_000;
-	let trustedPublishingState = $state<Record<string, { configs: TrustedPublisherConfig[]; fetchedAt: number }>>({});
-	let trustedPublishingInFlight = $state<Set<string>>(new Set());
+	// Shared 30s-TTL + in-flight dedup cache (same discipline as the Packages
+	// pages). The workspaces page only adds display helpers on top.
+	const trustedPublishing = createTrustedPublishingStatus();
 
-	function isTrustedPublishingConfigured(name: string): boolean {
-		return !!trustedPublishingState[name] && trustedPublishingState[name]!.configs.length > 0;
-	}
-	function trustedPublishingLoading(name: string): boolean {
-		return trustedPublishingInFlight.has(name) && !trustedPublishingState[name];
-	}
-	function trustedPublishingConfigs(name: string): TrustedPublisherConfig[] {
-		return trustedPublishingState[name]?.configs ?? [];
-	}
-	function trustedPublishingSummary(cfg: TrustedPublisherConfig): string {
-		const repo = cfg.type === 'gitlab' ? cfg.claims.project_path : cfg.type === 'circleci' ? cfg.claims['oidc.circleci.com/vcs-origin'] : cfg.claims.repository;
-		const env = 'environment' in cfg.claims ? cfg.claims.environment : undefined;
-		return [cfg.type, repo, env].filter(Boolean).join(' · ');
-	}
 	function trustedPublishingStatusText(name: string): string {
-		if (trustedPublishingLoading(name)) return $_('trustedPublishing.loading');
-		if (isTrustedPublishingConfigured(name)) return trustedPublishingSummary(trustedPublishingConfigs(name)[0]!);
+		if (trustedPublishing.isLoading(name)) return $_('trustedPublishing.loading');
+		const cfg = trustedPublishing.configs(name)[0];
+		if (cfg) return trustedPublisherSummary(cfg);
 		return $_('trustedPublishing.notConfigured');
-	}
-
-	function maybeFetchTrustedPublishing(name: string): void {
-		if (trustedPublishingInFlight.has(name)) return;
-		const cached = trustedPublishingState[name];
-		if (cached && Date.now() - cached.fetchedAt < TRUSTED_PUBLISHING_TTL) return;
-		trustedPublishingInFlight = new Set(trustedPublishingInFlight).add(name);
-		const client = getRpcClient();
-		if (!client) {
-			trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
-			const next = new Set(trustedPublishingInFlight);
-			next.delete(name);
-			trustedPublishingInFlight = next;
-			return;
-		}
-		client.trustedPublishing
-			.listTrust({ package: name })
-			.then((json) => {
-				if (json?.ok && json.configs) {
-					trustedPublishingState = { ...trustedPublishingState, [name]: { configs: json.configs, fetchedAt: Date.now() } };
-				} else {
-					// Error (403/404 etc) — also cache as empty for 30s to avoid retries.
-					trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
-				}
-			})
-			.catch(() => {
-				trustedPublishingState = { ...trustedPublishingState, [name]: { configs: [], fetchedAt: Date.now() } };
-			})
-			.finally(() => {
-				const next = new Set(trustedPublishingInFlight);
-				next.delete(name);
-				trustedPublishingInFlight = next;
-			});
 	}
 
 	// Auto-prefetch Trusted Publishing when package list changes
 	$effect(() => {
 		void scanned;
-		for (const pkg of scanned) maybeFetchTrustedPublishing(pkg.name);
+		for (const pkg of scanned) trustedPublishing.fetch(pkg.name);
 	});
 
 	// --- Trusted Publishing dialog (single-package mode) ---
@@ -140,9 +105,9 @@
 	let trustedPublishingDialogPath = $state('');
 	let trustedPublishingDialogRepoHint = $state('');
 	let trustedPublishingDialogInitialTab = $state<'current' | 'workflow'>('current');
-	// Reactive: reads from trustedPublishingState so a config that arrives AFTER the dialog
-	// opens (opened while still loading) flows into the dialog and syncs its form.
-	let trustedPublishingDialogConfig = $derived(trustedPublishingConfigs(trustedPublishingDialogPkg)[0] ?? null);
+	// Reactive: reads from the shared cache so a config that arrives AFTER the
+	// dialog opens (opened while still loading) flows in and syncs the form.
+	let trustedPublishingDialogConfig = $derived(trustedPublishing.configs(trustedPublishingDialogPkg)[0] ?? null);
 
 	function openTrustedPublishingDialog(pkg: PublishTarget, initialTab: 'current' | 'workflow' = 'current'): void {
 		trustedPublishingDialogPkg = pkg.name;
@@ -152,18 +117,14 @@
 		trustedPublishingDialogOpen = true;
 	}
 	function onTrustedPublishingChanged(): void {
-		if (trustedPublishingDialogPkg) {
-			const next = { ...trustedPublishingState };
-			delete next[trustedPublishingDialogPkg];
-			trustedPublishingState = next;
-		}
+		trustedPublishing.invalidate(trustedPublishingDialogPkg);
 	}
 
 	// --- Batch mode ---
 	let batchMode = $state(false);
 	let selected = $state<Set<string>>(new Set());
 
-	function toggleBatch(): void {
+	function toggleBatchMode(): void {
 		batchMode = !batchMode;
 		if (!batchMode) selected = new Set();
 	}
@@ -173,6 +134,44 @@
 		else next.add(name);
 		selected = next;
 	}
+	function selectAll(): void {
+		// Selection operates on the FULL scanned set, independent of the current
+		// filter (filter is display-only; selection must be orthogonal to it).
+		selected = new Set(scanned.map((p) => p.name));
+	}
+	function invertSelection(): void {
+		const next = new Set<string>();
+		for (const pkg of scanned) if (!selected.has(pkg.name)) next.add(pkg.name);
+		selected = next;
+	}
+	function clearSelection(): void {
+		selected = new Set();
+	}
+	/** Whether every scanned package is currently selected. Drives the
+	 *  select-all Toggle's pressed (active) state. Independent of the filter —
+	 *  selection and filtering are orthogonal. */
+	const allSelected = $derived(
+		scanned.length > 0 && scanned.every((p) => selected.has(p.name)),
+	);
+	/** Toggle between all-selected and none-selected (the select-all Toggle's
+	 *  write side). Operates on the full scanned set, not the filtered view. */
+	function toggleSelectAll(next: boolean): void {
+		selected = next ? new Set(scanned.map((p) => p.name)) : new Set();
+	}
+	// The select-all Toggle's `pressed` is `$bindable`; keep a writable local
+	// state synced with the derived `allSelected` (so the Toggle reflects the
+	// active state when every package is selected, even if selection changed via
+	// per-card clicks or invert/clear).
+	let allSelectedPressed = $state(false);
+	$effect(() => {
+		allSelectedPressed = allSelected;
+	});
+
+	/** Whether every selected package is publishable (gates Batch Publish). */
+	const batchPublishable = $derived.by(() => {
+		if (selected.size === 0) return false;
+		return scanned.filter((p) => selected.has(p.name)).every((p) => canPublish(p));
+	});
 
 	// --- Batch Trusted Publishing dialog ---
 	let batchTrustedPublishingOpen = $state(false);
@@ -185,18 +184,27 @@
 		const selectedPkgs = scanned.filter((p) => selected.has(p.name));
 		const repos = new Set(selectedPkgs.map((p) => p.repository ?? ''));
 		batchRepoHint = repos.size === 1 ? [...repos][0]! : '';
-		batchTrustedPublishingTargets = selectedPkgs.map((pkg) => ({
-			name: pkg.name,
-			path: pkg.path,
-			...(pkg.repository ? { repository: pkg.repository } : {}),
-			...(trustedPublishingConfigs(pkg.name)[0] ? { currentConfig: trustedPublishingConfigs(pkg.name)[0] } : {}),
-		}));
+		batchTrustedPublishingTargets = selectedPkgs.map((pkg) => {
+			const currentConfig = trustedPublishing.configs(pkg.name)[0];
+			return {
+				name: pkg.name,
+				path: pkg.path,
+				...(pkg.repository ? { repository: pkg.repository } : {}),
+				...(currentConfig ? { currentConfig } : {}),
+			};
+		});
 		batchTrustedPublishingOpen = true;
 	}
 
 	// --- Publish ---
 	function canPublish(pkg: PublishTarget): boolean {
 		return pkg.publishable !== false;
+	}
+	/** The i18n tooltip explaining why Publish is disabled, or null if it's enabled. */
+	function publishDisabledReason(pkg: PublishTarget): string | null {
+		if (canPublish(pkg)) return null;
+		if (pkg.unpublishableReason === 'private') return $_('workspaces.unpublishablePrivate');
+		return $_('workspaces.publish');
 	}
 	function publishPayload(pkg: PublishTarget) {
 		const access = pkgAccess[pkg.name] ?? 'public';
@@ -214,9 +222,6 @@
 	function accessFor(name: string): 'public' | 'restricted' {
 		return pkgAccess[name] ?? 'public';
 	}
-	function cycleAccess(name: string): void {
-		pkgAccess = { ...pkgAccess, [name]: accessFor(name) === 'public' ? 'restricted' : 'public' };
-	}
 	function doPublish(pkg: PublishTarget): void {
 		if (!canPublish(pkg)) return;
 		actions.createEvent('publish', publishPayload(pkg));
@@ -233,6 +238,27 @@
 		});
 		goto('/active-events');
 	}
+	/** Publish every selected package as a publish event, sharing one groupId
+	 *  so they fold into a single batch in the Events Hub. */
+	function doBatchPublish(): void {
+		if (selected.size === 0) return;
+		const groupId = crypto.randomUUID();
+		for (const pkg of scanned) {
+			if (!selected.has(pkg.name)) continue;
+			if (!canPublish(pkg)) continue;
+			actions.createEvent('publish', publishPayload(pkg), groupId);
+		}
+		selected = new Set();
+		batchMode = false;
+		goto('/active-events');
+	}
+	/** Configure OIDC for every package in the workspace: virtually select all
+	 *  then open the same batch confirmation dialog the toolbar uses. */
+	function doRecursiveOidc(): void {
+		if (scanned.length === 0) return;
+		selected = new Set(scanned.map((p) => p.name));
+		openBatchTrustedPublishing();
+	}
 </script>
 
 <svelte:head><title>{$_('workspaces.heading')} · {decodedRoot}</title></svelte:head>
@@ -244,32 +270,48 @@
 			<IconArrowLeft class="h-3.5 w-3.5" /> {$_('workspaces.trackedRoots')}
 		</a>
 	</div>
-	<div class="flex items-center justify-between gap-3">
-		<div class="min-w-0">
-		<h1 class="truncate text-lg font-semibold tracking-tight">{decodedRoot.split('/').pop() ?? decodedRoot}</h1>
-		<p class="truncate font-mono text-[10px] text-muted-foreground/70">{decodedRoot}</p>
+		<div class="flex items-center justify-between gap-3">
+			<div class="min-w-0">
+			<h1 class="truncate text-lg font-semibold tracking-tight">{decodedRoot.split('/').pop() ?? decodedRoot}</h1>
+			<p class="truncate font-mono text-[10px] text-muted-foreground/70">{decodedRoot}</p>
+			</div>
+			<!-- Batch-actions dropdown: Recursive Publish / Recursive OIDC / Select.
+			     Replaces the former [Recursive Publish][Batch] pair. -->
+			<div class="shrink-0">
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button {...props} variant={batchMode ? 'brand' : 'outline'} size="sm" title={$_('workspaces.batchMenu')}>
+								<IconLayers class="h-3.5 w-3.5" />
+								{$_('workspaces.batch')}
+								<IconChevronDown class="h-3 w-3 opacity-70" />
+							</Button>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="end" sideOffset={4} class="w-56">
+						{#if $daemon.isPnpmWorkspace}
+							<DropdownMenu.Item onclick={doRecursivePublish} title={$_('workspaces.recursivePublishTitle')}>
+								<IconPublish class="h-3.5 w-3.5" />
+								{$_('workspaces.recursivePublish')}
+							</DropdownMenu.Item>
+						{/if}
+						<DropdownMenu.Item onclick={doRecursiveOidc} disabled={scanned.length === 0} title={$_('workspaces.recursiveOidcTitle')}>
+							<IconShield class="h-3.5 w-3.5" />
+							{$_('workspaces.recursiveOidc')}
+						</DropdownMenu.Item>
+						<DropdownMenu.Separator />
+						<DropdownMenu.Item onclick={toggleBatchMode} title={$_('workspaces.selectModeTitle')}>
+							{#if batchMode}
+								<IconSquare class="h-3.5 w-3.5" />
+							{:else}
+								<IconCheckSquare class="h-3.5 w-3.5" />
+							{/if}
+							{$_('workspaces.selectMode')}
+						</DropdownMenu.Item>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
 		</div>
-		<div class="flex shrink-0 gap-2">
-			{#if $daemon.isPnpmWorkspace}
-				<Button
-					variant="outline"
-					size="sm"
-					onclick={doRecursivePublish}
-					title={$_('workspaces.recursivePublishTitle')}
-				>
-					<IconLayers class="h-3.5 w-3.5" /> {$_('workspaces.recursivePublish')}
-				</Button>
-			{/if}
-			<Button
-				variant={batchMode ? 'brand' : 'outline'}
-				size="sm"
-				onclick={toggleBatch}
-				title={$_('workspaces.batchMode')}
-			>
-				<IconLayers class="h-3.5 w-3.5" /> {$_('workspaces.batch')}
-			</Button>
-		</div>
-	</div>
 
 	<!-- Filter -->
 	{#if scanned.length > 0}
@@ -287,15 +329,68 @@
 		</div>
 	{:else}
 		<div class="space-y-2">
-			<div class="flex items-center justify-between">
-				<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-					{$_('workspaces.packageCount', { values: { count: filteredPackages.length } })}
-				</span>
-				{#if batchMode && selected.size > 0}
-					<Button variant="brand" size="sm" onclick={openBatchTrustedPublishing}>
-						<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.batchTrustedPublishing')} ({selected.size})
-					</Button>
-				{/if}
+			<div class="flex items-center justify-between gap-2">
+				<div class="flex items-center gap-2">
+					<span class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+						{#if batchMode}
+							{$_('workspaces.selectionCount', { values: { selected: selected.size, total: scanned.length } })}
+						{:else if filterText.trim()}
+							{$_('workspaces.packageCountFiltered', { values: { shown: filteredPackages.length, total: scanned.length } })}
+						{:else}
+							{$_('workspaces.packageCount', { values: { count: filteredPackages.length } })}
+						{/if}
+					</span>
+					{#if batchMode}
+						<Button variant="ghost" size="sm" class="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground" onclick={toggleBatchMode} title={$_('workspaces.cancelSelectModeTitle')}>
+							{$_('workspaces.cancelSelectMode')}
+						</Button>
+					{/if}
+				</div>
+					<div class="flex items-center gap-1.5">
+						{#if batchMode}
+							<!-- Selection helpers: select-all (Toggle, active when all selected) / invert / clear -->
+							<ButtonGroup>
+								<Toggle
+									variant="outline"
+									size="sm"
+									class="size-7 p-0"
+									aria-label={$_('workspaces.selectAll')}
+									title={$_('workspaces.selectAll')}
+									bind:pressed={allSelectedPressed}
+									onPressedChange={toggleSelectAll}
+								>
+									<IconListChecks class="h-3.5 w-3.5" />
+								</Toggle>
+								<Button variant="outline" size="icon-sm" onclick={invertSelection} title={$_('workspaces.invertSelection')} aria-label={$_('workspaces.invertSelection')}>
+									<IconInvert class="h-3.5 w-3.5" />
+								</Button>
+								<Button variant="outline" size="icon-sm" onclick={clearSelection} disabled={selected.size === 0} title={$_('workspaces.clearSelection')} aria-label={$_('workspaces.clearSelection')}>
+									<IconLayoutList class="h-3.5 w-3.5" />
+								</Button>
+							</ButtonGroup>
+							<!-- Batch actions: only shown in multi-select mode. -->
+							<ButtonGroup>
+								<Button
+									variant="brand"
+									size="sm"
+									disabled={!batchPublishable}
+									onclick={doBatchPublish}
+									title={$_('workspaces.batchPublish')}
+								>
+									<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.batchPublish')}
+								</Button>
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={selected.size === 0}
+									onclick={openBatchTrustedPublishing}
+									title={$_('workspaces.batchOidc')}
+								>
+									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.batchOidc')}
+								</Button>
+							</ButtonGroup>
+						{/if}
+					</div>
 			</div>
 
 			{#each filteredPackages as pkg, i (pkg.path)}
@@ -325,10 +420,10 @@
 							{/if}
 							<!-- Trusted Publishing status line — always visible -->
 							<div class="mt-1 flex items-center gap-1.5">
-								<IconShield class="h-3 w-3 shrink-0 {isTrustedPublishingConfigured(pkg.name) ? 'text-success' : 'text-muted-foreground/50'}" />
-								{#if isTrustedPublishingConfigured(pkg.name)}
+								<IconShield class="h-3 w-3 shrink-0 {trustedPublishing.isConfigured(pkg.name) ? 'text-success' : 'text-muted-foreground/50'}" />
+								{#if trustedPublishing.isConfigured(pkg.name)}
 									<span class="truncate text-[11px] text-success/90">{trustedPublishingStatusText(pkg.name)}</span>
-								{:else if trustedPublishingLoading(pkg.name)}
+								{:else if trustedPublishing.isLoading(pkg.name)}
 									<span class="truncate text-[11px] shiny-text">{trustedPublishingStatusText(pkg.name)}</span>
 								{:else}
 									<span class="truncate text-[11px] text-muted-foreground/50">{trustedPublishingStatusText(pkg.name)}</span>
@@ -341,43 +436,50 @@
 						</div>
 						<!-- Action buttons (hidden in batch mode) -->
 						{#if !batchMode}
-							<div class="flex shrink-0 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-								{#if isScoped(pkg.name)}
-									<button
-										type="button"
-										title={$_('workspaces.accessTitle')}
-										class="rounded-md border border-border px-1.5 py-1 text-[10px] font-medium transition-colors hover:bg-accent {accessFor(pkg.name) === 'restricted' ? 'text-warning' : 'text-muted-foreground'}"
-										onclick={() => cycleAccess(pkg.name)}
-									>
-										{accessFor(pkg.name)}
-									</button>
-								{/if}
-								<Button
-									variant="brand"
-									size="sm"
-									disabled={!canPublish(pkg)}
-									onclick={() => doPublish(pkg)}
-								>
-									<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
-								</Button>
-								<Button
-									variant={isTrustedPublishingConfigured(pkg.name) ? 'brand' : 'outline'}
-									size="sm"
-									onpointerenter={() => maybeFetchTrustedPublishing(pkg.name)}
-									onclick={() => openTrustedPublishingDialog(pkg)}
-								>
-									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.trustedPublishing')}
-								</Button>
-								{#if isTrustedPublishingConfigured(pkg.name)}
+							<ButtonGroup class="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
+								{#if !canPublish(pkg) && publishDisabledReason(pkg)}
+									<!--
+										The button is NOT `disabled` (that would set pointer-events:none
+										and the tooltip could never trigger). Instead it stays hoverable,
+										looks disabled via opacity, and its onclick is a no-op so the
+										tooltip can still show the reason.
+									-->
+									<Tooltip.Root>
+										<Tooltip.Trigger>
+											{#snippet child({ props })}
+												<Button
+													{...props}
+													variant="brand"
+													size="sm"
+													aria-disabled="true"
+													tabindex={-1}
+													class="pointer-events-auto opacity-50"
+													onclick={(e) => e.preventDefault()}
+												>
+													<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
+												</Button>
+											{/snippet}
+										</Tooltip.Trigger>
+										<Tooltip.Content side="bottom">{publishDisabledReason(pkg)}</Tooltip.Content>
+									</Tooltip.Root>
+								{:else}
 									<Button
-										variant="outline"
+										variant="brand"
 										size="sm"
-										onclick={() => openTrustedPublishingDialog(pkg, 'workflow')}
+										onclick={() => doPublish(pkg)}
 									>
-										<IconFileCode class="h-3.5 w-3.5" /> OIDC
+										<IconPublish class="h-3.5 w-3.5" /> {$_('workspaces.publish')}
 									</Button>
 								{/if}
-							</div>
+								<Button
+									variant={trustedPublishing.isConfigured(pkg.name) ? 'brand' : 'outline'}
+									size="sm"
+									onpointerenter={() => trustedPublishing.fetch(pkg.name)}
+									onclick={() => openTrustedPublishingDialog(pkg)}
+								>
+									<IconShield class="h-3.5 w-3.5" /> OIDC
+								</Button>
+							</ButtonGroup>
 						{/if}
 					</div>
 				</div>
@@ -392,6 +494,7 @@
 	packageName={trustedPublishingDialogPkg}
 	packagePath={trustedPublishingDialogPath}
 	config={trustedPublishingDialogConfig}
+	configLoading={trustedPublishing.isLoading(trustedPublishingDialogPkg)}
 	repositoryHint={trustedPublishingDialogRepoHint}
 	initialTab={trustedPublishingDialogInitialTab}
 	onChanged={onTrustedPublishingChanged}
@@ -405,10 +508,9 @@
 	config={null}
 	repositoryHint={batchRepoHint}
 	onChanged={() => {
-		// Invalidate all selected packages' cache.
-		const next = { ...trustedPublishingState };
-		for (const name of selected) delete next[name];
-		trustedPublishingState = next;
+		// Invalidate all selected packages' cache so re-scan reflects the new
+		// trust state, then exit batch mode.
+		for (const name of selected) trustedPublishing.invalidate(name);
 		batchMode = false;
 		selected = new Set();
 	}}

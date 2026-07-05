@@ -167,14 +167,27 @@
 		<div class="island-list">
 			{#each items as item (item.id)}
 				{@const Icon = item.icon ?? DEFAULT_ICON[item.tone]}
-				<button
-					type="button"
-					class="island-item {TONE_CLASS[item.tone]}"
-					onclick={() => dismiss(item.id)}
-				>
-					<Icon class="h-4 w-4 shrink-0" />
-					<span class="island-item-msg">{item.message}</span>
-				</button>
+				{@const ActionIcon = item.action?.icon}
+				<div class="island-item {TONE_CLASS[item.tone]}">
+					<button
+						type="button"
+						class="island-item-main"
+						onclick={() => dismiss(item.id)}
+					>
+						<Icon class="h-4 w-4 shrink-0" />
+						<span class="island-item-msg">{item.message}</span>
+					</button>
+					{#if item.action}
+						<button
+							type="button"
+							class="island-action"
+							onclick={() => { void item.action!.run(); dismiss(item.id); }}
+						>
+							{#if ActionIcon}<ActionIcon class="h-3.5 w-3.5" />{/if}
+							{item.action.label}
+						</button>
+					{/if}
+				</div>
 			{:else}
 				<p class="island-empty">No notifications</p>
 			{/each}
@@ -275,11 +288,22 @@
 	}
 	.island-item {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		gap: 0.5rem;
 		width: 100%;
-		padding: 0.5rem 0.625rem;
+		padding: 0.25rem 0.375rem;
 		border-radius: calc(var(--radius) - 2px);
+	}
+	.island-item:hover {
+		background: var(--accent);
+	}
+	.island-item-main {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		flex: 1;
+		min-width: 0;
+		padding: 0.25rem 0.25rem;
 		background: transparent;
 		border: none;
 		text-align: left;
@@ -288,7 +312,23 @@
 		color: var(--foreground);
 		cursor: pointer;
 	}
-	.island-item:hover {
+	.island-action {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		flex-shrink: 0;
+		padding: 0.25rem 0.5rem;
+		border-radius: calc(var(--radius) - 4px);
+		background: color-mix(in oklab, var(--accent) 80%, transparent);
+		border: 1px solid var(--border);
+		font-size: 0.72rem;
+		font-weight: 500;
+		color: var(--foreground);
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background-color 0.12s ease;
+	}
+	.island-action:hover {
 		background: var(--accent);
 	}
 	.island-item-msg {

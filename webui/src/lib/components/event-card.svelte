@@ -57,11 +57,21 @@
 		 */
 		autoClose = false,
 		onAutoClose,
+		/** Whether this card is currently inheriting its GroupEvent's default
+		 *  form. When true (and the event is a pending configure-trust add), the
+		 *  card renders a READ-ONLY summary of its own `configureTrustCtx.config`
+		 *  (kept in sync by the group draft fan-out) instead of an editable form. */
+		inheritMode = false,
+		/** Toggle callback owned by the parent GroupEventCard. Switches this
+		 *  member between read-only inherit and a custom editable form. */
+		onToggleInherit,
 	}: {
 		event: PubEvent;
 		variant?: 'full' | 'compact';
 		autoClose?: boolean;
 		onAutoClose?: () => void;
+		inheritMode?: boolean;
+		onToggleInherit?: (eventId: string, mode: 'inherit' | 'custom') => void;
 	} = $props();
 
 	const STATUS_VARIANTS = {
@@ -528,8 +538,28 @@
 				<div class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
 					{$_('eventCard.removeTrustedPublishing')} <span class="font-mono">{trustedPublisherSummary(configureTrustCtx.target.currentConfig)}</span>
 				</div>
+			{:else if isPending && inheritMode && configureTrustCtx.config}
+				<!-- GroupEvent inherit mode: read-only summary of the group's
+				     default config (synced into this member's payload by the
+				     group-draft fan-out). The member cannot edit until it opts out. -->
+				<div class="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+					<div class="flex min-w-0 items-center gap-1.5">
+						<IconTrustedPublishing class="h-3.5 w-3.5 shrink-0 text-brand" />
+						<span class="truncate font-mono text-muted-foreground">{trustedPublisherSummary(configureTrustCtx.config)}</span>
+					</div>
+					{#if onToggleInherit}
+						<Button variant="ghost" size="sm" class="shrink-0 px-2 text-[11px]" onclick={() => onToggleInherit(event.id, 'custom')}>
+							{$_('groupEvent.customize')}
+						</Button>
+					{/if}
+				</div>
 			{:else if isPending}
-				<div class="flex justify-end">
+				<div class="flex items-center justify-end gap-1.5">
+					{#if onToggleInherit}
+						<Button variant="ghost" size="sm" class="px-2 text-[11px]" onclick={() => onToggleInherit(event.id, 'inherit')}>
+							{$_('groupEvent.inheritDefault')}
+						</Button>
+					{/if}
 					<ButtonGroup>
 						<Button variant={trustFormMode === 'compact' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => setTrustFormMode('compact')}>{$_('trustedPublishing.formModeCompact')}</Button>
 						<Button variant={trustFormMode === 'full' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => setTrustFormMode('full')}>{$_('trustedPublishing.formModeFull')}</Button>
@@ -537,7 +567,11 @@
 				</div>
 				<TrustedPublishingDraftForm
 					eventId={event.id}
-					groupId={event.groupId}
+					{/* Custom mode (onToggleInherit present) edits this member
+					    independently — omit groupId so it does NOT fan out to
+					    the group via updateConfigureTrustGroupDraft. Inherit-less
+					    standalone events keep event.groupId (usually undefined). */}
+					groupId={onToggleInherit ? undefined : event.groupId}
 					config={configureTrustCtx.config}
 					currentConfig={configureTrustCtx.target.currentConfig}
 					repositoryHint={configureTrustCtx.target.repository ?? ''}

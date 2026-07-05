@@ -45,7 +45,7 @@
     let activeTab = $state<TabId>("general");
 
     function setOpen(next: boolean): void {
-        if (!next) closeSettings();
+        ui.update((s) => ({ ...s, settingsOpen: next }));
     }
 
     const activeLabel = $derived(

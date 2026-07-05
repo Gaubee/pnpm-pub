@@ -7,6 +7,7 @@
  */
 import http from "node:http";
 import path from "node:path";
+import os from "node:os";
 import { promises as fsp, existsSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { EventEmitter } from "node:events";
@@ -29,6 +30,7 @@ import {
   findProjectRoot,
   scanWorkspace,
   isPublishableByProfile,
+  unpublishableReason,
   isRiskyRoot,
   readWorkspacePackages,
 } from "./workspace.js";
@@ -589,9 +591,15 @@ export class WebServer {
   }
 
   private async openExternal(target: string): Promise<{ ok: boolean; error?: string }> {
+    // Expand a leading `~` to the user home dir. `execFile` does NOT run a
+    // shell, so `~` would otherwise be treated as a literal directory name and
+    // the open would silently fail (e.g. opening a downloaded file from
+    // `~/Downloads`). Also normalize `~user` is intentionally unsupported.
+    const resolved =
+      target === "~" ? os.homedir() : target.replace(/^~(?=\/|\\)/, os.homedir());
     const cmd =
       process.platform === "win32" ? "start" : process.platform === "darwin" ? "open" : "xdg-open";
-    const args = process.platform === "win32" ? ["", target] : [target];
+    const args = process.platform === "win32" ? ["", resolved] : [resolved];
     try {
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");
@@ -673,6 +681,10 @@ export class WebServer {
         ...(p.repository ? { repository: p.repository } : {}),
         ...(p.publishConfig ? { publishConfig: p.publishConfig } : {}),
         publishable: isPublishableByProfile(p, store.getDefault()),
+        ...(() => {
+          const reason = unpublishableReason(p, store.getDefault());
+          return reason ? { unpublishableReason: reason } : {};
+        })(),
       })),
       ...(isPnpmWorkspace ? { isPnpmWorkspace } : {}),
     });

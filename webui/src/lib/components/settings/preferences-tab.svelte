@@ -28,7 +28,18 @@
 	import { actions, daemon } from '$lib/store.js';
 	import { _ } from 'svelte-i18n';
 
-	const pinned = $derived($daemon.pinned);
+	// The Switch needs a writable `bind:checked` target (its `checked` prop is
+	// `$bindable`, not getter/setter like Dialog's `open`). We keep a local
+	// `$state` in sync with the store-backed `pinned` and write back through the
+	// single preferences path on change. Without this, `checked={pinned}` (one-way)
+	// desyncs from bits-ui's internal state — the same class of bug the dialogs
+	// hit with `setOpen`.
+	const storePinned = $derived($daemon.pinned);
+	let pinned = $state(false);
+	// Push store → local whenever the daemon broadcasts a new value.
+	$effect(() => {
+		pinned = storePinned;
+	});
 </script>
 
 <div class="space-y-5">
@@ -42,8 +53,8 @@
 		</div>
 		<Switch
 			id="pref-keepOnTop"
-			checked={pinned}
-			onCheckedChange={() => actions.setPreferences({ keepOnTop: !pinned })}
+			bind:checked={pinned}
+			onCheckedChange={(v) => actions.setPreferences({ keepOnTop: v })}
 		/>
 	</div>
 

@@ -22,6 +22,7 @@ import type {
 } from "./types";
 import type { RepoInfo } from "./components/repo-info-types.js";
 import { filterVisibleEvents, sortEvents } from "./event-projection.js";
+import { groupEvents, type EventGroup } from "./group-event.js";
 import { createWebRpcClient, type WebRpcClient } from "./orpc-client.js";
 
 /**
@@ -383,31 +384,15 @@ export const historyEvents = derived(visibleEvents, ($events) =>
 
 /**
  * History events grouped by `groupId`. Each entry is either a standalone
- * event (no groupId) or a collapsed group (latest first, "+N more" hidden).
- * `events` is sorted newest-first within a group; `latest` is events[0].
+ * event (no groupId, `isGroup === false`) or a collapsed group
+ * (`isGroup === true`). `events` is sorted newest-first within a group;
+ * `latest` is `events[0]`. Pure derivation — see `group-event.ts`.
  */
-export interface HistoryGroup {
-  id: string; // groupId, or the event id when standalone
-  latest: PubEvent;
-  events: PubEvent[]; // newest-first
-  collapsed: boolean; // true when more than one member
-}
-export const groupedHistoryEvents = derived(historyEvents, ($events): HistoryGroup[] => {
-  // historyEvents is already newest-first. Preserve that order.
-  const byGroup = new Map<string, PubEvent[]>();
-  for (const e of $events) {
-    const key = e.groupId ?? e.id;
-    const arr = byGroup.get(key);
-    if (arr) arr.push(e);
-    else byGroup.set(key, [e]);
-  }
-  return [...byGroup.values()].map((events) => ({
-    id: events[0]!.groupId ?? events[0]!.id,
-    latest: events[0]!,
-    events,
-    collapsed: events.length > 1,
-  }));
-});
+export type { EventGroup };
+export const groupedHistoryEvents = derived(historyEvents, ($events): EventGroup[] =>
+  // historyEvents is already newest-first; groupEvents preserves that order.
+  groupEvents($events),
+);
 export const activeProfile = derived(
   daemon,
   ($d) => $d.profiles.find((p) => p.username === $d.defaultProfile) ?? null,

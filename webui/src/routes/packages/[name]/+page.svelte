@@ -325,6 +325,7 @@
 	bind:open={trustedPublishingDialogOpen}
 	packageName={name}
 	config={trustedPublishingDialogConfig}
+	configLoading={trustedPublishing.isLoading(name)}
 	repositoryHint={repoHint}
 	onChanged={onTrustedPublishingChanged}
 />
