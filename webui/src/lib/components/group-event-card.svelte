@@ -35,8 +35,10 @@
     import {
         isMemberInheriting,
         resolveTrustedPublishingConfig,
+        trustedPublisherConfigsEqual,
         trustedPublisherSummary,
     } from "$lib/trusted-publishing.js";
+    import { createTrustedPublishingStatus } from "$lib/hooks/use-trusted-publishing.svelte.js";
     import EventDetailDialog from "$lib/components/event-detail-dialog.svelte";
     import EventIconBadge from "$lib/components/event-icon-badge.svelte";
     import TrustFormCard from "$lib/components/trust-form-card.svelte";
@@ -78,6 +80,9 @@
         expired: "warning",
         "action-required": "warning",
         rejected: "secondary",
+        // trusted-publishing pre-flight: skipped = neutral success tint.
+        // (conflict is NOT a status — only a transient webui display label.)
+        skipped: "success",
     } satisfies Record<EventStatus, NonNullable<BadgeVariant>>;
 
     const KIND_ICON: Record<GroupKind, typeof IconLayers> = {
@@ -106,7 +111,21 @@
         expired: "bg-warning",
         "action-required": "bg-warning",
         rejected: "bg-muted-foreground/40",
+        // skipped: gray-green (success-tinted but muted to read as "no-op").
+        skipped: "bg-success/50",
     };
+
+    /**
+     * Module-level Trusted Publishing status cache shared across every
+     * GroupEventCard instance. The 30s TTL + in-flight dedup naturally
+     * coalesce fetches for the same package across cards. Used for the
+     * PRE-FLIGHT skip/conflict preview (Chapter 6.2.7): when a trust group has
+     * pending members, fetch each member's current registry config and compare
+     * to the resolved desired config to show skip (gray-green) / conflict
+     * (orange) before the user confirms. The daemon re-checks authoritatively
+     * at confirm time, so a stale preview never causes a wrong write.
+     */
+    const trustedPublishing = createTrustedPublishingStatus();
 
     const members = $derived(group.events);
     const memberCount = $derived(members.length);
@@ -132,6 +151,51 @@
      *  no fan-out into member payloads). The form seeds from this and sends
      *  `updateConfigureTrustGroupDraft(groupId, …)`. */
     const groupDefaultConfig = $derived($daemon.groupTrustDefaults[group.id]);
+
+    /**
+     * Pre-flight: fetch each pending configure-trust member's CURRENT registry
+     * config so we can preview skip/conflict BEFORE confirm. Best-effort + 30s
+     * TTL cache (module-level `trustedPublishing`). The daemon re-checks
+     * authoritatively at confirm, so this is purely a display optimization.
+     * Runs only while the group has pending members and a trust kind.
+     */
+    const precheckableMembers = $derived(
+        members.filter(
+            (m) =>
+                m.status === "pending" &&
+                m.payload?.kind === "configure-trust" &&
+                m.payload.data.action !== "remove",
+        ),
+    );
+    $effect(() => {
+        // Re-run when the pending member set or group identity changes.
+        void group.id;
+        for (const m of precheckableMembers) trustedPublishing.fetch(memberName(m));
+    });
+
+    /** Pre-flight classification for a pending member:
+     *   - "skip"    : the registry already has an EQUAL config ⇒ confirming
+     *                is a no-op (daemon resolves as "skipped", no HTTP write).
+     *   - "conflict": the registry has a DIFFERENT config ⇒ shown as an orange
+     *                hint chip. Confirming AUTO-resolves on the daemon via
+     *                delete-then-put (DELETE the old config, then POST the new
+     *                one) — no user action needed. The chip is just a heads-up
+     *                that an existing differing config will be replaced.
+     *   - "ready"   : no existing config ⇒ POST will succeed.
+     *   - "unknown" : currentConfig not fetched yet / desired config absent. */
+    function memberPrecheck(member: PubEvent): "skip" | "conflict" | "ready" | "unknown" {
+        const desired = resolveTrustedPublishingConfig(
+            member,
+            $daemon.groupTrustDefaults,
+            $daemon.groupInheritMembers,
+        );
+        if (!desired) return "unknown";
+        const current = trustedPublishing.configs(memberName(member));
+        if (current.length === 0) return "ready";
+        return current.some((c) => trustedPublisherConfigsEqual(desired, c))
+            ? "skip"
+            : "conflict";
+    }
     /** Members that can be retried (failed or rejected). Excludes success —
      *  that's a separate "reset" affordance — and pending (still in flight). */
     const retryableMembers = $derived(
@@ -442,33 +506,82 @@
                                 class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/40"
                                 onclick={() => (detailEvent = member)}
                             >
-                                <span
-                                    class="h-1.5 w-1.5 shrink-0 rounded-full {MEMBER_STATUS_DOT[
-                                        member.status
-                                    ]}"
-                                ></span>
-                                <span
-                                    class="min-w-0 flex-1 truncate font-mono text-foreground"
-                                    >{memberName(member)}</span
-                                >
-                                {#if memberMeta(member)}
+                                {#if member.status === "pending"}
+                                    {@const precheck = memberPrecheck(member)}
                                     <span
-                                        class="min-w-0 shrink-0 max-w-[40%] truncate text-muted-foreground/70"
-                                        >{memberMeta(member)}</span
-                                    >
-                                {/if}
-                                {#if group.kind === "trusted-publishing" && surface === "pending" && hasPending}
+                                        class="h-1.5 w-1.5 shrink-0 rounded-full {precheck === 'skip'
+                                            ? 'bg-success/50'
+                                            : precheck === 'conflict'
+                                              ? 'bg-warning'
+                                              : MEMBER_STATUS_DOT[member.status]}"
+                                    ></span>
                                     <span
-                                        class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium {modeFor(
-                                            member.id,
-                                        ) === 'inherit'
-                                            ? 'bg-brand/10 text-brand'
-                                            : 'bg-muted text-muted-foreground'}"
+                                        class="min-w-0 flex-1 truncate font-mono text-foreground"
+                                        >{memberName(member)}</span
                                     >
-                                        {modeFor(member.id) === "inherit"
-                                            ? $_("groupEvent.inheritDefault")
-                                            : $_("groupEvent.customize")}
-                                    </span>
+                                    {#if memberMeta(member)}
+                                        <span
+                                            class="min-w-0 shrink-0 max-w-[40%] truncate text-muted-foreground/70"
+                                            >{memberMeta(member)}</span
+                                        >
+                                    {/if}
+                                    {#if precheck === "skip" || precheck === "conflict"}
+                                        <!-- Pre-flight preview chip (Chapter 6.2.7): NOT an event
+                                             status — just a transient display label. skip = gray-green
+                                             (already matches, no-op on confirm); conflict = orange (a
+                                             differing config exists — the daemon auto-resolves it via
+                                             delete-then-put on confirm, landing as success/failed). -->
+                                        <span
+                                            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium {precheck === 'skip'
+                                                ? 'bg-success/10 text-success'
+                                                : 'bg-warning/10 text-warning'}"
+                                        >
+                                            {precheck === "skip"
+                                                ? $_("groupEvent.precheckSkip")
+                                                : $_("groupEvent.precheckConflict")}
+                                        </span>
+                                    {:else if group.kind === "trusted-publishing"}
+                                        <span
+                                            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium {modeFor(
+                                                member.id,
+                                            ) === 'inherit'
+                                                ? 'bg-brand/10 text-brand'
+                                                : 'bg-muted text-muted-foreground'}"
+                                        >
+                                            {modeFor(member.id) === "inherit"
+                                                ? $_("groupEvent.inheritDefault")
+                                                : $_("groupEvent.customize")}
+                                        </span>
+                                    {/if}
+                                {:else}
+                                    <span
+                                        class="h-1.5 w-1.5 shrink-0 rounded-full {MEMBER_STATUS_DOT[
+                                            member.status
+                                        ]}"
+                                    ></span>
+                                    <span
+                                        class="min-w-0 flex-1 truncate font-mono text-foreground"
+                                        >{memberName(member)}</span
+                                    >
+                                    {#if memberMeta(member)}
+                                        <span
+                                            class="min-w-0 shrink-0 max-w-[40%] truncate text-muted-foreground/70"
+                                            >{memberMeta(member)}</span
+                                        >
+                                    {/if}
+                                    {#if group.kind === "trusted-publishing" && surface === "pending" && hasPending}
+                                        <span
+                                            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium {modeFor(
+                                                member.id,
+                                            ) === 'inherit'
+                                                ? 'bg-brand/10 text-brand'
+                                                : 'bg-muted text-muted-foreground'}"
+                                        >
+                                            {modeFor(member.id) === "inherit"
+                                                ? $_("groupEvent.inheritDefault")
+                                                : $_("groupEvent.customize")}
+                                        </span>
+                                    {/if}
                                 {/if}
                                 <IconChevronRight
                                     class="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5"

@@ -166,6 +166,12 @@ export const EventStatusSchema = z.enum([
   "expired",
   "action-required",
   "rejected",
+  // trusted-publishing pre-flight outcome (Chapter 6.2.7): the desired config
+  // already matched the registry's current config; no HTTP write was needed.
+  // NOTE: "conflict" is NOT a final status — it is only a transient webui
+  // pre-flight *display label*. A conflicting config is auto-resolved by the
+  // daemon via delete-then-put and lands as success (or failed on error).
+  "skipped",
 ]);
 export type EventStatus = z.infer<typeof EventStatusSchema>;
 

@@ -127,6 +127,9 @@
         expired: "warning",
         "action-required": "warning",
         rejected: "secondary",
+        // trusted-publishing pre-flight: skipped = neutral success tint.
+        // (conflict is NOT a status — only a transient webui display label.)
+        skipped: "success",
     } satisfies Record<EventStatus, NonNullable<BadgeVariant>>;
 
     const iconFor = (kind: PubEvent["kind"]) =>
@@ -193,6 +196,8 @@
             case "expired":
             case "action-required":
                 return "ring-warning/40";
+            case "skipped":
+                return "ring-success/30";
             default:
                 return "ring-border"; // rejected
         }
@@ -208,6 +213,8 @@
             case "expired":
             case "action-required":
                 return "border-warning/30";
+            case "skipped":
+                return "border-success/20";
             default:
                 return "border-border"; // rejected
         }

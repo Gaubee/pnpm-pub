@@ -169,16 +169,22 @@
 			</div>
 			<TrustedPublishingReadonly config={effectiveTrustConfig} mode="detailed" />
 		{:else if isPending}
-			<!-- Editable (custom) view. Seed priority: the member's own config,
-			     else the group default (so a freshly-flipped custom member starts
-			     from the inherited default rather than blank). `trustGroupId=
-			     undefined` (passed by the dialog in custom mode) routes edits to
-			     `updateConfigureTrustDraft` (the member's own config), NOT the
-			     group default. -->
+			<!-- Editable (custom) view. Seed priority:
+			     1. the member's own config (an already-custom member);
+			     2. target.currentConfig — for a CONFLICT member the daemon
+			        backfilled the registry's existing (differing) config here, so
+			        the form opens with it and the user edits to match → re-confirm
+			        lands as skipped (Chapter 6.2.7);
+			     3. the group default (a freshly-flipped custom member starts from
+			        the inherited default rather than blank).
+			     `trustGroupId=undefined` (passed by the dialog in custom mode)
+			     routes edits to `updateConfigureTrustDraft` (the member's own
+			     config), NOT the group default. -->
 			<TrustFormCard
 				eventId={event.id}
 				groupId={trustGroupId ?? event.groupId}
 				config={configureTrustCtx.config
+					?? configureTrustCtx.target.currentConfig
 					?? (event.groupId ? $daemon.groupTrustDefaults[event.groupId] : undefined)}
 				currentConfig={configureTrustCtx.target.currentConfig}
 				repositoryHint={configureTrustCtx.target.repository ?? ''}

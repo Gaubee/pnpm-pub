@@ -213,6 +213,7 @@ const en = {
       expired: "expired",
       actionRequired: "action required",
       rejected: "rejected",
+      skipped: "skipped",
     },
   },
   backup: {
@@ -501,6 +502,11 @@ const en = {
     memberRemoveSummary: "Remove trusted publishing for {name}",
     memberInheritPending: "Inheriting default config…",
     memberCustomPending: "Not configured yet",
+    // Pre-flight display labels (NOT event statuses — Chapter 6.2.7). A
+    // "conflict" is transient: the daemon auto-resolves it via delete-then-put
+    // and the member lands as success/failed. These are just row chips.
+    precheckSkip: "skip",
+    precheckConflict: "conflict",
   },
   trustFormCard: {
     notConfigured: "Not configured yet",
@@ -690,6 +696,7 @@ const zh: Messages = mapMessages(en, {
       expired: "已过期",
       actionRequired: "需要操作",
       rejected: "已拒绝",
+      skipped: "已跳过",
     },
   },
   backup: {
@@ -951,6 +958,8 @@ const zh: Messages = mapMessages(en, {
     memberRemoveSummary: "移除 {name} 的 Trusted Publishing",
     memberInheritPending: "继承默认配置中…",
     memberCustomPending: "尚未配置",
+    precheckSkip: "跳过",
+    precheckConflict: "冲突",
   },
   trustFormCard: {
     notConfigured: "尚未配置",

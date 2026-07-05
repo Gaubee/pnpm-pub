@@ -209,7 +209,11 @@ export type EventStatus =
   | "failed"
   | "expired"
   | "action-required"
-  | "rejected";
+  | "rejected"
+  // trusted-publishing pre-flight outcome (see shared/schemas.ts). NOTE:
+  // "conflict" is NOT a status — only a transient webui pre-flight display
+  // label; a conflict auto-resolves (delete-then-put) to success/failed.
+  | "skipped";
 
 export type EventPayload =
   | { kind: "publish"; data: PublishContext }

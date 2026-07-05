@@ -61,12 +61,17 @@ export function aggregateGroupStatus(events: PubEvent[]): EventStatus {
   let firstNonSuccess: EventStatus | null = null;
   for (const e of events) {
     if (e.status === "pending") hasPending = true;
-    else if (e.status !== "success" && firstNonSuccess === null) firstNonSuccess = e.status;
+    // `skipped` is a trusted-publishing pre-flight no-op (the desired config
+    // already matched) — treat it as success-neutral so a fully-skipped batch
+    // aggregates to success, not to "skipped".
+    else if (e.status !== "success" && e.status !== "skipped" && firstNonSuccess === null) {
+      firstNonSuccess = e.status;
+    }
   }
   if (hasPending) return "pending";
   if (firstNonSuccess) return firstNonSuccess;
-  // No pending, no failed/expired/rejected ⇒ every member is success (the
-  // empty case was handled above).
+  // No pending, no failed/expired/rejected/conflict ⇒ every member is success
+  // or skipped (the empty case was handled above).
   return "success";
 }
 

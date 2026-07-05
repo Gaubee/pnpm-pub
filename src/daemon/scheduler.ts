@@ -58,9 +58,96 @@ import {
 } from "./workspace.js";
 import { parsePackagePublishConfig } from "./package-publish-config.js";
 import { checkPublishGitState } from "./publish-git-checks.js";
-import { addTrustedPublisher, removeTrustedPublisher } from "./trusted-publishing-api.js";
+import {
+  addTrustedPublisher,
+  listTrustedPublishers,
+  removeTrustedPublisher,
+} from "./trusted-publishing-api.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Daemon-side trusted-publisher config equality (mirror of the webui helper).
+ * Used by the configure-trust pre-flight to decide skip vs conflict. Ignores
+ * the registry-assigned `id` and normalizes CircleCI context-ids. Permissions
+ * default to both-true when absent.
+ */
+function trustedPublisherConfigsEqual(
+  desired: TrustedPublisherCreateConfig,
+  existing: TrustedPublisherConfig,
+): boolean {
+  if (desired.type !== existing.type) return false;
+  const norm = (perms: string[] | undefined) => ({
+    allowPublish: (perms ?? ["createPackage", "createStagedPackage"]).includes("createPackage"),
+    allowStagePublish: (perms ?? ["createPackage", "createStagedPackage"]).includes(
+      "createStagedPackage",
+    ),
+  });
+  const dp = norm(desired.permissions);
+  const ep = norm(existing.permissions);
+  if (dp.allowPublish !== ep.allowPublish || dp.allowStagePublish !== ep.allowStagePublish) {
+    return false;
+  }
+  const dv = extractTrustedPublishingFieldValues(desired);
+  const ev = extractTrustedPublishingFieldValues(existing);
+  for (const key of Object.keys(dv)) {
+    if ((dv[key] ?? "").trim() !== (ev[key] ?? "").trim()) return false;
+  }
+  return true;
+}
+
+/** Flatten a trusted-publisher config's claims into a comparable value map
+ *  (daemon-side mirror of the webui helper). `id` is dropped. */
+function extractTrustedPublishingFieldValues(
+  config: TrustedPublisherCreateConfig | TrustedPublisherConfig,
+): Record<string, string> {
+  const v: Record<string, string> = {
+    repoOwner: "",
+    repoName: "",
+    workflowFile: "",
+    ciFilePath: "",
+    environment: "",
+    orgId: "",
+    circleProjectId: "",
+    pipelineDefinitionId: "",
+    contextIds: "",
+    vcsOrigin: "",
+  };
+  if (config.type === "github") {
+    const [owner, ...rest] = config.claims.repository.split("/");
+    v.repoOwner = owner ?? "";
+    v.repoName = rest.join("/");
+    v.workflowFile = config.claims.workflow_ref.file;
+    v.environment = config.claims.environment ?? "";
+  } else if (config.type === "gitlab") {
+    const [owner, ...rest] = config.claims.project_path.split("/");
+    v.repoOwner = owner ?? "";
+    v.repoName = rest.join("/");
+    v.ciFilePath = config.claims.ci_config_ref_uri ?? "";
+    v.environment = config.claims.environment ?? "";
+  } else {
+    v.orgId = config.claims["oidc.circleci.com/org-id"];
+    v.circleProjectId = config.claims["oidc.circleci.com/project-id"];
+    v.pipelineDefinitionId = config.claims["oidc.circleci.com/pipeline-definition-id"];
+    v.contextIds = (config.claims["oidc.circleci.com/context-ids"] ?? []).join(", ");
+    v.vcsOrigin = config.claims["oidc.circleci.com/vcs-origin"];
+  }
+  return v;
+}
+
+/** Best-effort current-config lookup for the pre-flight. Never throws — a
+ *  failure returns `{ ok: false }` so the caller can fall through to the POST. */
+async function listTrustLookup(
+  auth: { registry: string; token: string; totpSecret: string },
+  name: string,
+): Promise<{ ok: true; configs: TrustedPublisherConfig[] } | { ok: false }> {
+  try {
+    const result = await listTrustedPublishers(auth, name);
+    return result.ok ? { ok: true, configs: result.configs } : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
 
 /**
  * Detect the current git branch for a directory (display-only hint for the
@@ -2135,14 +2222,15 @@ export class PublishScheduler {
     totpSecret: string,
     registry: string,
   ): Promise<
-    | { ok: true; message: string; mutated: boolean }
-    | { ok: false; message: string; mutated: boolean }
+    | { kind: "ok"; message: string; mutated: boolean }
+    | { kind: "fail"; message: string; mutated: boolean }
+    | { kind: "skipped"; message: string }
   > {
     if (ctx.action === "remove") {
       const id = ctx.target.currentConfig?.id;
       if (!id)
         return {
-          ok: false,
+          kind: "fail",
           message: "Trusted publisher id is required for removal.",
           mutated: false,
         };
@@ -2152,9 +2240,9 @@ export class PublishScheduler {
         id,
       );
       return result.ok
-        ? { ok: true, message: `[configure-trust] removed ${ctx.target.name}`, mutated: true }
+        ? { kind: "ok", message: `[configure-trust] removed ${ctx.target.name}`, mutated: true }
         : {
-            ok: false,
+            kind: "fail",
             message: result.error ?? `Failed to remove trusted publisher for ${ctx.target.name}.`,
             mutated: false,
           };
@@ -2162,12 +2250,56 @@ export class PublishScheduler {
 
     if (!ctx.config) {
       return {
-        ok: false,
+        kind: "fail",
         message: "Trusted publisher config is required before confirmation.",
         mutated: false,
       };
     }
 
+    // ---- Pre-flight: fetch the registry's current trusted publisher configs.
+    // npm's POST returns 409 ("already exists") whenever ANY config is present,
+    // regardless of add vs update. So we resolve the three cases ourselves:
+    //   - EQUAL    : a current config matches the desired one ⇒ SKIP (no HTTP).
+    //   - CONFLICT : a current config DIFFERS ⇒ DELETE the old one first, then
+    //                POST the new one (delete-then-put), avoiding the 409.
+    //   - ADD      : no current config ⇒ POST directly.
+    // `listTrustLookup` is best-effort; on lookup failure we fall through to a
+    // direct POST (preferring to surface a real registry error over a silent
+    // no-op).
+    const lookup = await listTrustLookup({ registry, token, totpSecret }, ctx.target.name);
+    if (lookup.ok) {
+      // Skip if any current config already equals the desired one.
+      if (lookup.configs.some((c) => trustedPublisherConfigsEqual(ctx.config!, c))) {
+        return {
+          kind: "skipped",
+          message: `[configure-trust] ${ctx.target.name} already matches the desired config; skipped.`,
+        };
+      }
+      // Conflict: delete every existing config first, then POST. This is the
+      // authoritative delete-then-put that npm's "Please delete and re-create"
+      // 409 message asks for. We delete ALL current configs (a package may in
+      // principle carry more than one) so the POST lands cleanly.
+      for (const existing of lookup.configs) {
+        if (!existing.id) continue;
+        const removed = await removeTrustedPublisher(
+          { registry, token, totpSecret },
+          ctx.target.name,
+          existing.id,
+        );
+        if (!removed.ok) {
+          return {
+            kind: "fail",
+            message:
+              removed.error ??
+              `Failed to remove the existing trusted publisher for ${ctx.target.name} before applying the new one.`,
+            mutated: true,
+          };
+        }
+      }
+    }
+
+    // POST the desired config (clean add after the deletes above, or a fresh
+    // add when there was nothing to remove).
     const added = await addTrustedPublisher(
       { registry, token, totpSecret },
       ctx.target.name,
@@ -2175,32 +2307,16 @@ export class PublishScheduler {
     );
     if (!added.ok) {
       return {
-        ok: false,
+        kind: "fail",
         message: added.error ?? `Failed to configure trusted publisher for ${ctx.target.name}.`,
         mutated: false,
       };
     }
-
-    const existingId = ctx.target.currentConfig?.id;
-    if (ctx.action === "update" && existingId) {
-      const removed = await removeTrustedPublisher(
-        { registry, token, totpSecret },
-        ctx.target.name,
-        existingId,
-      );
-      if (!removed.ok) {
-        return {
-          ok: false,
-          message:
-            removed.error ??
-            `Added new trusted publisher for ${ctx.target.name}, but failed to remove the old one.`,
-          mutated: true,
-        };
-      }
-      return { ok: true, message: `[configure-trust] updated ${ctx.target.name}`, mutated: true };
-    }
-
-    return { ok: true, message: `[configure-trust] configured ${ctx.target.name}`, mutated: true };
+    return {
+      kind: "ok",
+      message: `[configure-trust] configured ${ctx.target.name}`,
+      mutated: true,
+    };
   }
 
   private async runConfigureTrust(
@@ -2218,9 +2334,17 @@ export class PublishScheduler {
     client.log("stdout", `configuring trusted publishing for ${ctx.target.name}...\n`);
     try {
       const result = await this.applyConfigureTrust(ctx, token, totpSecret, registry);
-      if (result.mutated) this.store.invalidateTrustedPublishing([ctx.target.name]);
-      if (result.ok) {
+      if (result.kind === "ok" || result.kind === "fail") {
+        if (result.mutated) this.store.invalidateTrustedPublishing([ctx.target.name]);
+      }
+      if (result.kind === "ok") {
         this.store.resolveEvent(event.id, "success", result.message);
+        client.log("stdout", result.message + "\n");
+        client.exit(0);
+      } else if (result.kind === "skipped") {
+        // No HTTP write happened — the registry's current config already equals
+        // the desired one. Resolve as a distinct neutral status.
+        this.store.resolveEvent(event.id, "skipped", result.message);
         client.log("stdout", result.message + "\n");
         client.exit(0);
       } else {

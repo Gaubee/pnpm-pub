@@ -254,6 +254,35 @@ export function configPermissions(
   };
 }
 
+/**
+ * Whether a DESIRED config (a `TrustedPublisherCreateConfig`, e.g. the group
+ * default or a custom edit) is EFFECTIVELY EQUAL to an EXISTING config (a
+ * `TrustedPublisherConfig` fetched from the registry, which carries an `id`).
+ * Used for skip/conflict detection: equal ⇒ skip (no HTTP), different ⇒
+ * conflict (user must resolve via custom).
+ *
+ * Comparison ignores the registry-assigned `id` (extractTrustedPublishingValues
+ * flattens it away) and normalizes CircleCI `context-ids` (array ↔ comma-joined
+ * string). `permissions` defaults to both-true when absent.
+ */
+export function trustedPublisherConfigsEqual(
+  desired: TrustedPublisherCreateConfig,
+  existing: TrustedPublisherConfig,
+): boolean {
+  if (desired.type !== existing.type) return false;
+  const dp = configPermissions(desired);
+  const ep = configPermissions(existing);
+  if (dp.allowPublish !== ep.allowPublish || dp.allowStagePublish !== ep.allowStagePublish) {
+    return false;
+  }
+  const dv = extractTrustedPublishingValues(desired);
+  const ev = extractTrustedPublishingValues(existing);
+  for (const key of Object.keys(dv) as TrustedPublishingFieldKey[]) {
+    if ((dv[key] ?? "").trim() !== (ev[key] ?? "").trim()) return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Group inheritance resolution (Chapter 6.2.5).
 //
