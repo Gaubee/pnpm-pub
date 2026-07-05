@@ -55,6 +55,7 @@
     import IconClock from "@lucide/svelte/icons/clock";
     import IconAlertTriangle from "@lucide/svelte/icons/triangle-alert";
     import IconBadgeInfo from "@lucide/svelte/icons/badge-info";
+    import IconLoader from "@lucide/svelte/icons/loader-circle";
     import { _ } from "svelte-i18n";
     import { untrack } from "svelte";
     import { fade } from "svelte/transition";
@@ -209,7 +210,36 @@
     const canReset = $derived(succeededMembers.length > 0);
 
     let groupDraftValid = $state(false);
+    /** True while a batch action (confirm/reject/retry/reset) is in flight.
+     *  Set on trigger; auto-cleared by the effect below once all the action's
+     *  target members have resolved (the daemon does so asynchronously). */
     let batchRunning = $state(false);
+    /** What the in-flight batch action is, for the button label/spinner. */
+    let batchAction = $state<"confirm" | "reject" | "retry" | "reset" | null>(null);
+    /** The ids of the members the in-flight action targets. Progress is
+     *  `{how many of these have resolved}/{total}`. */
+    let batchTargetIds = $state<string[]>([]);
+
+    const batchTotal = $derived(batchTargetIds.length);
+    const batchDone = $derived.by(() => {
+        if (!batchRunning) return 0;
+        const stillPending = new Set(
+            members.filter((m) => m.status === "pending").map((m) => m.id),
+        );
+        let done = 0;
+        for (const id of batchTargetIds) if (!stillPending.has(id)) done++;
+        return done;
+    });
+
+    // Auto-clear the batch-running flag once every TARGET member has resolved.
+    $effect(() => {
+        if (!batchRunning) return;
+        if (batchDone >= batchTotal) {
+            batchRunning = false;
+            batchAction = null;
+            batchTargetIds = [];
+        }
+    });
 
     // Events accordion state — capture initial once so config changes don't
     // re-fold. The Form is always-expanded (no accordion). Pending surface
@@ -240,23 +270,23 @@
 
     function confirmAll(): void {
         if (batchRunning) return;
+        const targets = members.filter((e) => e.status === "pending");
+        if (targets.length === 0) return;
+        // Track these ids so the loading state + progress (done/total) stay
+        // accurate while the daemon resolves them asynchronously.
+        batchTargetIds = targets.map((e) => e.id);
+        batchAction = "confirm";
         batchRunning = true;
-        try {
-            for (const e of members)
-                if (e.status === "pending") actions.confirm(e.id);
-        } finally {
-            batchRunning = false;
-        }
+        for (const e of targets) actions.confirm(e.id);
     }
     function rejectAll(): void {
         if (batchRunning) return;
+        const targets = members.filter((e) => e.status === "pending");
+        if (targets.length === 0) return;
+        batchTargetIds = targets.map((e) => e.id);
+        batchAction = "reject";
         batchRunning = true;
-        try {
-            for (const e of members)
-                if (e.status === "pending") actions.reject(e.id);
-        } finally {
-            batchRunning = false;
-        }
+        for (const e of targets) actions.reject(e.id);
     }
 
     /** Re-create a pending event for `member` with the same payload, folding
@@ -374,30 +404,55 @@
      *  the same pattern EventCardBody uses — so a failed batch shows its error
      *  on the group card itself, not only after drilling into each member. */
     let logExpanded = $state(false);
-    const groupResult = $derived(isResolved ? group.latest.result : undefined);
-    const groupIsError = $derived(
-        group.latest.status === "failed" ||
-            group.latest.status === "expired" ||
-            group.latest.status === "rejected",
+
+    /** Every member that has produced a result so far (resolved OR mid-flight
+     *  with a partial result). Drives the group-level log so a batch shows ALL
+     *  member outcomes, not just `group.latest.result`. */
+    const memberResults = $derived(
+        members
+            .filter((m) => typeof m.result === "string" && m.result.length > 0)
+            .map((m) => ({
+                id: m.id,
+                name: memberName(m),
+                status: m.status,
+                result: m.result as string,
+            })),
     );
-    const groupIsSuccess = $derived(group.latest.status === "success");
-    const groupResultFirstLine = $derived(
-        (groupResult?.split(/\r?\n/)[0] ?? "").trim(),
+    const hasMemberResults = $derived(memberResults.length > 0);
+    /** Aggregate error/success tallies for the collapsed summary line. */
+    const resultTally = $derived.by(() => {
+        let success = 0;
+        let failed = 0;
+        let skipped = 0;
+        let other = 0;
+        for (const m of memberResults) {
+            if (m.status === "success") success++;
+            else if (m.status === "skipped") skipped++;
+            else if (m.status === "failed" || m.status === "expired" || m.status === "rejected") {
+                failed++;
+            } else other++;
+        }
+        return { success, failed, skipped, other };
+    });
+    /** A member has a hard error → red border; else green. (Per-element tones
+     *  inside the expanded view are computed inline; this only drives the outer
+     *  container border.) */
+    const resultsHaveError = $derived(resultTally.failed > 0);
+    const resultsBorder = $derived(
+        resultsHaveError ? "border-destructive/40" : "border-success/30",
     );
-    const groupResultAccent = $derived(
-        groupIsError
-            ? "text-destructive"
-            : groupIsSuccess
-              ? "text-success"
-              : "text-muted-foreground",
-    );
-    const groupResultBorder = $derived(
-        groupIsError
-            ? "border-destructive/40"
-            : groupIsSuccess
-              ? "border-success/30"
-              : "border-border",
-    );
+    /** Collapsed preview: first error if any, else the first result line. */
+    const resultsPreview = $derived.by(() => {
+        const err = memberResults.find(
+            (m) =>
+                m.status === "failed" ||
+                m.status === "expired" ||
+                m.status === "rejected",
+        );
+        const pick = err ?? memberResults[0];
+        if (!pick) return "";
+        return (pick.result.split(/\r?\n/)[0] ?? "").trim();
+    });
 </script>
 
 <Card
@@ -593,47 +648,93 @@
             {/if}
         </div>
 
-        {#if groupResult}
-            <!-- Group-level result log (resolved groups only). Surfaces the
-                 latest member's outcome so a failed batch shows its error on
-                 the card itself — click to expand the full text. -->
-            <div class="rounded-md border {groupResultBorder}">
+        {#if hasMemberResults}
+            <!-- Group-level result log. Surfaces EVERY member's outcome (not just
+                 `group.latest.result`), so a multi-member batch shows each
+                 success/failure. Collapsed: a tally + the first error (or first
+                 result). Expanded: one block per member. -->
+            <div class="rounded-md border {resultsBorder}">
                 <button
                     type="button"
-                    class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {groupResultAccent}"
+                    class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40"
                     onclick={() => (logExpanded = !logExpanded)}
                     aria-expanded={logExpanded}
                 >
                     <IconChevronRight
-                        class="h-3 w-3 shrink-0 transition-transform {logExpanded
+                        class="h-3 w-3 shrink-0 text-muted-foreground transition-transform {logExpanded
                             ? 'rotate-90'
                             : ''}"
                     />
-                    {#if groupIsError}
+                    {#if resultsHaveError}
                         <IconAlertTriangle
                             class="h-3 w-3 shrink-0 text-destructive"
                         />
-                    {:else if groupIsSuccess}
-                        <IconBadgeInfo class="h-3 w-3 shrink-0 text-success" />
                     {:else}
-                        <IconAlertTriangle
-                            class="h-3 w-3 shrink-0 text-muted-foreground"
-                        />
+                        <IconBadgeInfo class="h-3 w-3 shrink-0 text-success" />
                     {/if}
-                    <span class="shrink-0 font-medium"
-                        >{groupIsError
+                    <span class="shrink-0 font-medium text-muted-foreground"
+                        >{resultsHaveError
                             ? $_("eventCard.errorLog")
-                            : $_("eventCard.log")}:</span
+                            : $_("eventCard.log")}</span
                     >
                     {#if !logExpanded}
-                        <span class="truncate font-mono">{groupResultFirstLine}</span>
+                        <!-- Tally chips: subtle pill per outcome count. -->
+                        <span class="flex shrink-0 items-center gap-1">
+                            {#if resultTally.success}
+                                <span
+                                    class="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success/90"
+                                    >{resultTally.success} {$_("eventCard.status.success")}</span
+                                >
+                            {/if}
+                            {#if resultTally.skipped}
+                                <span
+                                    class="rounded bg-success/5 px-1.5 py-0.5 text-[10px] font-medium text-success/70"
+                                    >{resultTally.skipped} {$_("eventCard.status.skipped")}</span
+                                >
+                            {/if}
+                            {#if resultTally.failed}
+                                <span
+                                    class="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive"
+                                    >{resultTally.failed} {$_("eventCard.status.failed")}</span
+                                >
+                            {/if}
+                        </span>
+                        {#if resultsPreview}
+                            <span class="min-w-0 flex-1 truncate font-mono text-muted-foreground">{resultsPreview}</span>
+                        {/if}
                     {/if}
                 </button>
                 {#if logExpanded}
-                    <div
-                        class="max-h-48 overflow-auto border-t {groupResultBorder} px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {groupResultAccent}"
-                    >
-                        {groupResult}
+                    <div class="max-h-64 space-y-1.5 overflow-auto border-t {resultsBorder} p-2">
+                        {#each memberResults as r (r.id)}
+                            {@const isError =
+                                r.status === "failed" ||
+                                r.status === "expired" ||
+                                r.status === "rejected"}
+                            {@const isSkipped = r.status === "skipped"}
+                            {@const statusTone = isError
+                                ? "bg-destructive/10 text-destructive"
+                                : isSkipped
+                                  ? "bg-success/5 text-success/70"
+                                  : "bg-success/10 text-success/90"}
+                            <div class="rounded border border-border/60 bg-background/60">
+                                <!-- Header: package name + a small status pill. Kept on one
+                                     row, muted, so the result text below is the focus. -->
+                                <div class="flex items-center gap-1.5 px-2 py-1">
+                                    <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{r.name}</span>
+                                    <span
+                                        class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide {statusTone}"
+                                        >{$_(`eventCard.status.${r.status}`)}</span
+                                    >
+                                </div>
+                                <!-- Result text: smaller (10px), softer tone. Errors tinted
+                                     red so failures stand out without saturating successes. -->
+                                <pre
+                                    class="overflow-x-auto border-t border-border/40 px-2 py-1.5 font-mono text-[10px] leading-relaxed whitespace-pre-wrap break-words {isError
+                                        ? 'text-destructive/90'
+                                        : 'text-muted-foreground'}">{r.result}</pre>
+                            </div>
+                        {/each}
                     </div>
                 {/if}
             </div>
@@ -645,6 +746,7 @@
             <div class="pt-1">
                 <ButtonGroup>
                     {#if surface === "pending" && hasPending}
+                        {@const confirming = batchRunning && batchAction === "confirm"}
                         <Button
                             variant="brand"
                             size="sm"
@@ -654,8 +756,13 @@
                                     !groupDraftValid)}
                             onclick={confirmAll}
                         >
-                            <IconCheck class="h-3.5 w-3.5" />
-                            {$_("groupEvent.confirmAll")}
+                            {#if confirming}
+                                <IconLoader class="h-3.5 w-3.5 animate-spin" />
+                                {$_("groupEvent.progress", { values: { done: batchDone, total: batchTotal } })}
+                            {:else}
+                                <IconCheck class="h-3.5 w-3.5" />
+                                {$_("groupEvent.confirmAll")}
+                            {/if}
                         </Button>
                         <Button
                             variant="outline"
@@ -664,8 +771,13 @@
                             disabled={batchRunning}
                             onclick={rejectAll}
                         >
-                            <IconX class="h-3.5 w-3.5" />
-                            {$_("groupEvent.rejectAll")}
+                            {#if batchRunning && batchAction === "reject"}
+                                <IconLoader class="h-3.5 w-3.5 animate-spin" />
+                                {$_("groupEvent.progress", { values: { done: batchDone, total: batchTotal } })}
+                            {:else}
+                                <IconX class="h-3.5 w-3.5" />
+                                {$_("groupEvent.rejectAll")}
+                            {/if}
                         </Button>
                     {/if}
                     {#if canRetry}
