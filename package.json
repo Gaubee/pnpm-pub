@@ -68,7 +68,7 @@
     "memfs": "^4.17.0",
     "opentray": "link:../jixoai-labs/opentray/packages/cli",
     "otplib": "^12.0.1",
-    "safe-npm-sdk": "link:/Users/kzf/Dev/GitHub/api-npm-sdk/packages/safe-npm-sdk",
+    "safe-npm-sdk": "^0.4.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "catalog:",
