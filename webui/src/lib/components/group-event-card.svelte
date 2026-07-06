@@ -43,7 +43,6 @@
     import EventIconBadge from "$lib/components/event-icon-badge.svelte";
     import TrustFormCard from "$lib/components/trust-form-card.svelte";
     import { actions, daemon } from "$lib/store.js";
-    import { eventFocus } from "$lib/notify.js";
     import AutoCloseBar from "$lib/components/auto-close-bar.svelte";
     import IconShield from "@lucide/svelte/icons/shield-check";
     import IconPublish from "@lucide/svelte/icons/upload";
@@ -58,7 +57,7 @@
     import IconBadgeInfo from "@lucide/svelte/icons/badge-info";
     import IconLoader from "@lucide/svelte/icons/loader-circle";
     import { _ } from "svelte-i18n";
-    import { untrack, tick } from "svelte";
+    import { untrack } from "svelte";
     import { fade } from "svelte/transition";
     import { flip } from "svelte/animate";
     import { flipParams, enterParams, leaveParams } from "$lib/transitions.js";
@@ -246,25 +245,6 @@
     // re-fold. The Form is always-expanded (no accordion). Pending surface
     // opens Events (user is about to confirm); history collapses (reference).
     let eventsOpen = $state(untrack(() => surface === "pending"));
-
-    // Dynamic Island → focus a SPECIFIC member: when an island item for one of
-    // this group's members is clicked, `focusEvent(eventId)` emits a request.
-    // Expand the accordion (so the row exists) then scroll the member row into
-    // view. `lastFocusNonce` avoids re-acting to a request already handled.
-    let lastFocusNonce = 0;
-    $effect(() => {
-        const req = $eventFocus;
-        if (!req || req.nonce === lastFocusNonce) return;
-        const member = members.find((m) => m.id === req.eventId);
-        if (!member) return; // not one of ours — another card handles it
-        lastFocusNonce = req.nonce;
-        eventsOpen = true;
-        void tick().then(() => {
-            document
-                .getElementById(`event-member-${member.id}`)
-                ?.scrollIntoView({ behavior: "smooth", block: "center" });
-        });
-    });
 
     // Per-member inherit/custom mode. The single source of truth is the
     // daemon's explicit `groupInheritMembers` flag (Chapter 6.2.5) — NOT a
@@ -572,7 +552,6 @@
                 >
                     {#each members as member, i (member.id)}
                         <li
-                            id="event-member-{member.id}"
                             animate:flip={flipParams}
                             in:fade|global={enterParams(i)}
                             out:fade={leaveParams}

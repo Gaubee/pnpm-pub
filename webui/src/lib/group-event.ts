@@ -25,6 +25,16 @@ export interface EventGroup {
   isGroup: boolean;
 }
 
+export interface EventGroupSlice {
+  id: string;
+  events: PubEvent[];
+}
+
+/** The canonical grouping key: `groupId`, or the standalone event's own `id`. */
+export function eventGroupKey(event: Pick<PubEvent, "id" | "groupId">): string {
+  return event.groupId ?? event.id;
+}
+
 /** Map a single event's payload kind onto the coarse `GroupKind` domain. */
 function eventGroupKind(event: PubEvent): GroupKind {
   const kind = event.payload?.kind ?? event.kind;
@@ -84,7 +94,7 @@ export function groupEvents(events: PubEvent[]): EventGroup[] {
   const order: string[] = [];
   const byGroup = new Map<string, PubEvent[]>();
   for (const e of events) {
-    const key = e.groupId ?? e.id;
+    const key = eventGroupKey(e);
     const arr = byGroup.get(key);
     if (arr) arr.push(e);
     else {
@@ -92,14 +102,16 @@ export function groupEvents(events: PubEvent[]): EventGroup[] {
       order.push(key);
     }
   }
-  return order.map((id) => {
-    const events = byGroup.get(id)!;
-    return {
-      id,
-      kind: deriveGroupKind(events),
-      events,
-      latest: events[0]!,
-      isGroup: events.length > 1,
-    };
-  });
+  return order.map((id) => materializeEventGroup({ id, events: byGroup.get(id)! }));
+}
+
+/** Build a render-ready `EventGroup` from a server/grouped slice. */
+export function materializeEventGroup(group: EventGroupSlice): EventGroup {
+  return {
+    id: group.id,
+    kind: deriveGroupKind(group.events),
+    events: group.events,
+    latest: group.events[0]!,
+    isGroup: group.events.length > 1,
+  };
 }

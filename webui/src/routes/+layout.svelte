@@ -6,6 +6,8 @@
 	import { connect, daemon, activeProfile, pendingEvents } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { tick } from 'svelte';
+	import { groupEvents } from '$lib/group-event.js';
 	import {
 		HOME_WINDOW_SIZE,
 		resizeWindow,
@@ -15,10 +17,17 @@
 	import SettingsDialog from '$lib/components/settings-dialog.svelte';
 	import Island from '$lib/components/island.svelte';
 	import { TooltipProvider } from '$lib/components/ui/tooltip/index.js';
-	import { bridgeDaemonToast, notifyPendingEvent, dismissByEventId } from '$lib/notify.js';
+	import { activity, bridgeDaemonToast, showActivity, clearActivity, type IslandActivity } from '$lib/notify.js';
 	import WindowDragRegion from '$lib/components/window-drag-region.svelte';
 	import { initI18n } from '$lib/i18n.js';
 	import { initWindowVisibility } from '$lib/window-visibility.js';
+	import type { PubEvent } from '$lib/types.js';
+	import type { EventGroup } from '$lib/group-event.js';
+	import { _ } from 'svelte-i18n';
+	import IconArrowRight from '@lucide/svelte/icons/arrow-right';
+	import IconPublish from '@lucide/svelte/icons/upload';
+	import IconShield from '@lucide/svelte/icons/shield-check';
+	import IconPackage from '@lucide/svelte/icons/package';
 
 	let { children } = $props();
 
@@ -38,17 +47,23 @@
 	});
 
 	/**
-	 * Sync the live `pendingEvents` set into the Dynamic Island so the pill +
-	 * popover persistently reflect what is pending. Each pending event gets a
-	 * sticky island element (carrying its eventId/groupId) that is clickable to
-	 * scroll to the matching card on /active-events. When an event leaves the
-	 * pending set (resolved/rejected/…), its element is dismissed.
+	 * Reflect the newest pending GROUP in the Dynamic Island as a sticky,
+	 * expandable activity. iOS Dynamic Island is a single slot, so we surface
+	 * only the newest pending group (from `groupEvents($pendingEvents)`); other
+	 * pending items are signalled by the sidebar badge.
 	 *
-	 * A `Set<string>` records which event ids are currently represented in the
-	 * island; `notifyPendingEvent` is itself idempotent by eventId, but tracking
-	 * here also drives the dismiss side (ids that dropped out of `$pendingEvents`).
+	 * The summary reflects the group's kind (e.g. "Trusted Publishing · 3") so
+	 * the user sees WHAT the activity is; the expanded detail shows a progress
+	 * bar of resolved/total members. When there is nothing pending the slot is
+	 * cleared. We re-run when the slot becomes empty (`$activity`), so a
+	 * transient activity (toast/download) that clears itself restores this one.
 	 */
-	const pendingLabel = (e: import('$lib/types.js').PubEvent): string => {
+	const groupKindIcon = (kind: EventGroup['kind']): typeof IconPublish => {
+		if (kind === 'trusted-publishing') return IconShield;
+		if (kind === 'publish') return IconPublish;
+		return IconPackage;
+	};
+	const memberLabel = (e: PubEvent): string => {
 		const p = e.payload;
 		if (p?.kind === 'publish') return `${p.data.target.name}@${p.data.target.version}`;
 		if (p?.kind === 'unpublish') return `${p.data.name}@${p.data.version}`;
@@ -56,31 +71,157 @@
 		if (p?.kind === 'create-placeholder') return p.data.name;
 		if (p?.kind === 'recursive-publish') {
 			const n = p.data.targets.length;
-			return n > 0 ? `${p.data.targets.length} packages` : 'recursive publish';
+			return n > 0 ? `${n} packages` : 'recursive publish';
 		}
 		return e.kind;
 	};
-	let pendingInIsland = new Set<string>();
+	const groupSummary = (g: EventGroup): string => {
+		// Multi-member batch → kind label + count (e.g. "Trusted Publishing · 3").
+		// Standalone (single member) → concrete package label.
+		if (g.isGroup) {
+			const key =
+				g.kind === 'trusted-publishing' ? 'groupEvent.kindTrustedPublishing'
+				: g.kind === 'publish' ? 'groupEvent.kindPublish'
+				: 'groupEvent.kindMixed';
+			return $_(key, { values: { count: g.events.length } });
+		}
+		return memberLabel(g.latest);
+	};
+	let pendingActivityId: number | null = null;
 	$effect(() => {
-		const current = $pendingEvents;
-		const seen = new Set(current.map((e) => e.id));
-		// Push newly-pending events into the island.
-		for (const e of current) {
-			if (!pendingInIsland.has(e.id)) {
-				notifyPendingEvent({
-					id: e.id,
-					groupId: e.groupId,
-					kind: e.kind,
-					message: pendingLabel(e),
-				});
-			}
+		const topGroup = groupEvents($pendingEvents)[0];
+		// Whose activity is in the slot right now? If a transient (download/toast)
+		// owns it (id ≠ ours), leave it alone — it'll clear itself and this effect
+		// re-runs (it depends on `$activity`) to restore ours.
+		const slot = $activity;
+		const transientOwnsSlot = slot !== null && slot.id !== pendingActivityId;
+
+		if (topGroup && !transientOwnsSlot) {
+			const members = topGroup.events;
+			const total = members.length;
+			const resolved = members.filter((e) => e.status !== 'pending').length;
+			const summary = groupSummary(topGroup);
+			// Always (re)show so progress/summary stay in sync as members resolve.
+			// showActivity replaces the current activity (same effect when ours is
+			// already showing) and returns a fresh id we track.
+			pendingActivityId = showActivity({
+				icon: groupKindIcon(topGroup.kind),
+				// trusted-publishing → success (green), mirroring the card accent.
+				tone: topGroup.kind === 'trusted-publishing' ? 'success' : 'info',
+				summary,
+				detail: {
+					kind: 'progress',
+					progress: total ? resolved / total : 0,
+					label: $_('groupEvent.progress', { values: { done: resolved, total } }),
+				},
+				primaryAction: {
+					icon: IconArrowRight,
+					label: `View ${summary}`,
+					run: () => { void focusEventCard(topGroup.id); },
+				},
+			});
+			return;
 		}
-		// Dismiss events that are no longer pending.
-		for (const id of pendingInIsland) {
-			if (!seen.has(id)) dismissByEventId(id);
+		// No pending group → clear ours if we still own the slot.
+		if (!topGroup && pendingActivityId !== null && !transientOwnsSlot) {
+			clearActivity(pendingActivityId);
+			pendingActivityId = null;
 		}
-		pendingInIsland = seen;
 	});
+
+	/**
+	 * Navigate to /active-events and smoothly scroll the GROUP card
+	 * (`#event-{targetId}`) into view.
+	 *
+	 * Two things can be late:
+	 *   1. the element itself (page mounts async, `surfaceGroups` derives from
+	 *      WS state that lags) — we wait via MutationObserver.
+	 *   2. its LAYOUT (flip/fade-in transitions, list reordering as members
+	 *      resolve, GroupEventCard accordion open + trusted-publishing fetch)
+	 *      — the card's rect keeps moving for a few frames after it appears.
+	 * We therefore wait not just for the node but for its bounding rect to stop
+	 * changing (sampled per frame) before smooth-scrolling to the settled pos.
+	 */
+	async function focusEventCard(targetId: string): Promise<void> {
+		const selector = `event-${targetId}`;
+		const find = () => document.getElementById(selector);
+
+		if (page.url.pathname !== '/active-events') {
+			await goto('/active-events');
+		}
+		let el = find() ?? (await waitForElement(selector, 3000));
+		if (!(el instanceof HTMLElement)) return;
+		// Wait for layout to settle (flip/fade/reorder/accordion), then scroll.
+		await waitForLayoutStable(el);
+		// Re-resolve in case the node was replaced during the settle window.
+		el = find() ?? el;
+		if (el instanceof HTMLElement) {
+			el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		}
+	}
+
+	/**
+	 * Resolve with the element matching `id` once it exists in the DOM, or null
+	 * after `timeoutMs`. Watches document mutations so a late-mounted card is
+	 * caught the instant it's inserted (no busy-polling).
+	 */
+	function waitForElement(id: string, timeoutMs: number): Promise<HTMLElement | null> {
+		return new Promise((resolve) => {
+			const existing = document.getElementById(id);
+			if (existing) return resolve(existing);
+			let settled = false;
+			const finish = (val: HTMLElement | null) => {
+				if (settled) return;
+				settled = true;
+				observer.disconnect();
+				clearTimeout(deadline);
+				resolve(val);
+			};
+			const observer = new MutationObserver(() => {
+				const el = document.getElementById(id);
+				if (el) finish(el);
+			});
+			observer.observe(document.body, { childList: true, subtree: true });
+			const deadline = setTimeout(() => finish(document.getElementById(id)), timeoutMs);
+		});
+	}
+
+	/**
+	 * Resolve once `el`'s geometry stops changing across frames — i.e. the
+	 * surrounding layout has settled (enter/flip transitions done, reorders and
+	 * async height changes applied). Samples top + height per animation frame;
+	 * declares stable after `STABLE_FRAMES` consecutive identical samples, with a
+	 * hard budget so it never waits forever. Falls back to a minimum dwell so a
+	 * truly-stable-on-arrival card still gives transitions time to finish.
+	 */
+	function waitForLayoutStable(el: HTMLElement): Promise<void> {
+		const STABLE_FRAMES = 3;
+		const BUDGET_MS = 1200;
+		const MIN_MS = 120; // let enter/flip (≈200ms) at least begin to settle
+		return new Promise((resolve) => {
+			const start = performance.now();
+			let lastTop = -Infinity;
+			let lastHeight = -Infinity;
+			let stable = 0;
+			let raf = 0;
+			const tickFrame = () => {
+				const r = el.getBoundingClientRect();
+				const moved = Math.abs(r.top - lastTop) > 0.5 || Math.abs(r.height - lastHeight) > 0.5;
+				lastTop = r.top;
+				lastHeight = r.height;
+				stable = moved ? 0 : stable + 1;
+				const elapsed = performance.now() - start;
+				if ((stable >= STABLE_FRAMES && elapsed >= MIN_MS) || elapsed >= BUDGET_MS) {
+					resolve();
+					return;
+				}
+				raf = requestAnimationFrame(tickFrame);
+			};
+			raf = requestAnimationFrame(tickFrame);
+		});
+	}
+
+
 
 	/**
 	 * First-profile gate: when the daemon has sent the authoritative profiles

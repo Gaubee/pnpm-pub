@@ -12,6 +12,7 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
   },
   "dependencies": {
+    "@humanspeak/svelte-motion": "^0.7.13",
     "clsx": "^2.1.1",
     "geist": "^1.7.2",
     "html5-qrcode": "^2.3.8",

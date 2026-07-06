@@ -1,187 +1,146 @@
 /**
- * Dynamic Island — the global notification surface anchored to the titlebar.
+ * Dynamic Island — a single "live activity" slot anchored to the titlebar.
  *
- * Two producers feed a single `island` store:
- *   1. imperative API: `notify({ tone, message, icon?, durationMs? })` from any
- *      component (cross-page custom messages).
- *   2. the daemon WS `toast` channel — bridged here so existing daemon-side
- *      toasts (auth result, errors, pending-event created, …) surface in the
- *      island instead of the legacy <Toaster>.
+ * Modelled after iOS Dynamic Island: there is ONE active activity at a time
+ * (not a notification queue). The island's interaction is fixed and generic:
  *
- * Each item carries its own lifetime: `durationMs <= 0` is sticky (stays until
- * explicitly dismissed), otherwise it auto-dismisses when the timer elapses.
+ *   1. Compact: a centred pill (icon + summary). Tap the centre → expand.
+ *   2. Expanded: shows `detail` (text / key-value lines / progress). Tap the
+ *      centre again → fire the `primaryAction`.
+ *   3. inline-end icon button (always visible when a primaryAction exists):
+ *      tap → fire the primaryAction directly (no expand).
+ *
+ * Callers only supply DATA (summary / detail / primaryAction); they never
+ * describe interaction. The island is a pure, generic UI component.
+ *
+ * Producers:
+ *   - imperative API: `showActivity(...)` from any component (pending events,
+ *     downloads, …).
+ *   - the daemon WS `toast` channel — bridged here as a transient, non
+ *     expandable activity (auto-clears after a short lifetime).
  */
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
 import type { Component } from "svelte";
-import type { EventKind } from "./types.js";
 
 export type IslandTone = "info" | "success" | "error" | "warning";
 
 /**
- * An optional action button rendered inside the notification item (e.g. "Open
- * file" after a download). `run` is a client-side callback — the island is a
- * pure UI surface, so actions are closures the caller supplies (typically
- * calling a store action like `actions.openPath`). Clicking the action also
- * dismisses the item.
+ * Expanded-detail template. A discriminated union (pick ONE shape) — the
+ * island renders the chosen layout and nothing else, so callers stay generic.
  */
-export interface IslandAction {
-  /** Button label (already i18n-resolved by the caller). */
-  label: string;
-  /** Optional lucide icon component for the button. */
+export type IslandDetail =
+  | { kind: "text"; text: string }
+  | { kind: "progress"; progress: number; label?: string };
+
+export interface IslandActivity {
+  /** Lucide icon component for the compact/expanded leading icon. */
   icon?: Component;
-  run: () => void | Promise<void>;
-}
-
-export interface IslandItem {
-  /** Unique id (monotonic). Stable across renders so keyed-each works. */
-  id: number;
-  tone: IslandTone;
-  message: string;
-  /** Optional lucide icon component; defaults by tone when omitted. */
-  icon?: Component;
-  /** Lifetime in ms. <= 0 = sticky. Default 4000. */
-  durationMs?: number;
-  /** Optional inline action button. */
-  action?: IslandAction;
-  /**
-   * Associated PubEvent id — when set, this item represents a live pending
-   * event and is clickable to scroll to that event's card on the
-   * /active-events page. Persisted (sticky) until the event resolves.
-   */
-  eventId?: string;
-  /**
-   * Associated batch groupId — when the event is a member of a multi-package
-   * group, scrolling targets the group (g.id === groupId). Falls back to
-   * `eventId` for standalone events (g.id === event.id).
-   */
-  groupId?: string;
-  /** The EventKind, used to pick a tone/icon and render a summary label. */
-  kind?: EventKind;
-}
-
-export interface IslandInput {
-  tone: IslandTone;
-  message: string;
-  icon?: Component;
-  durationMs?: number;
-  action?: IslandAction;
-  /** See {@link IslandItem.eventId}. */
-  eventId?: string;
-  /** See {@link IslandItem.groupId}. */
-  groupId?: string;
-  /** See {@link IslandItem.kind}. */
-  kind?: EventKind;
-}
-
-export const island = writable<IslandItem[]>([]);
-
-/** Monotonic id source. Toast ids from the daemon are Date.now()-based and can
- *  collide; we namespace island ids above that range to stay unique. */
-let nextId = 1;
-
-const timers = new Map<number, ReturnType<typeof setTimeout>>();
-
-function clearTimer(id: number): void {
-  const t = timers.get(id);
-  if (t !== undefined) {
-    clearTimeout(t);
-    timers.delete(id);
-  }
-}
-
-function arm(item: IslandItem): void {
-  if ((item.durationMs ?? 4000) <= 0) return; // sticky
-  const ms = item.durationMs ?? 4000;
-  timers.set(
-    item.id,
-    setTimeout(() => dismiss(item.id), ms),
-  );
-}
-
-/** Push a message into the island. Returns the item id (for manual dismiss). */
-export function notify(input: IslandInput): number {
-  const id = nextId++;
-  const item: IslandItem = { id, ...input };
-  island.update((items) => [item, ...items]);
-  arm(item);
-  return id;
-}
-
-/** Remove one item by id (cancels its auto-dismiss timer). */
-export function dismiss(id: number): void {
-  clearTimer(id);
-  island.update((items) => items.filter((i) => i.id !== id));
-}
-
-/**
- * Push a live pending event into the island. Sticky by default (stays until
- * the event resolves and the caller invokes {@link dismissByEventId} /
- * {@link dismissByGroupId}). Carries the event/group id so the island item
- * can scroll to the matching card on /active-events when clicked.
- *
- * Idempotent by `eventId`: re-pushing the same event id is a no-op (the
- * pending-event sync in the layout may fire repeatedly; this guards it).
- */
-export function notifyPendingEvent(input: {
-  id: string;
-  groupId?: string;
-  kind?: EventKind;
+  /** Compact summary text (e.g. "@scope/pkg@1.2.3"). */
+  summary: string;
+  /** Tone tints the icon + a subtle border. Defaults to "info". */
   tone?: IslandTone;
-  message: string;
-}): number {
-  const existing = getIsland().find((i) => i.eventId === input.id);
-  if (existing) return existing.id;
-  const id = nextId++;
-  const item: IslandItem = {
-    id,
-    tone: input.tone ?? "info",
-    message: input.message,
-    durationMs: 0, // sticky — owned by the event lifecycle
-    eventId: input.id,
-    groupId: input.groupId,
-    kind: input.kind,
+  /**
+   * Expanded detail. Omit for a non-expandable activity (tapping the centre
+   * fires `primaryAction` directly, if any).
+   *   - string: shorthand → rendered as a text block.
+   *   - IslandDetail: a `text` block or a `progress` bar (+ optional label).
+   */
+  detail?: string | IslandDetail;
+  /**
+   * Primary action. Fired by tapping the centre while expanded, or the
+   * inline-end icon button at any time. Omit when there is nothing to "open".
+   */
+  primaryAction?: {
+    /** Lucide icon shown in the inline-end button (required). */
+    icon: Component;
+    /** a11y label / tooltip. */
+    label?: string;
+    run: () => void | Promise<void>;
   };
-  island.update((items) => [item, ...items]);
-  // arm() skips sticky items; no timer.
-  return id;
+  /**
+   * Auto-clear after N ms. <= 0 / omitted = sticky (caller owns lifetime).
+   * Transient activities (daemon toasts, download-done) set this.
+   */
+  durationMs?: number;
 }
 
-/** Remove the pending-event item matching `eventId` (no-op if absent). */
-export function dismissByEventId(eventId: string): void {
-  const match = getIsland().find((i) => i.eventId === eventId);
-  if (match) dismiss(match.id);
-}
+/** The single active activity (null = island hidden). */
+export const activity = writable<(IslandActivity & { id: number }) | null>(null);
 
-/**
- * Remove every pending-event item whose `groupId` matches. Used when a whole
- * batch resolves. Standalone items (no groupId) are left untouched.
- */
-export function dismissByGroupId(groupId: string): void {
-  for (const i of getIsland()) {
-    if (i.groupId === groupId) dismiss(i.id);
+/** Monotonic id so callers can target exactly what they showed. */
+let nextId = 1;
+let currentTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearCurrentTimer(): void {
+  if (currentTimer !== null) {
+    clearTimeout(currentTimer);
+    currentTimer = null;
   }
 }
 
-/** Snapshot helper for idempotency checks outside the reactive store. */
-function getIsland(): IslandItem[] {
-  let snapshot: IslandItem[] = [];
-  island.subscribe((v) => (snapshot = v))(); // subscribe + immediately unsubscribe
-  return snapshot;
-}
-
-/** Clear everything (e.g. on route change if desired). */
-export function clearIsland(): void {
-  for (const id of [...timers.keys()]) clearTimer(id);
-  island.set([]);
+/**
+ * A coarse signature of an activity's observable content (ignoring `id` and
+ * `durationMs`). Used to make `showActivity` idempotent: re-showing the same
+ * content is a no-op (keeps the existing id), so reactive callers that re-run
+ * on every dependency change don't loop.
+ */
+function signature(a: IslandActivity): string {
+  const pa = a.primaryAction;
+  const d = a.detail;
+  const detailSig =
+    d === undefined
+      ? ""
+      : typeof d === "string"
+        ? `s:${d}`
+        : d.kind === "text"
+          ? `t:${d.text}`
+          : `p:${d.progress}:${d.label ?? ""}`;
+  return [a.icon, a.summary, a.tone ?? "", detailSig, pa ? "1" : "0", pa?.label ?? ""].join("|");
 }
 
 /**
- * Bridge the daemon `toast` channel into the island. Idempotent: pass the
- * incoming toast (with its `id`); it only pushes when the id changes (so a
- * repeated broadcast of the same toast frame doesn't double up).
- *
- * "Authenticated." is intentionally kept — it's the connection-lifecycle toast
- * and currently serves as a test sample for the island.
+ * Set the active activity (replaces any current one — single slot). Returns
+ * the activity id (for targeted `clearActivity`). Idempotent: if the current
+ * activity has the same observable content, nothing changes and the existing
+ * id is returned (no store emit, so reactive callers don't loop). Honours
+ * `durationMs`: a positive value auto-clears after the delay.
+ */
+export function showActivity(input: IslandActivity): number {
+  const prev = get(activity);
+  if (prev && signature(prev) === signature(input)) {
+    return prev.id;
+  }
+  clearCurrentTimer();
+  const id = nextId++;
+  activity.set({ id, ...input });
+  const ms = input.durationMs ?? 0;
+  if (ms > 0) {
+    currentTimer = setTimeout(() => {
+      currentTimer = null;
+      clearActivity(id);
+    }, ms);
+  }
+  return id;
+}
+
+/**
+ * Clear the active activity. With an `id`, only clears when it still matches
+ * (so a newer activity isn't wiped by a stale timer). Without `id`, always
+ * clears.
+ */
+export function clearActivity(id?: number): void {
+  clearCurrentTimer();
+  if (id === undefined) {
+    activity.set(null);
+    return;
+  }
+  activity.update((a) => (a && a.id === id ? null : a));
+}
+
+/**
+ * Bridge the daemon `toast` channel into the island as a transient,
+ * non-expandable activity. Idempotent by the toast `id` (repeated broadcasts
+ * of the same frame don't re-trigger).
  */
 let lastToastId = 0;
 export function bridgeDaemonToast(
@@ -189,27 +148,9 @@ export function bridgeDaemonToast(
 ): void {
   if (!toast || toast.id === lastToastId) return;
   lastToastId = toast.id;
-  notify({ tone: toast.level, message: toast.message });
-}
-
-/**
- * Event-focus request channel — a decoupled way for the Dynamic Island (or any
- * caller) to ask an event list/card to focus a SPECIFIC member event.
- *
- * The island pushes a focus request here when a pending-event item is clicked;
- * the GroupEventCard / active-events page observe this store and, when the
- * `eventId` belongs to one of their rendered members, expand the accordion and
- * scroll the matching row into view. `nonce` ensures a fresh request is
- * detectable even if the same eventId is requested twice in a row.
- */
-export interface EventFocusRequest {
-  eventId: string;
-  nonce: number;
-}
-export const eventFocus = writable<EventFocusRequest | null>(null);
-
-let focusNonce = 0;
-/** Request that the list focus (expand + scroll to) the given member event. */
-export function focusEvent(eventId: string): void {
-  eventFocus.set({ eventId, nonce: ++focusNonce });
+  showActivity({
+    summary: toast.message,
+    tone: toast.level,
+    durationMs: 4000,
+  });
 }

@@ -9,15 +9,14 @@
 	 * Unlike the old layout, this page NEVER locks navigation — pending tasks
 	 * are surfaced via the sidebar badge, and the user is free to navigate away.
 	 */
-	import { onMount, untrack, tick } from 'svelte';
+	import { untrack } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { pendingEvents, visibleEvents } from '$lib/store.js';
-	import { eventFocus } from '$lib/notify.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
-	import { groupEvents, type EventGroup } from '$lib/group-event.js';
+	import { groupEvents, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -134,55 +133,41 @@
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	});
 
-	// Dynamic Island → focus a standalone (non-group) event card. Group members
-	// are handled inside GroupEventCard (expand accordion + scroll to row);
-	// here we only scroll to the standalone card wrapper `#event-{g.id}`.
-	let lastFocusNonce = 0;
-	$effect(() => {
-		const req = $eventFocus;
-		if (!req || req.nonce === lastFocusNonce) return;
-		const group = surfaceGroups.find((g) => g.id === req.eventId && !g.isGroup);
-		if (!group) return; // group member or not present — GroupEventCard handles it
-		lastFocusNonce = req.nonce;
-		void tick().then(() => {
-			document
-				.getElementById(`event-${group.id}`)
-				?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-		});
-	});
 
-	// Preview-history: the latest few GROUPS, fetched from the daemon via oRPC.
-	// We over-fetch raw events because a single group may contribute many rows
-	// (e.g. a 10-package batch = 10 events but only ONE "recent activity").
-	// After grouping on the client we keep the first PREVIEW_GROUP_COUNT groups.
+
+	// Preview-history: the latest few GROUPS, fetched directly from the daemon
+	// as grouped history so a single large batch still occupies one slot.
 	const PREVIEW_GROUP_COUNT = 5;
-	const PREVIEW_FETCH_LIMIT = 50;
 	let previewGroups = $state<EventGroup[]>([]);
 	let previewLoading = $state(true);
 
-	async function fetchPreview(): Promise<void> {
+	async function fetchPreview(): Promise<boolean> {
 		previewLoading = true;
+		const client = getRpcClient();
+		if (!client) return false;
 		try {
-			const json = await getRpcClient()?.events.query({
-				scope: 'history',
+			const json = await client.events.queryHistoryGroups({
 				page: 0,
-				limit: PREVIEW_FETCH_LIMIT,
+				limit: PREVIEW_GROUP_COUNT,
 				q: '',
 			});
-			if (!json) throw new Error('events unavailable');
-			// rows are newest-first from the daemon; groupEvents preserves that
-			// order and buckets by groupId ?? event.id. Trim to the target
-			// group count so a single huge batch doesn't crowd out other activity.
-			previewGroups = groupEvents(json.rows).slice(0, PREVIEW_GROUP_COUNT);
+			previewGroups = json.groups.map(materializeEventGroup);
+			return true;
 		} catch {
 			previewGroups = [];
+			return false;
 		} finally {
-			previewLoading = false;
+			if (client === getRpcClient()) previewLoading = false;
 		}
 	}
 
-	onMount(() => {
-		void fetchPreview();
+	let previewLoaded = false;
+	$effect(() => {
+		const connected = $daemon.connected;
+		if (!connected || previewLoaded) return;
+		void fetchPreview().then((ok) => {
+			if (ok) previewLoaded = true;
+		});
 	});
 
 	// Live-refresh RECENT ACTIVITY. The daemon pushes every event change over the
@@ -198,10 +183,12 @@
 	);
 	let prevResolvedAt = 0;
 	$effect(() => {
+		const connected = $daemon.connected;
 		const now = lastResolvedAt;
 		// Only re-fetch when the signal actually advances (a new resolution).
-		// The initial fetch is handled by onMount, so skip the first effect run.
-		if (now === prevResolvedAt) return;
+		// The first grouped preview load is handled by the connection-gated
+		// effect above, so this path only handles later live updates.
+		if (!connected || now === prevResolvedAt) return;
 		prevResolvedAt = now;
 		if (now === 0) return;
 		void fetchPreview();

@@ -1,73 +1,45 @@
 <script lang="ts">
 	/**
-	 * Dynamic Island — global notification surface anchored to the titlebar row.
+	 * Dynamic Island — a single live-activity slot anchored to the titlebar.
 	 *
-	 * Two parts:
-	 *   1. TRIGGER (always rendered, absolutely centred in the titlebar): a
-	 *      "pill" capsule showing the latest item (icon + text), with a `•N`
-	 *      count badge when more than one is queued. It toggles the popover.
-	 *   2. POPOVER (native `popover="auto"`): a full-window layer that lists
-	 *      every queued item, top-to-bottom, each dismissible. The blur backdrop
-	 *      is constrained to the card geometry via `mask-image` so only the
-	 *      content area gets the legibility blur; the rest stays transparent.
+	 * Fixed, generic interaction (iOS Dynamic Island semantics); callers only
+	 * supply data via `showActivity`:
 	 *
-	 * Animation is damped (`svelte/motion` springs): the pill grows/shrinks/
-	 * fades on item in/out; the popover scales+fades on open/close.
+	 *   compact  → tap centre → expand (when `detail` exists)
+	 *   expanded → tap centre → fire `primaryAction` (or collapse if none)
+	 *   inline-end icon button (always) → fire `primaryAction` directly
 	 *
-	 * The trigger sits in the titlebar drag strip, so it stops pointerdown to
-	 * avoid starting a native window drag.
+	 * ── MOTION (declarative, single source of truth) ────────────────────────
+	 * There is ONE signal: `phase` ('hidden' | 'compact' | 'expanded'). The
+	 * @humanspeak/svelte-motion `motion.div` receives `animate = TARGETS[phase]`
+	 * — a plain object describing the END appearance for that state. When
+	 * `phase` changes, the Motion engine springs each property from its CURRENT
+	 * animated value to the new target (interruptible, no jump). Re-triggering
+	 * just re-points the target; the spring re-converges. CSS holds ONLY static
+	 * visual styling (colour, backdrop, font, layout) — no per-state calc ramps,
+	 * no @property, no transitions on the morphed props. The `animate` object is
+	 * the single place that defines "what does each state look like".
 	 */
-	import { tick } from 'svelte';
-	import { spring } from 'svelte/motion';
-	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
 	import { Portal } from 'bits-ui';
-	import { island, dismiss, focusEvent, type IslandTone } from '$lib/notify.js';
+	import { motion } from '@humanspeak/svelte-motion';
+	import { activity, type IslandTone, type IslandDetail } from '$lib/notify.js';
 	import IconInfo from '@lucide/svelte/icons/info';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconAlert from '@lucide/svelte/icons/triangle-alert';
 	import IconWarning from '@lucide/svelte/icons/circle-alert';
-	import IconChevron from '@lucide/svelte/icons/chevron-down';
-	import IconExternalLink from '@lucide/svelte/icons/external-link';
 
-	const items = $derived($island);
-	const latest = $derived(items[0] ?? null);
-	const count = $derived(items.length);
-	const hasMultiple = $derived(count > 1);
+	const AUTO_COLLAPSE_MS = 4000;
 
-	/**
-	 * Navigate to /active-events and focus the SPECIFIC member event whose id
-	 * is `eventId`. The target is a single member row, never the whole group:
-	 *   - standalone event (no groupId) → scroll to its EventCard
-	 *     (`#event-{eventId}`).
-	 *   - group member → emit a focus request via `focusEvent(eventId)`; the
-	 *     owning GroupEventCard expands its member accordion and scrolls to the
-	 *     matching `#event-member-{eventId}` row.
-	 *
-	 * After navigation we retry briefly because `surfaceGroups` is derived
-	 * async from WS state. The popover stays open.
-	 */
-	async function gotoEvent(eventId: string): Promise<void> {
-		const navigateIfNeeded = async () => {
-			if (page.url.pathname !== '/active-events') {
-				await goto('/active-events');
-			}
-		};
-		await navigateIfNeeded();
-		// Surface the focus request; GroupEventCard reacts once mounted. Retry
-		// so a navigation (page not yet rendered) still lands on the member.
-		for (let i = 0; i < 14; i++) {
-			focusEvent(eventId);
-			await tick();
-			await new Promise((r) => setTimeout(r, 70));
-			// The GroupEventCard consumes the request; if the member row now
-			// exists in the DOM the focus is done, otherwise loop once more.
-			if (document.getElementById(`event-member-${eventId}`) ||
-				document.getElementById(`event-${eventId}`)) {
-				break;
-			}
-		}
-	}
+	type Phase = 'hidden' | 'compact' | 'expanded';
+
+	// Real spring for every transition — iOS Dynamic Island family: gentle
+	// underdamped, soft overshoot, calm settle. The Motion engine solver runs
+	// on these (not an easing approximation).
+	const SPRING = { type: 'spring', stiffness: 170, damping: 22, mass: 0.9 } as const;
+
+	const current = $derived($activity);
+	const hasDetail = $derived(current?.detail !== undefined);
+	const hasPrimary = $derived(!!current?.primaryAction);
 
 	const DEFAULT_ICON: Record<IslandTone, typeof IconInfo> = {
 		info: IconInfo,
@@ -81,339 +53,379 @@
 		error: 'text-destructive',
 		warning: 'text-warning',
 	};
-	const toneClass = $derived(latest ? TONE_CLASS[latest.tone] : '');
-	const LatestIcon = $derived(latest?.icon ?? DEFAULT_ICON[latest?.tone ?? 'info']);
+	const tone = $derived(current?.tone ?? 'info');
+	const LeadIcon = $derived(current?.icon ?? DEFAULT_ICON[tone]);
+	const toneClass = $derived(TONE_CLASS[tone]);
 
-	// --- spring-driven presence of the pill ---
-	// 1 when an item is showing, 0 when empty. Drives opacity + scale + width.
-	const presence = spring(0, { stiffness: 0.12, damping: 0.8 });
-	$effect(() => {
-		void latest;
-		presence.set(latest ? 1 : 0);
+	const detail = $derived.by((): IslandDetail | null => {
+		const d = current?.detail;
+		if (d === undefined) return null;
+		return typeof d === 'string' ? { kind: 'text', text: d } : d;
 	});
 
-	/**
-	 * Keep the trigger mounted briefly after the queue empties so the spring can
-	 * finish its fade-out — otherwise unmounting snaps it away. `mounted` lags
-	 * `count > 0` by ~320ms on the way down (matches the spring settle time).
-	 */
-	let mounted = $state(false);
-	let hideTimer: ReturnType<typeof setTimeout> | null = null;
+	// ── STATE MACHINE ────────────────────────────────────────────────────────
+	//   no activity                         → hidden
+	//   activity, user wants detail open    → expanded
+	//   activity, resting                   → compact
+	// A new EXPANDABLE activity opens expanded by default (noticed); a
+	// compact-only one (download/toast) rests compact. Auto-collapse returns
+	// expanded→compact (the pill stays while the activity is live).
+	let userExpanded = $state(false);
+	const phase = $derived<Phase>(
+		current ? (userExpanded && hasDetail ? 'expanded' : 'compact') : 'hidden',
+	);
+	let lastSeenActivityId: number | undefined;
 	$effect(() => {
-		void count;
-		if (count > 0) {
-			if (hideTimer) {
-				clearTimeout(hideTimer);
-				hideTimer = null;
-			}
-			mounted = true;
-		} else if (!hideTimer) {
-			hideTimer = setTimeout(() => {
-				mounted = false;
-				hideTimer = null;
-			}, 320);
+		const id = current?.id;
+		if (id !== lastSeenActivityId) {
+			lastSeenActivityId = id;
+			userExpanded = !!current && hasDetail;
 		}
 	});
 
-	// --- popover open state (native API) ---
-	// We drive open/close purely via `showPopover()`/`hidePopover()` and track
-	// state in a local `$state` (reactive), updated from the native `toggle`
-	// event. We deliberately do NOT combine `popovertarget` with onclick — the
-	// two race (onclick's showPopover runs, then the browser's popovertarget
-	// toggles it back), producing a no-op click.
-	let popoverEl = $state<HTMLDivElement | null>(null);
-	let isOpen = $state(false);
-	function togglePopover(): void {
-		if (!popoverEl) return;
-		if (isOpen) popoverEl.hidePopover();
-		else popoverEl.showPopover();
+	// Auto-collapse expanded → compact after inactivity. Hover pauses it.
+	let collapseTimer: ReturnType<typeof setTimeout> | null = null;
+	function clearCollapseTimer(): void {
+		if (collapseTimer !== null) {
+			clearTimeout(collapseTimer);
+			collapseTimer = null;
+		}
 	}
-
-	// The native `toggle` event is the source of truth for open/close (covers
-	// light-dismiss + Esc too). `newState` is "open"/"closed".
-	function syncOpen(e: ToggleEvent): void {
-		isOpen = e.newState === 'open';
+	function armCollapse(): void {
+		clearCollapseTimer();
+		if (phase !== 'expanded') return;
+		collapseTimer = setTimeout(() => {
+			collapseTimer = null;
+			userExpanded = false;
+		}, AUTO_COLLAPSE_MS);
 	}
-
-	// latest-message label width feeds the spring (so the pill reshapes to fit).
-	let label = $derived(latest?.message ?? '');
-	const width = spring(0, { stiffness: 0.2, damping: 0.85 });
-	let labelEl = $state<HTMLSpanElement | null>(null);
 	$effect(() => {
-		void label;
-		if (labelEl) width.set(labelEl.scrollWidth);
+		void phase;
+		armCollapse();
 	});
 
-	// Stop clicks inside the popover from closing it via light-dismiss on the
-	// trigger area; native light-dismiss still closes on outside/Esc.
+	// ── INTERACTIONS (only mutate state; never touch animation directly) ────
+	function onCentreClick(): void {
+		if (phase === 'expanded') {
+			if (current?.primaryAction) void current.primaryAction.run();
+			else userExpanded = false;
+			return;
+		}
+		if (hasDetail) {
+			userExpanded = true;
+			return;
+		}
+		current?.primaryAction?.run();
+	}
+	function onPrimaryButton(e: MouseEvent): void {
+		e.stopPropagation();
+		current?.primaryAction?.run();
+	}
+	function onEnter(): void {
+		clearCollapseTimer();
+	}
+	function onLeave(): void {
+		armCollapse();
+	}
 	function stop(e: PointerEvent): void {
 		e.stopPropagation();
 	}
+
+	// ── THE DECLARATION: state → appearance ──────────────────────────────────
+	// One object per phase. The Motion engine animates from the current value
+	// to these targets whenever `phase` changes. This is the single source of
+	// truth for how each state looks.
+	//
+	// borderRadius: do NOT use 9999 (the CSS "fully round" hack) as an animated
+	// value — Motion interpolates it as a real number, so 9999→24 spends ~all
+	// of the animation visually stuck fully-round then snaps. Instead we use a
+	// value comfortably larger than the pill's half-height (≈16px) so the
+	// browser still renders it as fully round, yet 100→24 interpolates smoothly.
+	const TARGETS = {
+		hidden: {
+			opacity: 0,
+			scale: 0.92,
+			maxWidth: 320,
+			borderRadius: 100,
+			paddingTop: 4,
+			paddingBottom: 4,
+			paddingLeft: 8,
+			paddingRight: 8,
+			boxShadow: '0 0 0 rgba(0,0,0,0)',
+			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			pointerEvents: 'none' as const,
+		},
+		compact: {
+			opacity: 1,
+			scale: 1,
+			maxWidth: 320,
+			borderRadius: 100,
+			paddingTop: 4,
+			paddingBottom: 4,
+			paddingLeft: 8,
+			paddingRight: 8,
+			boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
+			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			pointerEvents: 'auto' as const,
+		},
+		expanded: {
+			opacity: 1,
+			scale: 1,
+			maxWidth: 480,
+			borderRadius: 24,
+			paddingTop: 16,
+			paddingBottom: 16,
+			paddingLeft: 18,
+			paddingRight: 18,
+			boxShadow: '0 18px 50px -8px rgba(0,0,0,0.28), 0 6px 16px -4px rgba(0,0,0,0.14)',
+			backdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
+			WebkitBackdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
+			pointerEvents: 'auto' as const,
+		},
+	} as const;
+	const islandAnimate = $derived(TARGETS[phase]);
+
+	// Detail panel: open (measured height) only when expanded; closed (0) else.
+	// We measure the content's natural height with a ResizeObserver so it
+	// tracks content changes (e.g. a progress label updating) — not a one-shot
+	// read that goes stale. scrollHeight reflects intrinsic content height even
+	// while the parent's animated height is 0 (Motion sets `height`, which does
+	// not clamp scrollHeight).
+	let detailInnerEl = $state<HTMLDivElement | null>(null);
+	let detailHeight = $state(0);
+	$effect(() => {
+		const el = detailInnerEl;
+		if (!el) return;
+		const sync = () => {
+			const h = el.scrollHeight;
+			if (h !== detailHeight) detailHeight = h;
+		};
+		sync();
+		const ro = new ResizeObserver(sync);
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+	// Detail content transitions with a blurIn/blurOut: visible = sharp,
+	// hidden = blurred + faded. Height grows/shrinks in parallel so the panel
+	// reveals smoothly rather than popping.
+	const detailAnimate = $derived(
+		phase === 'expanded'
+			? { height: detailHeight, opacity: 1, filter: 'blur(0px)' }
+			: { height: 0, opacity: 0, filter: 'blur(10px)' },
+	);
 </script>
 
-{#snippet trigger()}
-	{#if mounted}
-		<button
-			type="button"
-			class="island-trigger"
-			onpointerdown={stop}
-			onclick={togglePopover}
-			aria-label="Notifications{hasMultiple ? ` (${count})` : ''}"
-			aria-haspopup="menu"
-			style:opacity={$presence}
-			style:transform={`translate(-50%, -50%) scale(${0.9 + 0.1 * $presence})`}
-			style:visibility={$presence > 0.05 ? 'visible' : 'hidden'}
-		>
-			{#if latest}
-				<LatestIcon class="h-3.5 w-3.5 shrink-0 {toneClass}" />
-				<span class="island-label" bind:this={labelEl}>{label}</span>
-				{#if hasMultiple}
-					<span class="island-count">•{count}</span>
-				{/if}
-				<IconChevron class="h-3 w-3 shrink-0 text-muted-foreground" />
-			{/if}
-		</button>
-	{/if}
-{/snippet}
-
-<!--
-	TRIGGER + POPOVER are portalled to document.body so they are not trapped
-	below any overlay's stacking context. The Dialog/Sheet/Popover overlays
-	also portal to body at z-50; we render the island AFTER them in DOM order
-	(it mounts last in the layout) AND raise it to z-60, so it stays visible
-	even while a Dialog is open. The expanded list additionally uses the
-	native `popover` top layer, so it is never covered regardless.
--->
 <Portal>
 	<div class="island-anchor">
-		{@render trigger()}
-	</div>
-
-<!--
-	POPOVER (native API). Full-window layer; the blur backdrop is masked to the
-	card geometry so only the card region is blurred for legibility.
--->
-<div
-	id="island-popover"
-	bind:this={popoverEl}
-	class="island-popover"
-	popover="auto"
-	role="dialog"
-	aria-label="Notifications"
-	tabindex="-1"
-	onpointerdown={stop}
-	ontoggle={syncOpen}
->
-	<div class="island-card">
-		<header class="island-card-head">
-			<span class="text-xs font-medium text-muted-foreground">Notifications</span>
-			{#if count > 0}
-				<button type="button" class="island-clear" onclick={() => items.forEach((i) => dismiss(i.id))}>
-					Clear
+		<!--
+			Always mounted — the hidden↔compact transition is an ANIMATION
+			(opacity/scale to TARGETS.hidden), not a mount/unmount. When there is
+			no activity the content is invisible (opacity 0) and pointer-events
+			are disabled (see style below), so it's effectively gone but still
+			animates in/out. `{#if detail}` stays so the detail row mounts only
+			when there's something to show.
+		-->
+		<motion.div
+			class="island {toneClass}"
+			animate={islandAnimate}
+			transition={SPRING}
+			initial={false}
+			onpointerdown={stop}
+			onmouseenter={onEnter}
+			onmouseleave={onLeave}
+			role="group"
+			aria-hidden={phase === 'hidden'}
+			aria-label="Dynamic Island"
+		>
+			<!-- HEADER ROW: [centre: icon + summary] [primary-action button] -->
+			<div class="island-row">
+				<button
+					type="button"
+					class="island-centre"
+					onclick={onCentreClick}
+					aria-expanded={hasDetail ? phase === 'expanded' : undefined}
+					aria-label={current?.summary ?? 'Activity'}
+				>
+					<LeadIcon class="h-4 w-4 shrink-0" />
+					<span class="island-summary">{current?.summary ?? ''}</span>
 				</button>
-			{/if}
-		</header>
-				<div class="island-list">
-					{#each items as item (item.id)}
-						{@const Icon = item.icon ?? DEFAULT_ICON[item.tone]}
-						{@const ActionIcon = item.action?.icon}
-						{@const hasEvent = !!item.eventId}
-						<div
-							class="island-item {TONE_CLASS[item.tone]}"
-							data-event-id={item.eventId}
-							data-group-id={item.groupId}
-						>
-							<button
-								type="button"
-								class="island-item-main"
-								onclick={() => hasEvent && item.eventId ? gotoEvent(item.eventId) : dismiss(item.id)}
-							>
-								<Icon class="h-4 w-4 shrink-0" />
-								<span class="island-item-msg">{item.message}</span>
-								{#if hasEvent}
-									<IconExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" />
-								{/if}
-							</button>
-							{#if item.action}
-								<button
-									type="button"
-									class="island-action"
-									onclick={() => { void item.action!.run(); dismiss(item.id); }}
-								>
-									{#if ActionIcon}<ActionIcon class="h-3.5 w-3.5" />{/if}
-									{item.action.label}
-								</button>
+
+				{#if hasPrimary && current?.primaryAction}
+					{@const ActionIcon = current.primaryAction.icon}
+					<button
+						type="button"
+						class="island-action"
+						onclick={onPrimaryButton}
+						aria-label={current.primaryAction.label ?? 'Primary action'}
+						title={current.primaryAction.label ?? undefined}
+					>
+						<ActionIcon class="h-3.5 w-3.5" />
+					</button>
+				{/if}
+			</div>
+
+			<!-- DETAIL ROW: text or progress. Height/opacity animated by Motion. -->
+			{#if detail}
+				<motion.div
+					class="island-detail"
+					animate={detailAnimate}
+					transition={SPRING}
+					aria-hidden={phase !== 'expanded'}
+				>
+					<div bind:this={detailInnerEl} class="island-detail-inner">
+						{#if detail.kind === 'text'}
+							<p class="island-text">{detail.text}</p>
+						{:else}
+							{#if detail.label}
+								<span class="island-progress-label">{detail.label}</span>
 							{/if}
-						</div>
-					{:else}
-						<p class="island-empty">No notifications</p>
-					{/each}
-				</div>
-		</div>
+							<div
+								class="island-progress"
+								role="progressbar"
+								aria-valuenow={Math.round(detail.progress * 100)}
+								aria-valuemin={0}
+								aria-valuemax={100}
+							>
+								<span
+									class="island-progress-bar"
+									style:width={`${Math.min(100, Math.max(0, detail.progress * 100))}%`}
+								></span>
+							</div>
+						{/if}
+					</div>
+				</motion.div>
+			{/if}
+		</motion.div>
 	</div>
 </Portal>
 
 <style>
 	.island-anchor {
 		position: fixed;
-		top: 1rem; /* vertical centre of the 2rem titlebar drag strip */
+		top: 0.625rem; /* centred in the 2rem titlebar strip, nudged up */
 		left: 50%;
+		transform: translateX(-50%);
 		z-index: 60; /* above the z-50 overlay tier (Dialog/Sheet/Popover) */
 	}
-	.island-trigger {
-		position: absolute;
-		left: 50%;
-		top: 50%;
+
+	/*
+	 * The island container. CSS holds ONLY static visual styling — colour,
+	 * font, layout, static element shapes. The animated properties (opacity,
+	 * scale, max-width, border-radius, padding, box-shadow, backdrop-filter)
+	 * are owned entirely by Motion via `animate`; CSS sets no value for them
+	 * and no transition, so there is never a competing source.
+	 */
+	.island {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		grid-template-rows: auto auto;
+		gap: 0;
+		border: 1px solid var(--border);
+		/* Translucent fill so the backdrop blur reads through (iOS glass). */
+		background: color-mix(in oklab, var(--popover) 62%, transparent);
+		color: var(--popover-foreground);
+		overflow: hidden;
+		transform-origin: top center;
+	}
+
+	.island-row {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-width: 0;
+	}
+
+	.island-centre {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.375rem;
-		max-width: min(60vw, 22rem);
-		padding: 0.25rem 0.625rem 0.25rem 0.5rem;
+		gap: 0.625rem;
+		min-width: 0;
+		flex: 1;
+		padding: 0.375rem 0.5rem;
 		border-radius: 9999px;
-		border: 1px solid var(--border);
-		background: var(--popover);
-		color: var(--popover-foreground);
-		font-size: 0.75rem;
+		background: transparent;
+		border: none;
+		color: inherit;
+		font-size: 0.8rem;
 		line-height: 1;
-		white-space: nowrap;
-		overflow: hidden;
-		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 		cursor: pointer;
-		transition: background-color 0.12s ease;
+		transition: background-color 0.2s ease;
 	}
-	.island-trigger:hover {
-		background: color-mix(in oklab, var(--popover) 80%, var(--accent));
+	.island-centre:hover {
+		background: var(--accent);
 	}
-	.island-label {
+	.island-summary {
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-weight: 500;
 	}
-	.island-count {
-		color: var(--muted-foreground);
-	}
-	.island-trigger :global(svg) {
+	.island :global(svg) {
 		display: inline-block;
 	}
 
-	/* Native popover: full-window, transparent base (no UA chrome). */
-	.island-popover {
-		/* anchored under the centred trigger; spans the window for the mask */
-		position: fixed;
-		inset: 2rem 0 auto 0;
-		margin: 0 auto;
-		width: min(92vw, 24rem);
-		border: none;
-		background: transparent;
-		padding: 0;
-		/* legibility blur + soft scrim, masked to the card geometry */
-		backdrop-filter: blur(18px) saturate(1.4);
-		-webkit-backdrop-filter: blur(18px) saturate(1.4);
-		/* mask = a rounded rect matching .island-card, feathered edges */
-		mask-image: linear-gradient(black, black);
-		-webkit-mask-image: linear-gradient(black, black);
-	}
-	.island-card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		background: var(--popover);
-		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-		overflow: hidden;
-	}
-	.island-card-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 0.625rem 0.75rem;
-		border-bottom: 1px solid var(--border);
-	}
-	.island-clear {
-		font-size: 0.7rem;
-		color: var(--muted-foreground);
-		background: none;
-		border: none;
-		cursor: pointer;
-	}
-	.island-clear:hover {
-		color: var(--foreground);
-	}
-	.island-list {
-		max-height: 20rem;
-		overflow-y: auto;
-		padding: 0.25rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.125rem;
-	}
-	.island-item {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		width: 100%;
-		padding: 0.25rem 0.375rem;
-		border-radius: calc(var(--radius) - 2px);
-	}
-	.island-item:hover {
-		background: var(--accent);
-	}
-	.island-item-main {
-		display: flex;
-		align-items: flex-start;
-		gap: 0.5rem;
-		flex: 1;
-		min-width: 0;
-		padding: 0.25rem 0.25rem;
-		background: transparent;
-		border: none;
-		text-align: left;
-		font-size: 0.8rem;
-		line-height: 1.35;
-		color: var(--foreground);
-		cursor: pointer;
-	}
 	.island-action {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.25rem;
+		justify-content: center;
 		flex-shrink: 0;
-		padding: 0.25rem 0.5rem;
-		border-radius: calc(var(--radius) - 4px);
-		background: color-mix(in oklab, var(--accent) 80%, transparent);
+		width: 1.75rem;
+		height: 1.75rem;
+		padding: 0;
+		border-radius: 9999px;
+		background: color-mix(in oklab, var(--accent) 70%, transparent);
 		border: 1px solid var(--border);
-		font-size: 0.72rem;
-		font-weight: 500;
 		color: var(--foreground);
 		cursor: pointer;
-		white-space: nowrap;
-		transition: background-color 0.12s ease;
+		transition: background-color 0.2s ease, transform 0.2s ease;
 	}
 	.island-action:hover {
 		background: var(--accent);
+		transform: scale(1.06);
 	}
-	.island-item-msg {
-		flex: 1;
+	.island-action:active {
+		transform: scale(0.96);
+	}
+
+	/*
+	 * Detail row. Height + opacity are animated by Motion (the `animate`
+	 * object is the single source). overflow:hidden clips while collapsing.
+	 */
+	.island-detail {
+		grid-column: 1 / -1;
 		min-width: 0;
-		word-break: break-word;
+		overflow: hidden;
 	}
-	.island-empty {
-		padding: 1rem;
-		text-align: center;
+	.island-detail-inner {
+		padding-top: 0.5rem;
+	}
+	.island-text {
+		margin: 0;
+		font-size: 0.8rem;
+		line-height: 1.5;
+		color: var(--muted-foreground);
+		overflow-wrap: anywhere;
+	}
+	.island-progress-label {
+		display: block;
+		margin-bottom: 0.5rem;
 		font-size: 0.75rem;
 		color: var(--muted-foreground);
 	}
-
-	/* Spring-driven popover enter/exit (native popover hides on close; the
-	   :popover-open transition handles enter, JS sets opacity via `isOpen`). */
-	.island-popover:popover-open {
-		animation: island-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+	.island-progress {
+		height: 6px;
+		border-radius: 9999px;
+		background: var(--muted);
+		overflow: hidden;
 	}
-	@keyframes island-in {
-		from {
-			opacity: 0;
-			transform: translateY(-8px) scale(0.96);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0) scale(1);
-		}
+	.island-progress-bar {
+		display: block;
+		height: 100%;
+		border-radius: 9999px;
+		background: var(--brand);
+		transition: width 0.3s ease;
 	}
 </style>

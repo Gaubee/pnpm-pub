@@ -18,7 +18,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { cn } from '$lib/utils.js';
-	import { notify } from '$lib/notify.js';
+	import { showActivity } from '$lib/notify.js';
 	import { actions } from '$lib/store.js';
 	import IconDownload from '@lucide/svelte/icons/download';
 	import IconCheck from '@lucide/svelte/icons/check';
@@ -92,18 +92,19 @@
 		if (!recent || !p.success) return;
 		const downloadedName = p.filename ?? pendingFilename ?? filename;
 
-		notify({
+		showActivity({
 			tone: 'success',
-			message: $_('download.success', { values: { filename: downloadedName } }),
 			icon: IconCheck,
-			durationMs: 8000,
-			action: {
-				label: $_('download.openFile'),
+			summary: $_('download.success', { values: { filename: downloadedName } }),
+			// No detail → not expandable; tap fires the primary action directly.
+			primaryAction: {
 				icon: IconFileText,
+				label: $_('download.openFile'),
 				run: () => {
 					void actions.openPath(`~/Downloads/${downloadedName}`);
 				},
 			},
+			durationMs: 8000,
 		});
 		pendingFilename = null;
 	}

@@ -2,27 +2,24 @@
 	/**
 	 * Event History — the full, paginated, filterable event log.
 	 *
-	 * Data is fetched from the daemon via `events.query` with server-side
-	 * pagination + filtering, so large logs don't load entirely into memory.
+	 * Data is fetched from the daemon via `events.queryHistoryGroups` with
+	 * server-side group pagination + filtering, so large logs don't load
+	 * entirely into memory and a multi-event batch never splits across pages.
 	 * Live new events arrive over `state.subscribe`; while the user is browsing
 	 * a page, a sticky "N new" tip appears and clicking it reloads from page 1.
 	 *
 	 * History cards render in compact mode (single-line log → horizontal scroll).
-	 * Events sharing a groupId collapse to the latest member + a "+N more" toggle.
 	 */
-	import { onMount } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
-	import type { PubEvent } from '$lib/types.js';
-	import { groupEvents, type EventGroup } from '$lib/group-event.js';
+	import { eventGroupKey, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
-	import { Spinner } from '$lib/components/ui/spinner/index.js';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconChevronLeft from '@lucide/svelte/icons/chevron-left';
 	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -36,48 +33,56 @@
 	let groups = $state<EventGroup[]>([]);
 	let total = $state(0);
 	let loading = $state(true);
-	// Timestamp of the newest event the user has seen; events newer than this
-	// (arriving via WS) count as unread.
+	// Timestamp of the newest history-group head the user has seen; live events
+	// newer than this count as unread groups if their group has no pending member.
 	let lastSeenCreatedAt = $state(0);
 	let newCount = $state(0);
 	let listTopEl: HTMLDivElement | undefined = $state();
 
 	const totalPages = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
 
-	async function fetchEvents(): Promise<void> {
+	async function fetchEvents(): Promise<boolean> {
 		loading = true;
+		const client = getRpcClient();
+		if (!client) return false;
 		try {
-			const json = await getRpcClient()?.events.query({
-				scope: 'history',
+			const json = await client.events.queryHistoryGroups({
 				page,
 				limit: PAGE_SIZE,
 				q: filterText.trim(),
 			});
-			if (!json) throw new Error('events unavailable');
-			groups = groupEvents(json.rows);
-			total = json.total;
-			// Mark the newest visible event as "seen".
-			if (json.rows.length > 0) {
-				const newest = json.rows.reduce((m, e) => (e.createdAt > m ? e.createdAt : m), 0);
-				lastSeenCreatedAt = newest;
-			}
+			groups = json.groups.map(materializeEventGroup);
+			total = json.totalGroups;
+			lastSeenCreatedAt = json.groups[0]?.events[0]?.createdAt ?? 0;
 			newCount = 0;
+			return true;
 		} catch {
 			groups = [];
 			total = 0;
+			return false;
 		} finally {
-			loading = false;
+			if (client === getRpcClient()) loading = false;
 		}
 	}
 
-	function jumpToTop(): void {
-		page = 0;
-	}
+	// First history load waits for the long-lived RPC bridge. Without this, a
+	// direct /event-history mount can race the layout's connect() and mistake
+	// "bridge not ready" for "no history".
+	let firstLoadDone = false;
+	$effect(() => {
+		const connected = $daemon.connected;
+		if (!connected || firstLoadDone) return;
+		void fetchEvents().then((ok) => {
+			if (ok) firstLoadDone = true;
+		});
+	});
 
 	// Reset to page 0 + refetch whenever the filter changes (debounced).
 	let filterTimer: ReturnType<typeof setTimeout> | undefined;
 	$effect(() => {
+		const connected = $daemon.connected;
 		void filterText;
+		if (!connected) return;
 		clearTimeout(filterTimer);
 		filterTimer = setTimeout(() => {
 			page = 0;
@@ -87,22 +92,30 @@
 
 	// Refetch when the page changes.
 	$effect(() => {
+		const connected = $daemon.connected;
 		void page;
-		// Skip the initial fetch (onMount handles it) — only react to page changes.
-		if (!firstLoadDone) return;
+		// Skip the initial fetch — the connection-gated first-load effect above
+		// owns the first successful history query.
+		if (!connected || !firstLoadDone) return;
 		void fetchEvents();
 	});
 
-	// Track unread events arriving over WS (status != pending, newer than seen).
-	let firstLoadDone = false;
+	// Track unread history groups arriving over WS.
 	$effect(() => {
 		const events = $daemon.events;
 		if (!firstLoadDone) return;
-		let count = 0;
+		const blockedGroups = new Set<string>();
 		for (const e of events) {
-			if (e.status !== 'pending' && e.createdAt > lastSeenCreatedAt) count += 1;
+			if (e.status === 'pending' && e.groupId) blockedGroups.add(e.groupId);
 		}
-		newCount = count;
+		const unreadGroups = new Set<string>();
+		for (const e of events) {
+			if (e.status === 'pending' || e.createdAt <= lastSeenCreatedAt) continue;
+			const key = eventGroupKey(e);
+			if (blockedGroups.has(key)) continue;
+			unreadGroups.add(key);
+		}
+		newCount = unreadGroups.size;
 	});
 
 	function handleNewMessageClick(): void {
@@ -111,13 +124,6 @@
 			listTopEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 		});
 	}
-
-	onMount(() => {
-		firstLoadDone = false;
-		void fetchEvents().then(() => {
-			firstLoadDone = true;
-		});
-	});
 </script>
 
 <svelte:head><title>{$_('events.history')} · pnpm-pub</title></svelte:head>
