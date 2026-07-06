@@ -216,6 +216,20 @@ const en = {
       skipped: "skipped",
     },
   },
+  island: {
+    // Standalone pending-event activity. {target} = "name@version" or name.
+    publishing: "Publishing {target}",
+    unpublishing: "Unpublishing {target}",
+    addingTrust: "Adding trusted publishing",
+    updatingTrust: "Updating trusted publishing",
+    removingTrust: "Removing trusted publishing",
+    reserving: "Reserving {name}",
+    refreshingToken: "Refreshing token",
+    publishingN: "Publishing {count} packages",
+    // Detail (key info) lines.
+    irreversible: "Irreversible — removes from registry",
+    placeholder: "Generating placeholder package",
+  },
   backup: {
     title: "Backup · pnpm-pub",
     heading: "Backup & Migrate",
@@ -698,6 +712,18 @@ const zh: Messages = mapMessages(en, {
       rejected: "已拒绝",
       skipped: "已跳过",
     },
+  },
+  island: {
+    publishing: "发布中 {target}",
+    unpublishing: "撤销发布 {target}",
+    addingTrust: "添加可信发布",
+    updatingTrust: "更新可信发布",
+    removingTrust: "移除可信发布",
+    reserving: "预留 {name}",
+    refreshingToken: "刷新令牌",
+    publishingN: "发布 {count} 个包",
+    irreversible: "不可逆 — 从 registry 移除",
+    placeholder: "生成占位包",
   },
   backup: {
     title: "备份 · pnpm-pub",

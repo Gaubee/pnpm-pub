@@ -63,29 +63,51 @@
 		if (kind === 'publish') return IconPublish;
 		return IconPackage;
 	};
-	const memberLabel = (e: PubEvent): string => {
+
+	/** A standalone pending event's compact summary: VERB + object, so the user
+	 *  sees what's happening to what at a glance (e.g. "Publishing @scope/pkg@1.2.3"). */
+	const standaloneSummary = (e: PubEvent): string => {
 		const p = e.payload;
-		if (p?.kind === 'publish') return `${p.data.target.name}@${p.data.target.version}`;
-		if (p?.kind === 'unpublish') return `${p.data.name}@${p.data.version}`;
-		if (p?.kind === 'configure-trust') return p.data.target.name;
-		if (p?.kind === 'create-placeholder') return p.data.name;
-		if (p?.kind === 'recursive-publish') {
-			const n = p.data.targets.length;
-			return n > 0 ? `${n} packages` : 'recursive publish';
+		if (p?.kind === 'publish') return $_('island.publishing', { values: { target: `${p.data.target.name}@${p.data.target.version}` } });
+		if (p?.kind === 'unpublish') return $_('island.unpublishing', { values: { target: `${p.data.name}@${p.data.version}` } });
+		if (p?.kind === 'configure-trust') {
+			const k = p.data.action === 'add' ? 'island.addingTrust' : p.data.action === 'update' ? 'island.updatingTrust' : 'island.removingTrust';
+			return $_(k);
 		}
+		if (p?.kind === 'create-placeholder') return $_('island.reserving', { values: { name: p.data.name } });
+		if (p?.kind === 'recursive-publish') return $_('island.publishingN', { values: { count: p.data.targets.length } });
+		if (p?.kind === 'refresh-token') return $_('island.refreshingToken');
 		return e.kind;
 	};
-	const groupSummary = (g: EventGroup): string => {
-		// Multi-member batch → kind label + count (e.g. "Trusted Publishing · 3").
-		// Standalone (single member) → concrete package label.
-		if (g.isGroup) {
-			const key =
-				g.kind === 'trusted-publishing' ? 'groupEvent.kindTrustedPublishing'
-				: g.kind === 'publish' ? 'groupEvent.kindPublish'
-				: 'groupEvent.kindMixed';
-			return $_(key, { values: { count: g.events.length } });
+	/** The KEY-INFO detail line for a standalone event (no fake progress bar —
+	 *  a single event is binary pending→done). Shows what matters per kind. */
+	const standaloneDetail = (e: PubEvent): string => {
+		const p = e.payload;
+		if (p?.kind === 'publish') {
+			const repo = p.data.target.repository;
+			if (repo) return repo;
+			return p.data.source.path.split('/').pop() ?? p.data.source.path;
 		}
-		return memberLabel(g.latest);
+		if (p?.kind === 'unpublish') return $_('island.irreversible');
+		if (p?.kind === 'configure-trust') {
+			const t = p.data.target;
+			return t.repository ? `${t.name} · ${t.repository}` : t.name;
+		}
+		if (p?.kind === 'create-placeholder') return $_('island.placeholder');
+		if (p?.kind === 'recursive-publish') {
+			return p.data.source.path.split('/').pop() ?? p.data.source.path;
+		}
+		if (p?.kind === 'refresh-token') return p.data.username;
+		return '';
+	};
+
+	/** Group batch summary: kind label + count (e.g. "Trusted Publishing · 3"). */
+	const groupSummary = (g: EventGroup): string => {
+		const key =
+			g.kind === 'trusted-publishing' ? 'groupEvent.kindTrustedPublishing'
+			: g.kind === 'publish' ? 'groupEvent.kindPublish'
+			: 'groupEvent.kindMixed';
+		return $_(key, { values: { count: g.events.length } });
 	};
 	let pendingActivityId: number | null = null;
 	$effect(() => {
@@ -97,10 +119,22 @@
 		const transientOwnsSlot = slot !== null && slot.id !== pendingActivityId;
 
 		if (topGroup && !transientOwnsSlot) {
-			const members = topGroup.events;
-			const total = members.length;
-			const resolved = members.filter((e) => e.status !== 'pending').length;
-			const summary = groupSummary(topGroup);
+			// GROUP (multi-member batch) → real progress (resolved/total).
+			// STANDALONE → verb summary + key-info text (no fake progress bar).
+			const isGroup = topGroup.isGroup;
+			const summary = isGroup ? groupSummary(topGroup) : standaloneSummary(topGroup.latest);
+			const detail = isGroup
+				? (() => {
+						const members = topGroup.events;
+						const total = members.length;
+						const resolved = members.filter((e) => e.status !== 'pending').length;
+						return {
+							kind: 'progress' as const,
+							progress: total ? resolved / total : 0,
+							label: $_('groupEvent.progress', { values: { done: resolved, total } }),
+						};
+					})()
+				: { kind: 'text' as const, text: standaloneDetail(topGroup.latest) };
 			// Always (re)show so progress/summary stay in sync as members resolve.
 			// showActivity replaces the current activity (same effect when ours is
 			// already showing) and returns a fresh id we track.
@@ -109,11 +143,7 @@
 				// trusted-publishing → success (green), mirroring the card accent.
 				tone: topGroup.kind === 'trusted-publishing' ? 'success' : 'info',
 				summary,
-				detail: {
-					kind: 'progress',
-					progress: total ? resolved / total : 0,
-					label: $_('groupEvent.progress', { values: { done: resolved, total } }),
-				},
+				detail,
 				primaryAction: {
 					icon: IconArrowRight,
 					label: `View ${summary}`,
