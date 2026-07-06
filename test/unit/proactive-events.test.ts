@@ -14,8 +14,13 @@ import { promisify } from "node:util";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
+import type { TrustedPublisherConfig } from "../../src/shared/index.js";
 import { publishPackage } from "../../src/daemon/npm-api.js";
-import { addTrustedPublisher, removeTrustedPublisher } from "../../src/daemon/trusted-publishing-api.js";
+import {
+  addTrustedPublisher,
+  listTrustedPublishers,
+  removeTrustedPublisher,
+} from "../../src/daemon/trusted-publishing-api.js";
 import {
   packPackage,
   readPackageTarball,
@@ -36,6 +41,9 @@ vi.mock("../../src/daemon/npm-api.js", () => ({
 vi.mock("../../src/daemon/trusted-publishing-api.js", () => ({
   addTrustedPublisher: vi.fn(),
   removeTrustedPublisher: vi.fn(),
+  // Pre-flight lookup: default to "no existing config" so the add path POSTs
+  // directly. Tests that exercise the update/conflict path override this.
+  listTrustedPublishers: vi.fn(),
 }));
 
 vi.mock("../../src/daemon/packer.js", () => ({
@@ -55,6 +63,7 @@ vi.mock("../../src/daemon/publisher.js", () => ({
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-proactive-${process.pid}-${Date.now()}`);
 const addTrustedPublisherMock = vi.mocked(addTrustedPublisher);
 const removeTrustedPublisherMock = vi.mocked(removeTrustedPublisher);
+const listTrustedPublishersMock = vi.mocked(listTrustedPublishers);
 const publishPackageMock = vi.mocked(publishPackage);
 const packPackageMock = vi.mocked(packPackage);
 const readPackageTarballMock = vi.mocked(readPackageTarball);
@@ -84,6 +93,10 @@ beforeEach(async () => {
     status: 200,
   });
   removeTrustedPublisherMock.mockResolvedValue({ ok: true, status: 200 });
+  // Pre-flight lookup defaults to "no existing config" so the add path POSTs
+  // directly. Tests exercising update/conflict override this to return an
+  // existing config.
+  listTrustedPublishersMock.mockResolvedValue({ ok: true, configs: [] });
   publishPackageMock.mockResolvedValue({
     ok: true,
     status: 200,
@@ -214,7 +227,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(publishPackageMock).not.toHaveBeenCalled();
   });
 
-  it("Scenario: Given an existing trusted publisher, When update is confirmed, Then the new config is added before the old id is removed", async () => {
+  it("Scenario: Given an existing trusted publisher that differs, When update is confirmed, Then the old id is deleted before the new config is added (delete-then-put)", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
@@ -226,16 +239,21 @@ describe("Feature: WebUI-created proactive events", () => {
       permissions: ["createPackage" as const],
       claims: { repository: "owner/repo", workflow_ref: { file: "release.yml" } },
     };
+    // Pre-flight: the registry reports the OLD (differing) config — so the
+    // daemon must DELETE it before POSTing the new one (delete-then-put).
+    const oldConfig: TrustedPublisherConfig = {
+      id: "old-id",
+      type: "github",
+      permissions: ["createPackage"],
+      claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+    };
+    listTrustedPublishersMock.mockResolvedValue({ ok: true, configs: [oldConfig] });
+
     const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
       action: "update",
       target: {
         name: "@scope/pkg",
-        currentConfig: {
-          id: "old-id",
-          type: "github",
-          permissions: ["createPackage"],
-          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
-        },
+        currentConfig: oldConfig,
       },
       config,
     });
@@ -244,11 +262,17 @@ describe("Feature: WebUI-created proactive events", () => {
     if (!created.ok) return;
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    // delete-then-put: the old id is removed BEFORE the new config is added.
     expect(removeTrustedPublisherMock).toHaveBeenCalledWith(
       { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
       "@scope/pkg",
       "old-id",
+    );
+    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    expect(addTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/pkg",
+      config,
     );
     const event = store.getEvent(created.event.id);
     expect(event?.status).toBe("success");
@@ -288,7 +312,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(event?.status).toBe("success");
   });
 
-  it("Scenario: Given update cleanup fails after add succeeds, When confirmed, Then the partial side effect is reported as failure", async () => {
+  it("Scenario: Given the delete-then-put delete fails, When confirmed, Then the new config is NOT added and the event fails", async () => {
     removeTrustedPublisherMock.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -300,16 +324,20 @@ describe("Feature: WebUI-created proactive events", () => {
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
+    const oldConfig: TrustedPublisherConfig = {
+      id: "old-id",
+      type: "github",
+      permissions: ["createPackage"],
+      claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+    };
+    // Pre-flight reports the differing existing config.
+    listTrustedPublishersMock.mockResolvedValue({ ok: true, configs: [oldConfig] });
+
     const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
       action: "update",
       target: {
         name: "@scope/pkg",
-        currentConfig: {
-          id: "old-id",
-          type: "github",
-          permissions: ["createPackage"],
-          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
-        },
+        currentConfig: oldConfig,
       },
       config: {
         type: "github",
@@ -322,7 +350,8 @@ describe("Feature: WebUI-created proactive events", () => {
     if (!created.ok) return;
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
-    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    // delete-then-put: the delete failed, so the add never happened.
+    expect(addTrustedPublisherMock).not.toHaveBeenCalled();
     const event = store.getEvent(created.event.id);
     expect(event?.status).toBe("failed");
     expect(event?.result).toBe("old config still present");
@@ -372,6 +401,19 @@ describe("Feature: WebUI-created proactive events", () => {
       claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
     };
     const groupId = "trust-group-1";
+    // Pre-flight: @scope/a has no existing config (add path); @scope/b has the
+    // differing old-b config (delete-then-put path).
+    const oldB: TrustedPublisherConfig = {
+      id: "old-b",
+      type: "github",
+      permissions: ["createPackage"],
+      claims: { repository: "owner/repo", workflow_ref: { file: "old.yml" } },
+    };
+    listTrustedPublishersMock.mockImplementation((_auth, name) =>
+      name === "@scope/b"
+        ? Promise.resolve({ ok: true, configs: [oldB] })
+        : Promise.resolve({ ok: true, configs: [] }),
+    );
     const first = await scheduler.createProactiveEvent(
       "configure-trust",
       "alice",
@@ -389,12 +431,7 @@ describe("Feature: WebUI-created proactive events", () => {
         action: "update",
         target: {
           name: "@scope/b",
-          currentConfig: {
-            id: "old-b",
-            type: "github",
-            permissions: ["createPackage"],
-            claims: { repository: "owner/repo", workflow_ref: { file: "old.yml" } },
-          },
+          currentConfig: oldB,
         },
         config,
       },

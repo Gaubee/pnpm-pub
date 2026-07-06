@@ -9,11 +9,12 @@
 	 * Unlike the old layout, this page NEVER locks navigation — pending tasks
 	 * are surfaced via the sidebar badge, and the user is free to navigate away.
 	 */
-	import { onMount, untrack } from 'svelte';
+	import { onMount, untrack, tick } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { pendingEvents, visibleEvents } from '$lib/store.js';
+	import { eventFocus } from '$lib/notify.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
 	import { groupEvents, type EventGroup } from '$lib/group-event.js';
@@ -133,6 +134,23 @@
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	});
 
+	// Dynamic Island → focus a standalone (non-group) event card. Group members
+	// are handled inside GroupEventCard (expand accordion + scroll to row);
+	// here we only scroll to the standalone card wrapper `#event-{g.id}`.
+	let lastFocusNonce = 0;
+	$effect(() => {
+		const req = $eventFocus;
+		if (!req || req.nonce === lastFocusNonce) return;
+		const group = surfaceGroups.find((g) => g.id === req.eventId && !g.isGroup);
+		if (!group) return; // group member or not present — GroupEventCard handles it
+		lastFocusNonce = req.nonce;
+		void tick().then(() => {
+			document
+				.getElementById(`event-${group.id}`)
+				?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		});
+	});
+
 	// Preview-history: the latest few GROUPS, fetched from the daemon via oRPC.
 	// We over-fetch raw events because a single group may contribute many rows
 	// (e.g. a 10-package batch = 10 events but only ONE "recent activity").
@@ -243,7 +261,7 @@
 		<section class="space-y-2.5">
 			<h2 class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{$_('events.pending')}</h2>
 			{#each surfaceGroups as g, i (g.id)}
-				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
+				<div id="event-{g.id}" animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
 				{#if g.isGroup}
 					<GroupEventCard
 						group={g}
@@ -295,7 +313,7 @@
 			</div>
 		{:else}
 			{#each previewGroups as g, i (g.id)}
-				<div animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
+				<div id="event-{g.id}" animate:flip={flipParams} in:fade|global={enterParams(i)} out:fade|global={leaveParams}>
 				{#if g.isGroup}
 					<GroupEventCard group={g} surface="history" />
 				{:else}

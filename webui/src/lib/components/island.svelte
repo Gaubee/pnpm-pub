@@ -17,18 +17,57 @@
 	 * The trigger sits in the titlebar drag strip, so it stops pointerdown to
 	 * avoid starting a native window drag.
 	 */
+	import { tick } from 'svelte';
 	import { spring } from 'svelte/motion';
-	import { island, dismiss, type IslandTone } from '$lib/notify.js';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { Portal } from 'bits-ui';
+	import { island, dismiss, focusEvent, type IslandTone } from '$lib/notify.js';
 	import IconInfo from '@lucide/svelte/icons/info';
 	import IconCheck from '@lucide/svelte/icons/check';
 	import IconAlert from '@lucide/svelte/icons/triangle-alert';
 	import IconWarning from '@lucide/svelte/icons/circle-alert';
 	import IconChevron from '@lucide/svelte/icons/chevron-down';
+	import IconExternalLink from '@lucide/svelte/icons/external-link';
 
 	const items = $derived($island);
 	const latest = $derived(items[0] ?? null);
 	const count = $derived(items.length);
 	const hasMultiple = $derived(count > 1);
+
+	/**
+	 * Navigate to /active-events and focus the SPECIFIC member event whose id
+	 * is `eventId`. The target is a single member row, never the whole group:
+	 *   - standalone event (no groupId) → scroll to its EventCard
+	 *     (`#event-{eventId}`).
+	 *   - group member → emit a focus request via `focusEvent(eventId)`; the
+	 *     owning GroupEventCard expands its member accordion and scrolls to the
+	 *     matching `#event-member-{eventId}` row.
+	 *
+	 * After navigation we retry briefly because `surfaceGroups` is derived
+	 * async from WS state. The popover stays open.
+	 */
+	async function gotoEvent(eventId: string): Promise<void> {
+		const navigateIfNeeded = async () => {
+			if (page.url.pathname !== '/active-events') {
+				await goto('/active-events');
+			}
+		};
+		await navigateIfNeeded();
+		// Surface the focus request; GroupEventCard reacts once mounted. Retry
+		// so a navigation (page not yet rendered) still lands on the member.
+		for (let i = 0; i < 14; i++) {
+			focusEvent(eventId);
+			await tick();
+			await new Promise((r) => setTimeout(r, 70));
+			// The GroupEventCard consumes the request; if the member row now
+			// exists in the DOM the focus is done, otherwise loop once more.
+			if (document.getElementById(`event-member-${eventId}`) ||
+				document.getElementById(`event-${eventId}`)) {
+				break;
+			}
+		}
+	}
 
 	const DEFAULT_ICON: Record<IslandTone, typeof IconInfo> = {
 		info: IconInfo,
@@ -77,17 +116,23 @@
 	});
 
 	// --- popover open state (native API) ---
+	// We drive open/close purely via `showPopover()`/`hidePopover()` and track
+	// state in a local `$state` (reactive), updated from the native `toggle`
+	// event. We deliberately do NOT combine `popovertarget` with onclick — the
+	// two race (onclick's showPopover runs, then the browser's popovertarget
+	// toggles it back), producing a no-op click.
 	let popoverEl = $state<HTMLDivElement | null>(null);
-	const isOpen = $derived(popoverEl?.matches(':popover-open') ?? false);
+	let isOpen = $state(false);
 	function togglePopover(): void {
 		if (!popoverEl) return;
-		if (popoverEl.matches(':popover-open')) popoverEl.hidePopover();
+		if (isOpen) popoverEl.hidePopover();
 		else popoverEl.showPopover();
 	}
 
-	// Re-render reactively on popover open/close (matches() isn't reactive).
-	function syncOpen(): void {
-		popoverEl = popoverEl; // trigger update
+	// The native `toggle` event is the source of truth for open/close (covers
+	// light-dismiss + Esc too). `newState` is "open"/"closed".
+	function syncOpen(e: ToggleEvent): void {
+		isOpen = e.newState === 'open';
 	}
 
 	// latest-message label width feeds the spring (so the pill reshapes to fit).
@@ -111,7 +156,6 @@
 		<button
 			type="button"
 			class="island-trigger"
-			popovertarget="island-popover"
 			onpointerdown={stop}
 			onclick={togglePopover}
 			aria-label="Notifications{hasMultiple ? ` (${count})` : ''}"
@@ -133,12 +177,17 @@
 {/snippet}
 
 <!--
-	TRIGGER: absolutely centred in the titlebar row (top: 1rem = half of the 2rem
-	drag strip; left: 50%). Rendered inside WindowDragRegion's strip via a slot.
+	TRIGGER + POPOVER are portalled to document.body so they are not trapped
+	below any overlay's stacking context. The Dialog/Sheet/Popover overlays
+	also portal to body at z-50; we render the island AFTER them in DOM order
+	(it mounts last in the layout) AND raise it to z-60, so it stays visible
+	even while a Dialog is open. The expanded list additionally uses the
+	native `popover` top layer, so it is never covered regardless.
 -->
-<div class="island-anchor">
-	{@render trigger()}
-</div>
+<Portal>
+	<div class="island-anchor">
+		{@render trigger()}
+	</div>
 
 <!--
 	POPOVER (native API). Full-window layer; the blur backdrop is masked to the
@@ -164,43 +213,52 @@
 				</button>
 			{/if}
 		</header>
-		<div class="island-list">
-			{#each items as item (item.id)}
-				{@const Icon = item.icon ?? DEFAULT_ICON[item.tone]}
-				{@const ActionIcon = item.action?.icon}
-				<div class="island-item {TONE_CLASS[item.tone]}">
-					<button
-						type="button"
-						class="island-item-main"
-						onclick={() => dismiss(item.id)}
-					>
-						<Icon class="h-4 w-4 shrink-0" />
-						<span class="island-item-msg">{item.message}</span>
-					</button>
-					{#if item.action}
-						<button
-							type="button"
-							class="island-action"
-							onclick={() => { void item.action!.run(); dismiss(item.id); }}
+				<div class="island-list">
+					{#each items as item (item.id)}
+						{@const Icon = item.icon ?? DEFAULT_ICON[item.tone]}
+						{@const ActionIcon = item.action?.icon}
+						{@const hasEvent = !!item.eventId}
+						<div
+							class="island-item {TONE_CLASS[item.tone]}"
+							data-event-id={item.eventId}
+							data-group-id={item.groupId}
 						>
-							{#if ActionIcon}<ActionIcon class="h-3.5 w-3.5" />{/if}
-							{item.action.label}
-						</button>
-					{/if}
+							<button
+								type="button"
+								class="island-item-main"
+								onclick={() => hasEvent && item.eventId ? gotoEvent(item.eventId) : dismiss(item.id)}
+							>
+								<Icon class="h-4 w-4 shrink-0" />
+								<span class="island-item-msg">{item.message}</span>
+								{#if hasEvent}
+									<IconExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" />
+								{/if}
+							</button>
+							{#if item.action}
+								<button
+									type="button"
+									class="island-action"
+									onclick={() => { void item.action!.run(); dismiss(item.id); }}
+								>
+									{#if ActionIcon}<ActionIcon class="h-3.5 w-3.5" />{/if}
+									{item.action.label}
+								</button>
+							{/if}
+						</div>
+					{:else}
+						<p class="island-empty">No notifications</p>
+					{/each}
 				</div>
-			{:else}
-				<p class="island-empty">No notifications</p>
-			{/each}
 		</div>
 	</div>
-</div>
+</Portal>
 
 <style>
 	.island-anchor {
 		position: fixed;
 		top: 1rem; /* vertical centre of the 2rem titlebar drag strip */
 		left: 50%;
-		z-index: 50;
+		z-index: 60; /* above the z-50 overlay tier (Dialog/Sheet/Popover) */
 	}
 	.island-trigger {
 		position: absolute;

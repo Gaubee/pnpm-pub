@@ -10,7 +10,7 @@ import { EventEmitter } from "node:events";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Database as DatabaseType } from "better-sqlite3";
+import type { Database as DatabaseType } from "./db.js";
 import {
   type PnpmPubConfig,
   type Profile,

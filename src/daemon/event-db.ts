@@ -1,19 +1,20 @@
 /**
- * SQLite-backed event persistence (better-sqlite3).
+ * SQLite-backed event persistence.
  *
  * The event log is a live activity feed plus an audit trail. This module owns
- * all DB interaction so DaemonStore stays a thin coordinator. better-sqlite3
- * is synchronous — createEvent/resolveEvent keep their sync signatures, so
- * callers need no changes.
+ * all DB interaction so DaemonStore stays a thin coordinator. The driver is
+ * runtime-portable (Node/Bun/Deno) via `./db.ts`; the API stays synchronous, so
+ * createEvent/resolveEvent keep their sync signatures and callers need no
+ * changes.
  *
  * Nested/variable fields (payload, tarballSummary) are stored as JSON TEXT;
  * flat fields map to native columns for indexing/querying. WAL mode keeps
  * reads non-blocking while writes land.
  */
-import Database from "better-sqlite3";
-import type { Database as DatabaseType } from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type { Database as DatabaseType } from "./db.js";
+import { openDatabase } from "./db.js";
 import type {
   EventKind,
   EventStatus,
@@ -63,9 +64,9 @@ const COLUMNS = [
 
 /** Open (or create) the events database, set up schema, sweep orphan pendings. */
 export function openEventDb(dbPath: string): DatabaseType {
-  // better-sqlite3 does not create the parent directory; ensure it exists.
+  // The driver does not create the parent directory; ensure it exists.
   mkdirSync(dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+  const db = openDatabase(dbPath);
   db.pragma("journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
@@ -112,7 +113,7 @@ export function openEventDb(dbPath: string): DatabaseType {
 
 /** Look up a cached value by key. Returns undefined when missing or expired
  *  (expired rows are lazily deleted on read). */
-export function kvGet(db: DatabaseType, key: string): unknown | undefined {
+export function kvGet(db: DatabaseType, key: string): unknown {
   const row = db.prepare(`SELECT value, expires_at FROM key_value WHERE key = ?`).get(key) as
     | { value: string; expires_at: number }
     | undefined;
@@ -160,7 +161,7 @@ export function updateEvent(db: DatabaseType, evt: PubEvent): void {
 export function recentEvents(db: DatabaseType, limit: number): PubEvent[] {
   const rows = db
     .prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`)
-    .all(limit) as RawRow[];
+    .all(limit) as unknown as RawRow[];
   return rows.map(deserializeRow);
 }
 
@@ -214,7 +215,7 @@ export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
   const offset = page * limit;
   const rows = db
     .prepare(`SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset) as RawRow[];
+    .all(...params, limit, offset) as unknown as RawRow[];
   return { rows: rows.map(deserializeRow), total, page, limit };
 }
 

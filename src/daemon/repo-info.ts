@@ -16,7 +16,7 @@
  * the raw repository string, so repeated renders of the same package never
  * re-parse.
  */
-import type { Database as DatabaseType } from "better-sqlite3";
+import type { Database as DatabaseType } from "./db.js";
 import { kvGet, kvSet } from "./event-db.js";
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days

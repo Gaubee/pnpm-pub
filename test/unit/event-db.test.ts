@@ -19,7 +19,7 @@ import {
   recentEvents,
 } from "../../src/daemon/event-db.js";
 import type { PubEvent } from "../../src/shared/index.js";
-import type { Database as DatabaseType } from "better-sqlite3";
+import type { Database as DatabaseType } from "../../src/daemon/db.js";
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-eventdb-${process.pid}-${Date.now()}`);
 

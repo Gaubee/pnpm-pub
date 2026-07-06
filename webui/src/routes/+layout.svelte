@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { connect, daemon, activeProfile } from '$lib/store.js';
+	import { connect, daemon, activeProfile, pendingEvents } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import {
@@ -15,7 +15,7 @@
 	import SettingsDialog from '$lib/components/settings-dialog.svelte';
 	import Island from '$lib/components/island.svelte';
 	import { TooltipProvider } from '$lib/components/ui/tooltip/index.js';
-	import { bridgeDaemonToast } from '$lib/notify.js';
+	import { bridgeDaemonToast, notifyPendingEvent, dismissByEventId } from '$lib/notify.js';
 	import WindowDragRegion from '$lib/components/window-drag-region.svelte';
 	import { initI18n } from '$lib/i18n.js';
 	import { initWindowVisibility } from '$lib/window-visibility.js';
@@ -35,6 +35,51 @@
 	// the Dynamic Island. `bridgeDaemonToast` dedupes by the toast id.
 	$effect(() => {
 		bridgeDaemonToast($daemon.toast);
+	});
+
+	/**
+	 * Sync the live `pendingEvents` set into the Dynamic Island so the pill +
+	 * popover persistently reflect what is pending. Each pending event gets a
+	 * sticky island element (carrying its eventId/groupId) that is clickable to
+	 * scroll to the matching card on /active-events. When an event leaves the
+	 * pending set (resolved/rejected/…), its element is dismissed.
+	 *
+	 * A `Set<string>` records which event ids are currently represented in the
+	 * island; `notifyPendingEvent` is itself idempotent by eventId, but tracking
+	 * here also drives the dismiss side (ids that dropped out of `$pendingEvents`).
+	 */
+	const pendingLabel = (e: import('$lib/types.js').PubEvent): string => {
+		const p = e.payload;
+		if (p?.kind === 'publish') return `${p.data.target.name}@${p.data.target.version}`;
+		if (p?.kind === 'unpublish') return `${p.data.name}@${p.data.version}`;
+		if (p?.kind === 'configure-trust') return p.data.target.name;
+		if (p?.kind === 'create-placeholder') return p.data.name;
+		if (p?.kind === 'recursive-publish') {
+			const n = p.data.targets.length;
+			return n > 0 ? `${p.data.targets.length} packages` : 'recursive publish';
+		}
+		return e.kind;
+	};
+	let pendingInIsland = new Set<string>();
+	$effect(() => {
+		const current = $pendingEvents;
+		const seen = new Set(current.map((e) => e.id));
+		// Push newly-pending events into the island.
+		for (const e of current) {
+			if (!pendingInIsland.has(e.id)) {
+				notifyPendingEvent({
+					id: e.id,
+					groupId: e.groupId,
+					kind: e.kind,
+					message: pendingLabel(e),
+				});
+			}
+		}
+		// Dismiss events that are no longer pending.
+		for (const id of pendingInIsland) {
+			if (!seen.has(id)) dismissByEventId(id);
+		}
+		pendingInIsland = seen;
 	});
 
 	/**
