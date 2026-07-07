@@ -14,7 +14,7 @@
 	import { flip } from 'svelte/animate';
 	import { flipParams, enterParams, leaveParams } from '$lib/transitions.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
-	import { eventGroupKey, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
+	import { eventGroupKey, hasGroupEvents, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -51,9 +51,10 @@
 				limit: PAGE_SIZE,
 				q: filterText.trim(),
 			});
-			groups = json.groups.map(materializeEventGroup);
+			const renderableGroups = json.groups.filter(hasGroupEvents);
+			groups = renderableGroups.map(materializeEventGroup);
 			total = json.totalGroups;
-			lastSeenCreatedAt = json.groups[0]?.events[0]?.createdAt ?? 0;
+			lastSeenCreatedAt = renderableGroups[0]?.events[0]?.createdAt ?? 0;
 			newCount = 0;
 			return true;
 		} catch {

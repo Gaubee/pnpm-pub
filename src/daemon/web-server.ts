@@ -420,6 +420,9 @@ export class WebServer {
       },
       events: {
         query: rpc.events.query.handler(({ input }) => this.queryEvents(input)),
+        queryHistoryGroups: rpc.events.queryHistoryGroups.handler(({ input }) =>
+          this.queryHistoryGroups(input),
+        ),
         confirm: rpc.events.confirm.handler(async ({ input }) => {
           const ok = await this.deps.scheduler.confirm(input.id);
           return ok ? { ok: true } : { ok: false, error: "No such pending event." };
@@ -1079,6 +1082,22 @@ export class WebServer {
       ...(name ? { name } : {}),
       ...(keywords.length ? { keywords } : {}),
       ...(input.group ? { groupId: input.group } : {}),
+      page: input.page,
+      limit: input.limit,
+    });
+  }
+
+  private queryHistoryGroups(input: { name?: string; q: string; page: number; limit: number }) {
+    let name = input.name;
+    const keywords: string[] = [];
+    for (const tok of input.q.split(/\s+/).filter(Boolean)) {
+      const m = tok.match(/^name:(.+)$/i);
+      if (m) name = m[1];
+      else keywords.push(tok);
+    }
+    return this.deps.store.queryHistoryGroups({
+      ...(name ? { name } : {}),
+      ...(keywords.length ? { keywords } : {}),
       page: input.page,
       limit: input.limit,
     });

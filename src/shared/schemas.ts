@@ -386,6 +386,20 @@ export const PubEventSchema = z.object({
 });
 export type PubEvent = z.infer<typeof PubEventSchema>;
 
+export const HistoryEventGroupSchema = z.object({
+  id: z.string(),
+  events: z.array(PubEventSchema).min(1),
+});
+export type HistoryEventGroup = z.infer<typeof HistoryEventGroupSchema>;
+
+export const HistoryEventGroupPageSchema = z.object({
+  groups: z.array(HistoryEventGroupSchema),
+  totalGroups: z.number().int().nonnegative(),
+  page: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+});
+export type HistoryEventGroupPage = z.infer<typeof HistoryEventGroupPageSchema>;
+
 // ---------------------------------------------------------------------------
 // Package detail (PackageDetail page) — projection of a registry packument.
 // ---------------------------------------------------------------------------

@@ -41,9 +41,12 @@ import {
   insertEvent,
   updateEvent,
   queryEvents as dbQueryEvents,
+  queryHistoryGroups as dbQueryHistoryGroups,
   recentEvents,
   type EventQuery,
   type EventQueryResult,
+  type HistoryEventGroupQuery,
+  type HistoryEventGroupQueryResult,
 } from "./event-db.js";
 
 const DEFAULT_CONFIG: PnpmPubConfig = { default: "", profiles: [] };
@@ -367,6 +370,12 @@ export class DaemonStore extends EventEmitter {
   queryEvents(q: EventQuery): EventQueryResult {
     if (!this.eventDb) return { rows: [], total: 0, page: q.page, limit: q.limit };
     return dbQueryEvents(this.eventDb, q);
+  }
+
+  /** Paginated grouped history query (backed by SQLite). */
+  queryHistoryGroups(q: HistoryEventGroupQuery): HistoryEventGroupQueryResult {
+    if (!this.eventDb) return { groups: [], totalGroups: 0, page: q.page, limit: q.limit };
+    return dbQueryHistoryGroups(this.eventDb, q);
   }
 
   /**

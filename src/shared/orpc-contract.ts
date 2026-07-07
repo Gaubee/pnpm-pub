@@ -9,6 +9,7 @@ import { eventIterator, oc } from "@orpc/contract";
 import { z } from "zod";
 import {
   BackupBundleSchema,
+  HistoryEventGroupPageSchema,
   PackageDetailSchema,
   PreferencesSchema,
   PubEventSchema,
@@ -150,6 +151,13 @@ const EventsQueryResponseSchema = z.object({
   limit: z.number().int().positive(),
 });
 
+const HistoryEventGroupQuerySchema = z.object({
+  name: z.string().optional(),
+  q: z.string().default(""),
+  page: z.number().int().nonnegative().default(0),
+  limit: z.number().int().positive().max(100).default(20),
+});
+
 const RepoInfoSchema = z
   .object({
     host: z.string(),
@@ -239,6 +247,7 @@ export const webRpcContract = {
   },
   events: {
     query: oc.input(EventsQuerySchema).output(EventsQueryResponseSchema),
+    queryHistoryGroups: oc.input(HistoryEventGroupQuerySchema).output(HistoryEventGroupPageSchema),
     confirm: oc.input(z.object({ id: z.string().min(1) })).output(OkResponseSchema),
     reject: oc.input(z.object({ id: z.string().min(1) })).output(OkResponseSchema),
     update: oc

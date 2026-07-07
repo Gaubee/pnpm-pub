@@ -22,6 +22,7 @@ import type {
   PubEvent,
   TarballSummary,
 } from "../shared/index.js";
+import { EventPayloadSchema, PubEventSchema, TarballSummarySchema } from "../shared/schemas.js";
 
 /** Query dimensions for the paginated history endpoint. */
 export interface EventQuery {
@@ -45,6 +46,45 @@ export interface EventQueryResult {
   page: number;
   limit: number;
 }
+
+export interface HistoryEventGroupRow {
+  id: string;
+  events: PubEvent[];
+}
+
+export interface HistoryEventGroupQuery {
+  /** Package-name substring filter (matches the payload's target.name / name). */
+  name?: string;
+  /** Free-text keywords, AND-matched against kind|status|result|name. */
+  keywords?: string[];
+  /** Zero-based page index. */
+  page: number;
+  /** Page size in number of groups. */
+  limit: number;
+}
+
+export interface HistoryEventGroupQueryResult {
+  groups: HistoryEventGroupRow[];
+  totalGroups: number;
+  page: number;
+  limit: number;
+}
+
+/**
+ * Persisted history rows must stay inside the current EventStatus ontology.
+ * Older builds leaked transient webui-only labels such as `conflict` into the
+ * DB; they are legacy projection residue and must not participate in history
+ * pagination or group materialization.
+ */
+const HISTORY_STATUSES = [
+  "success",
+  "failed",
+  "expired",
+  "action-required",
+  "rejected",
+  "skipped",
+] as const;
+const HISTORY_STATUS_SQL = HISTORY_STATUSES.map((status) => `'${status}'`).join(", ");
 
 // Column order matches the INSERT below.
 const COLUMNS = [
@@ -85,6 +125,8 @@ export function openEventDb(dbPath: string): DatabaseType {
     );
     CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_group_id ON events(group_id);
+    CREATE INDEX IF NOT EXISTS idx_events_group_key_created_at
+      ON events(COALESCE(group_id, id), created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
     CREATE INDEX IF NOT EXISTS idx_events_status ON events(status);
     -- Generic TTL cache table for derived/resolved values (e.g. repo-info
@@ -162,7 +204,7 @@ export function recentEvents(db: DatabaseType, limit: number): PubEvent[] {
   const rows = db
     .prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`)
     .all(limit) as unknown as RawRow[];
-  return rows.map(deserializeRow);
+  return rows.map(deserializeRow).filter((row): row is PubEvent => row !== null);
 }
 
 /** Count events matching a status scope. */
@@ -170,20 +212,214 @@ export function countByScope(db: DatabaseType, scope: "pending" | "history"): nu
   const row = (
     scope === "pending"
       ? db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status = 'pending'`).get()
-      : db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status != 'pending'`).get()
+      : db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status IN (${HISTORY_STATUS_SQL})`).get()
   ) as { n: number };
   return row.n;
 }
 
 /** Paginated, filtered query. Returns rows + total for page controls. */
 export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
+  const { where, params } = buildEventFilters(q);
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const total = (
+    db.prepare(`SELECT COUNT(*) AS n FROM events ${whereClause}`).get(...params) as { n: number }
+  ).n;
+  const page = Math.max(0, q.page);
+  const limit = Math.max(1, q.limit);
+  const offset = page * limit;
+  const rows = db
+    .prepare(`SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as unknown as RawRow[];
+  return {
+    rows: rows.map(deserializeRow).filter((row): row is PubEvent => row !== null),
+    total,
+    page,
+    limit,
+  };
+}
+
+/** Paginated grouped history query. Groups are keyed by `group_id ?? id`. */
+export function queryHistoryGroups(
+  db: DatabaseType,
+  q: HistoryEventGroupQuery,
+): HistoryEventGroupQueryResult {
+  const page = Math.max(0, q.page);
+  const limit = Math.max(1, q.limit);
+  const offset = page * limit;
+
+  const matched = buildHistoryMatchedGroups(q);
+  const totalGroups = (
+    db
+      .prepare(`
+      WITH ${matched.sql}
+      SELECT COUNT(*) AS n FROM matched_groups
+    `)
+      .get(...matched.params) as { n: number }
+  ).n;
+
+  const groupRows = db
+    .prepare(`
+      WITH ${matched.sql}
+      SELECT group_key, latest_created_at
+      FROM matched_groups
+      ORDER BY latest_created_at DESC, group_key DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...matched.params, limit, offset) as Array<{
+    group_key: string;
+    latest_created_at: number;
+  }>;
+
+  if (groupRows.length === 0) {
+    return { groups: [], totalGroups, page, limit };
+  }
+
+  const groupOrder = groupRows.map((row) => row.group_key);
+  const placeholders = groupOrder.map(() => "?").join(", ");
+  const members = db
+    .prepare(`
+      SELECT *
+      FROM events
+      WHERE status IN (${HISTORY_STATUS_SQL})
+        AND COALESCE(group_id, id) IN (${placeholders})
+      ORDER BY created_at DESC, id DESC
+    `)
+    .all(...groupOrder) as unknown as RawRow[];
+
+  const membersByGroup = new Map<string, PubEvent[]>();
+  for (const row of members) {
+    const event = deserializeRow(row);
+    if (!event) continue;
+    const key = event.groupId ?? event.id;
+    const list = membersByGroup.get(key);
+    if (list) list.push(event);
+    else membersByGroup.set(key, [event]);
+  }
+
+  return {
+    groups: groupOrder.map((id) => ({ id, events: membersByGroup.get(id) ?? [] })),
+    totalGroups,
+    page,
+    limit,
+  };
+}
+
+// --- serialization ---------------------------------------------------------
+
+interface RawRow {
+  id: string;
+  kind: string;
+  status: string;
+  profile: string;
+  profile_override: string | null;
+  created_at: number;
+  resolved_at: number | null;
+  payload: string | null;
+  result: string | null;
+  clock_drift_recovered: number | null;
+  group_id: string | null;
+  tarball_summary: string | null;
+}
+
+const warnedCorruptEventFields = new Set<string>();
+
+function serializeRow(evt: PubEvent): unknown[] {
+  return [
+    evt.id,
+    evt.kind,
+    evt.status,
+    evt.profile,
+    evt.profileOverride ?? null,
+    evt.createdAt,
+    evt.resolvedAt ?? null,
+    evt.payload ? JSON.stringify(evt.payload) : null,
+    evt.result ?? null,
+    evt.clockDriftRecovered === undefined ? null : evt.clockDriftRecovered ? 1 : 0,
+    evt.groupId ?? null,
+    evt.tarballSummary ? JSON.stringify(evt.tarballSummary) : null,
+  ];
+}
+
+function deserializeRow(r: RawRow): PubEvent | null {
+  const payload = parseJsonField(r.payload, EventPayloadSchema, r.id, "payload");
+  const tarballSummary = parseJsonField(
+    r.tarball_summary,
+    TarballSummarySchema,
+    r.id,
+    "tarballSummary",
+  );
+  const parsed = PubEventSchema.safeParse({
+    id: r.id,
+    kind: r.kind as EventKind,
+    status: r.status as EventStatus,
+    profile: r.profile,
+    profileOverride: r.profile_override ?? undefined,
+    createdAt: r.created_at,
+    resolvedAt: r.resolved_at ?? undefined,
+    payload,
+    result: r.result ?? undefined,
+    clockDriftRecovered:
+      r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
+    groupId: r.group_id ?? undefined,
+    tarballSummary,
+  });
+  if (parsed.success) return parsed.data;
+  warnCorruptEventField(
+    r.id,
+    "event",
+    parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("; "),
+  );
+  return null;
+}
+
+function parseJsonField<T>(
+  raw: string | null,
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } },
+  eventId: string,
+  field: string,
+): T | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = schema.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
+    warnCorruptEventField(eventId, field, "schema mismatch");
+  } catch {
+    warnCorruptEventField(eventId, field, "invalid JSON");
+  }
+  return undefined;
+}
+
+function warnCorruptEventField(eventId: string, field: string, detail: string): void {
+  const key = `${eventId}:${field}:${detail}`;
+  if (warnedCorruptEventFields.has(key)) return;
+  warnedCorruptEventFields.add(key);
+  console.warn(`[event-db] ignoring corrupt ${field} for event ${eventId}: ${detail}`);
+}
+
+/** Escape a user string for safe embedding inside a SQL LIKE pattern. */
+function escapeLike(s: string): string {
+  return s.replace(/[%_\\]/g, (m) => `\\${m}`);
+}
+
+function buildEventFilters(q: {
+  status?: "pending" | "history";
+  groupId?: string;
+  name?: string;
+  keywords?: string[];
+}): {
+  where: string[];
+  params: unknown[];
+} {
   const where: string[] = [];
   const params: unknown[] = [];
 
   if (q.status === "pending") {
     where.push(`status = 'pending'`);
   } else if (q.status === "history") {
-    where.push(`status != 'pending'`);
+    where.push(`status IN (${HISTORY_STATUS_SQL})`);
   }
   if (q.groupId) {
     where.push(`group_id = ?`);
@@ -206,76 +442,45 @@ export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
     }
   }
 
-  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-  const total = (
-    db.prepare(`SELECT COUNT(*) AS n FROM events ${whereClause}`).get(...params) as { n: number }
-  ).n;
-  const page = Math.max(0, q.page);
-  const limit = Math.max(1, q.limit);
-  const offset = page * limit;
-  const rows = db
-    .prepare(`SELECT * FROM events ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset) as unknown as RawRow[];
-  return { rows: rows.map(deserializeRow), total, page, limit };
+  return { where, params };
 }
 
-// --- serialization ---------------------------------------------------------
+function buildHistoryMatchedGroups(q: Pick<HistoryEventGroupQuery, "name" | "keywords">): {
+  sql: string;
+  params: unknown[];
+} {
+  const matchedFilters = buildEventFilters({
+    status: "history",
+    ...(q.name ? { name: q.name } : {}),
+    ...(q.keywords?.length ? { keywords: q.keywords } : {}),
+  });
+  const matchedWhere =
+    matchedFilters.where.length > 0 ? `WHERE ${matchedFilters.where.join(" AND ")}` : "";
 
-interface RawRow {
-  id: string;
-  kind: string;
-  status: string;
-  profile: string;
-  profile_override: string | null;
-  created_at: number;
-  resolved_at: number | null;
-  payload: string | null;
-  result: string | null;
-  clock_drift_recovered: number | null;
-  group_id: string | null;
-  tarball_summary: string | null;
-}
-
-function serializeRow(evt: PubEvent): unknown[] {
-  return [
-    evt.id,
-    evt.kind,
-    evt.status,
-    evt.profile,
-    evt.profileOverride ?? null,
-    evt.createdAt,
-    evt.resolvedAt ?? null,
-    evt.payload ? JSON.stringify(evt.payload) : null,
-    evt.result ?? null,
-    evt.clockDriftRecovered === undefined ? null : evt.clockDriftRecovered ? 1 : 0,
-    evt.groupId ?? null,
-    evt.tarballSummary ? JSON.stringify(evt.tarballSummary) : null,
-  ];
-}
-
-function deserializeRow(r: RawRow): PubEvent {
-  const payload = r.payload ? (JSON.parse(r.payload) as EventPayload) : undefined;
-  const tarballSummary = r.tarball_summary
-    ? (JSON.parse(r.tarball_summary) as TarballSummary)
-    : undefined;
   return {
-    id: r.id,
-    kind: r.kind as EventKind,
-    status: r.status as EventStatus,
-    profile: r.profile,
-    profileOverride: r.profile_override ?? undefined,
-    createdAt: r.created_at,
-    resolvedAt: r.resolved_at ?? undefined,
-    payload,
-    result: r.result ?? undefined,
-    clockDriftRecovered:
-      r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
-    groupId: r.group_id ?? undefined,
-    tarballSummary,
+    sql: `
+      matched_rows AS (
+        SELECT
+          COALESCE(group_id, id) AS group_key,
+          created_at
+        FROM events
+        ${matchedWhere}
+      ),
+      blocked_groups AS (
+        SELECT DISTINCT group_id AS group_key
+        FROM events
+        WHERE status = 'pending' AND group_id IS NOT NULL
+      ),
+      matched_groups AS (
+        SELECT
+          mr.group_key,
+          MAX(mr.created_at) AS latest_created_at
+        FROM matched_rows AS mr
+        LEFT JOIN blocked_groups AS bg ON bg.group_key = mr.group_key
+        WHERE bg.group_key IS NULL
+        GROUP BY mr.group_key
+      )
+    `,
+    params: matchedFilters.params,
   };
-}
-
-/** Escape a user string for safe embedding inside a SQL LIKE pattern. */
-function escapeLike(s: string): string {
-  return s.replace(/[%_\\]/g, (m) => `\\${m}`);
 }

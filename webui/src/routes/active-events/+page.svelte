@@ -16,7 +16,7 @@
 	import { pendingEvents, visibleEvents } from '$lib/store.js';
 	import { daemon, getRpcClient } from '$lib/store.js';
 	import type { PubEvent } from '$lib/types.js';
-	import { groupEvents, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
+	import { groupEvents, hasGroupEvents, materializeEventGroup, type EventGroup } from '$lib/group-event.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import GroupEventCard from '$lib/components/group-event-card.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -151,7 +151,7 @@
 				limit: PREVIEW_GROUP_COUNT,
 				q: '',
 			});
-			previewGroups = json.groups.map(materializeEventGroup);
+			previewGroups = json.groups.filter(hasGroupEvents).map(materializeEventGroup);
 			return true;
 		} catch {
 			previewGroups = [];

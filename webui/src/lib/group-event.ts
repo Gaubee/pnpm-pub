@@ -30,6 +30,13 @@ export interface EventGroupSlice {
   events: PubEvent[];
 }
 
+/** Runtime guard for daemon pages: grouped history slices must never be empty. */
+export function hasGroupEvents(
+  group: EventGroupSlice,
+): group is EventGroupSlice & { events: [PubEvent, ...PubEvent[]] } {
+  return group.events.length > 0;
+}
+
 /** The canonical grouping key: `groupId`, or the standalone event's own `id`. */
 export function eventGroupKey(event: Pick<PubEvent, "id" | "groupId">): string {
   return event.groupId ?? event.id;
