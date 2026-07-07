@@ -154,7 +154,6 @@
 			boxShadow: '0 0 0 rgba(0,0,0,0)',
 			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
 			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
-			pointerEvents: 'none' as const,
 		},
 		compact: {
 			opacity: 1,
@@ -168,7 +167,6 @@
 			boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
 			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
 			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
-			pointerEvents: 'auto' as const,
 		},
 		expanded: {
 			opacity: 1,
@@ -182,7 +180,6 @@
 			boxShadow: '0 18px 50px -8px rgba(0,0,0,0.28), 0 6px 16px -4px rgba(0,0,0,0.14)',
 			backdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
 			WebkitBackdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
-			pointerEvents: 'auto' as const,
 		},
 	} as const;
 	const islandAnimate = $derived(TARGETS[phase]);
@@ -218,14 +215,22 @@
 </script>
 
 <Portal>
-	<div class="island-anchor">
+	<!--
+		`island-anchor` is a plain DOM div, so we drive pointer-events here via
+		the `style:` directive (not on the motion.div component, where the
+		directive isn't allowed). It flips to NONE the instant we enter the
+		hidden phase — without waiting for the fade-out animation to finish — so
+		no clicks land on an element that's animating out. Setting it on the
+		anchor (the positioning wrapper) disables interaction for the whole island.
+	-->
+	<div class="island-anchor" style:pointer-events={phase === 'hidden' ? 'none' : 'auto'}>
 		<!--
 			Always mounted — the hidden↔compact transition is an ANIMATION
 			(opacity/scale to TARGETS.hidden), not a mount/unmount. When there is
 			no activity the content is invisible (opacity 0) and pointer-events
-			are disabled (see style below), so it's effectively gone but still
-			animates in/out. `{#if detail}` stays so the detail row mounts only
-			when there's something to show.
+			are disabled (see the anchor above), so it's effectively gone but
+			still animates in/out. `{#if detail}` stays so the detail row mounts
+			only when there's something to show.
 		-->
 		<motion.div
 			class="island {toneClass}"
