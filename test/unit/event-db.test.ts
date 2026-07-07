@@ -16,6 +16,7 @@ import {
   insertEvent,
   updateEvent,
   queryEvents,
+  queryHistoryGroups,
   recentEvents,
 } from "../../src/daemon/event-db.js";
 import type { PubEvent } from "../../src/shared/index.js";
@@ -32,6 +33,115 @@ function makeEvent(overrides: Partial<PubEvent> = {}): PubEvent {
     createdAt: overrides.createdAt ?? Date.now(),
     ...overrides,
   };
+}
+
+function insertCorruptPayloadRow(
+  db: DatabaseType,
+  {
+    id,
+    createdAt,
+    groupId,
+  }: {
+    id: string;
+    createdAt: number;
+    groupId?: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO events (
+      id,
+      kind,
+      status,
+      profile,
+      profile_override,
+      created_at,
+      resolved_at,
+      payload,
+      result,
+      clock_drift_recovered,
+      group_id,
+      tarball_summary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    "publish",
+    "success",
+    "alice",
+    null,
+    createdAt,
+    createdAt + 1,
+    JSON.stringify({
+      kind: "publish",
+      data: {
+        source: { kind: "directory", path: "/broken" },
+        args: [],
+        target: { name: "@scope/broken" },
+      },
+    }),
+    "published",
+    null,
+    groupId ?? null,
+    null,
+  );
+}
+
+function insertLegacyStatusRow(
+  db: DatabaseType,
+  {
+    id,
+    createdAt,
+    status,
+    groupId,
+  }: {
+    id: string;
+    createdAt: number;
+    status: string;
+    groupId?: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO events (
+      id,
+      kind,
+      status,
+      profile,
+      profile_override,
+      created_at,
+      resolved_at,
+      payload,
+      result,
+      clock_drift_recovered,
+      group_id,
+      tarball_summary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    "configure-trust",
+    status,
+    "alice",
+    null,
+    createdAt,
+    createdAt + 1,
+    JSON.stringify({
+      kind: "configure-trust",
+      data: {
+        action: "update",
+        target: { name: "@scope/legacy" },
+        config: {
+          type: "github",
+          permissions: ["createPackage"],
+          claims: {
+            repository: "scope/repo",
+            workflow_ref: { file: ".github/workflows/release.yml" },
+          },
+        },
+      },
+    }),
+    `legacy ${status}`,
+    null,
+    groupId ?? null,
+    null,
+  );
 }
 
 let db: DatabaseType;
@@ -201,5 +311,174 @@ describe("event-db persistence", () => {
     expect(failed.total).toBe(1);
     expect(failed.rows[0]!.status).toBe("failed");
     expect(failed.rows[0]!.result).toContain("Daemon restarted");
+  });
+
+  describe("Feature: grouped history pagination", () => {
+    it("Scenario: groupId siblings collapse into one counted history group", () => {
+      insertEvent(
+        db,
+        makeEvent({ id: "g1-a", groupId: "grp-1", createdAt: 1001, status: "success" }),
+      );
+      insertEvent(
+        db,
+        makeEvent({ id: "g1-b", groupId: "grp-1", createdAt: 1002, status: "failed" }),
+      );
+      insertEvent(db, makeEvent({ id: "solo", createdAt: 1003, status: "success" }));
+
+      const page = queryHistoryGroups(db, { page: 0, limit: 10 });
+
+      expect(page.totalGroups).toBe(2);
+      expect(page.groups).toHaveLength(2);
+      expect(page.groups[0]!.id).toBe("solo");
+      expect(page.groups[0]!.events.map((e) => e.id)).toEqual(["solo"]);
+      expect(page.groups[1]!.id).toBe("grp-1");
+      expect(page.groups[1]!.events.map((e) => e.id)).toEqual(["g1-b", "g1-a"]);
+    });
+
+    it("Scenario: a page of groups returns all members for a selected group", () => {
+      insertEvent(db, makeEvent({ id: "older", createdAt: 1000, status: "success" }));
+      insertEvent(
+        db,
+        makeEvent({ id: "batch-a", groupId: "grp-2", createdAt: 1001, status: "success" }),
+      );
+      insertEvent(
+        db,
+        makeEvent({ id: "batch-b", groupId: "grp-2", createdAt: 1002, status: "failed" }),
+      );
+      insertEvent(
+        db,
+        makeEvent({ id: "batch-c", groupId: "grp-2", createdAt: 1003, status: "success" }),
+      );
+
+      const page = queryHistoryGroups(db, { page: 0, limit: 1 });
+
+      expect(page.totalGroups).toBe(2);
+      expect(page.groups).toHaveLength(1);
+      expect(page.groups[0]!.id).toBe("grp-2");
+      expect(page.groups[0]!.events.map((e) => e.id)).toEqual(["batch-c", "batch-b", "batch-a"]);
+    });
+
+    it("Scenario: any pending member keeps the whole group out of history", () => {
+      insertEvent(
+        db,
+        makeEvent({ id: "pending-a", groupId: "grp-3", createdAt: 1001, status: "pending" }),
+      );
+      insertEvent(
+        db,
+        makeEvent({ id: "done-a", groupId: "grp-3", createdAt: 1000, status: "success" }),
+      );
+      insertEvent(db, makeEvent({ id: "visible", createdAt: 1002, status: "success" }));
+
+      const page = queryHistoryGroups(db, { page: 0, limit: 10 });
+
+      expect(page.totalGroups).toBe(1);
+      expect(page.groups).toHaveLength(1);
+      expect(page.groups[0]!.id).toBe("visible");
+    });
+
+    it("Scenario: filters select a group once and still return its full eligible history", () => {
+      insertEvent(
+        db,
+        makeEvent({
+          id: "match-a",
+          groupId: "grp-4",
+          createdAt: 1001,
+          status: "success",
+          payload: {
+            kind: "publish",
+            data: {
+              source: { kind: "directory", path: "/p" },
+              args: [],
+              target: { name: "@scope/match", version: "1.0.0", path: "/p" },
+            },
+          },
+        }),
+      );
+      insertEvent(
+        db,
+        makeEvent({
+          id: "match-b",
+          groupId: "grp-4",
+          createdAt: 1000,
+          status: "failed",
+          payload: {
+            kind: "publish",
+            data: {
+              source: { kind: "directory", path: "/p" },
+              args: [],
+              target: { name: "@scope/other", version: "1.0.1", path: "/p" },
+            },
+          },
+        }),
+      );
+
+      const page = queryHistoryGroups(db, { page: 0, limit: 10, name: "@scope/match" });
+
+      expect(page.totalGroups).toBe(1);
+      expect(page.groups).toHaveLength(1);
+      expect(page.groups[0]!.id).toBe("grp-4");
+      expect(page.groups[0]!.events.map((e) => e.id)).toEqual(["match-a", "match-b"]);
+    });
+
+    it("Scenario: an older corrupt payload does not poison the full grouped history page", () => {
+      for (let i = 0; i < 5; i++) {
+        insertEvent(db, makeEvent({ id: `good-${i}`, createdAt: 1006 - i, status: "success" }));
+      }
+      insertCorruptPayloadRow(db, { id: "corrupt", createdAt: 1001 });
+
+      const preview = queryHistoryGroups(db, { page: 0, limit: 5 });
+      const full = queryHistoryGroups(db, { page: 0, limit: 20 });
+
+      expect(preview.groups).toHaveLength(5);
+      expect(preview.groups.every((group) => group.id !== "corrupt")).toBe(true);
+      expect(full.totalGroups).toBe(6);
+      expect(full.groups).toHaveLength(6);
+      expect(full.groups[5]!.id).toBe("corrupt");
+      expect(full.groups[5]!.events[0]!.payload).toBeUndefined();
+    });
+
+    it("Scenario: flat history keeps a corrupt payload row but strips the unreadable payload", () => {
+      insertEvent(db, makeEvent({ id: "good", createdAt: 1002, status: "success" }));
+      insertCorruptPayloadRow(db, { id: "corrupt", createdAt: 1001 });
+
+      const page = queryEvents(db, { status: "history", page: 0, limit: 10 });
+
+      expect(page.total).toBe(2);
+      expect(page.rows.map((row) => row.id)).toEqual(["good", "corrupt"]);
+      expect(page.rows[1]!.payload).toBeUndefined();
+    });
+
+    it("Scenario: legacy projection statuses stay out of grouped history pages and totals", () => {
+      insertEvent(db, makeEvent({ id: "good", createdAt: 1003, status: "success" }));
+      insertLegacyStatusRow(db, {
+        id: "legacy-a",
+        createdAt: 1002,
+        status: "conflict",
+        groupId: "legacy-group",
+      });
+      insertLegacyStatusRow(db, {
+        id: "legacy-b",
+        createdAt: 1001,
+        status: "conflict",
+        groupId: "legacy-group",
+      });
+
+      const page = queryHistoryGroups(db, { page: 0, limit: 10 });
+
+      expect(page.totalGroups).toBe(1);
+      expect(page.groups).toHaveLength(1);
+      expect(page.groups[0]!.id).toBe("good");
+      expect(page.groups[0]!.events.map((event) => event.id)).toEqual(["good"]);
+    });
+
+    it("Scenario: flat history counts only current ontology statuses", () => {
+      insertEvent(db, makeEvent({ id: "good", createdAt: 1002, status: "success" }));
+      insertLegacyStatusRow(db, { id: "legacy", createdAt: 1001, status: "conflict" });
+
+      const page = queryEvents(db, { status: "history", page: 0, limit: 10 });
+
+      expect(page.total).toBe(1);
+      expect(page.rows.map((row) => row.id)).toEqual(["good"]);
+    });
   });
 });
