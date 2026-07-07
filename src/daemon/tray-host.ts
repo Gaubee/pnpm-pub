@@ -190,7 +190,18 @@ export class TrayHost {
       });
       this.unsubs.push(off);
     }
-    const onStoreEvent = () => this.reevaluateAutoClose();
+    // A new event arrival is the ONE orthogonal source allowed to resurrect a
+    // hidden window: it is the "open-on-new-event" rule, which must NOT live in
+    // reevaluateAutoClose() — that method also runs on blur (an unavoidable
+    // side effect of hide()), where this rule would immediately undo a user's
+    // "Hide window" click. Scoped here so only genuinely new events re-show.
+    const onStoreEvent = () => {
+      if (this.hasActiveEvents && this.visibility === "hidden") {
+        this.show();
+        return;
+      }
+      this.reevaluateAutoClose();
+    };
     this.store.on("event", onStoreEvent);
     this.unsubs.push(() => {
       this.store.off("event", onStoreEvent);
@@ -226,13 +237,12 @@ export class TrayHost {
   /**
    * Re-check whether the current native/window state should run auto-close.
    * This is called from every orthogonal source that can change the answer:
-   * focus, pin preference, and pending-event presence.
+   * focus, pin preference, and pending-event presence. It deliberately does
+   * NOT re-show a hidden window on active events — that rule belongs only to
+   * the store "event" subscriber (a new event arrival), since this method also
+   * runs on blur, which is an unavoidable side effect of hide().
    */
   private reevaluateAutoClose(): void {
-    if (this.hasActiveEvents && this.visibility === "hidden") {
-      this.show();
-      return;
-    }
     if (this.visibility !== "shown" || this.focused) {
       this.cancelAutoClose();
       return;

@@ -272,6 +272,39 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await host.destroy();
   });
 
+  it("hide() sticks while active events are present (blur must not re-show)", async () => {
+    // Regression: hide() produces a native blur, and reevaluateAutoClose() used
+    // to run the "active events ⇒ show" rule on that blur, immediately undoing
+    // a user's "Hide window" click and leaving the window stuck at the 0.1
+    // enter-seed opacity. That rule must be scoped to genuinely new events only.
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const tray = makeTray();
+    const host = new TrayHost(store, tray, window, { title: "pnpm-pub", openItemId: 1 });
+
+    store.createEvent({
+      kind: "refresh-token",
+      profile: "alice",
+      payload: { kind: "refresh-token", data: { username: "alice" } },
+    });
+    expect(window.visible).toBe(true);
+    expect(host.getPinState().hasActiveEvents).toBe(true);
+
+    // User clicks "Hide window". hide() triggers a native blur synchronously;
+    // the window must stay hidden (not be resurrected by the blur re-eval).
+    host.hide();
+    window.fireBlur();
+    expect(host.getPinState().visibility).toBe("hidden");
+    expect(window.visible).toBe(false);
+
+    // A subsequent tray click still re-shows in one press (toggle is correct).
+    tray.fireClick();
+    expect(host.getPinState().visibility).toBe("shown");
+    expect(window.visible).toBe(true);
+    await host.destroy();
+  });
+
   it("setPreferences persists the keep-open pin but does NOT touch keepOnTop", async () => {
     const store = new DaemonStore();
     await store.load();
