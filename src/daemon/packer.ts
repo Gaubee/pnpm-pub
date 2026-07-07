@@ -6,7 +6,7 @@
  * (Chapter 1.3.1 / 7.1.2). The produced tarball is returned as bytes so the
  * NPM API layer can attach it to the publish request.
  */
-import { spawn } from "node:child_process";
+import { spawn, execFile as execFileCb } from "node:child_process";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
 
 const gunzipAsync = promisify(gunzip);
+const execFile = promisify(execFileCb);
 
 export interface PackResult {
   /** Raw tarball bytes. */
@@ -306,4 +307,49 @@ export async function readPackageTarball(file: string): Promise<PackResult> {
 export async function summarizePackageTarball(tarball: Buffer): Promise<PackageTarballSummary> {
   const tar = Buffer.from(await gunzipAsync(tarball));
   return summarizeTar(tar);
+}
+
+/**
+ * Preview the file list `npm pack` would include for a package directory, WITHOUT
+ * producing a real tarball. Used to populate the WebUI's tarball preview during
+ * the pending phase (before the user confirms) so the preview is available
+ * immediately and is persisted with the event.
+ *
+ * Primary path: `npm pack --dry-run --json` — npm prints the exact file list
+ * (path/size/mode) + unpackedSize, applying the same `files`/`.npmignore`/
+ * `.gitignore` rules as a real publish. npm runs as its own subprocess, so the
+ * caller's event loop never blocks on the pack walk.
+ *
+ * Fallback: if npm is absent or the dry-run fails, degrade to a real pack
+ * (`packPackage` + `summarizePackageTarball`) so the preview keeps working in
+ * every environment.
+ */
+export async function previewPackageFiles(dir: string): Promise<PackageTarballSummary> {
+  try {
+    const { stdout } = await execFile("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: dir,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(stdout) as Array<{
+      files?: PackageTarballFile[];
+      unpackedSize?: number;
+      entryCount?: number;
+      bundled?: string[];
+    }>;
+    const entry = parsed[0];
+    if (!entry || !Array.isArray(entry.files)) {
+      throw new Error("npm pack --dry-run produced no file list");
+    }
+    return {
+      files: entry.files,
+      unpackedSize: entry.unpackedSize ?? entry.files.reduce((s, f) => s + f.size, 0),
+      entryCount: entry.entryCount ?? entry.files.length,
+      bundled: entry.bundled ?? [],
+    };
+  } catch {
+    // npm absent or dry-run failed — degrade to a real pack. Same code path
+    // the publish flow uses, so the preview stays consistent.
+    const { tarball } = await packPackage(dir, { ignoreScripts: true });
+    return await summarizePackageTarball(tarball);
+  }
 }

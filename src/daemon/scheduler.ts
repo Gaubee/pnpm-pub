@@ -1454,6 +1454,10 @@ export class PublishScheduler {
         },
       });
       this.pending.set(event.id, { event, client });
+      // Prefetch per-target tarball previews (best-effort, non-blocking) so the
+      // confirm card's target list can show each package's file tree during the
+      // pending phase and persist it for later review.
+      void this.prefetchRecursiveSummaries(event.id, targets);
       return;
     }
 
@@ -1478,6 +1482,58 @@ export class PublishScheduler {
     });
     this.pending.set(event.id, { event, client });
     // The WS bridge listens on the store and will notify every WebUI client.
+    // Prefetch the tarball preview (best-effort, non-blocking) so the confirm
+    // card shows the file tree during the pending phase and it persists for
+    // later review. Only directory sources can be dry-run packed.
+    if (source.kind === "directory") {
+      void this.prefetchPublishSummary(event.id, source.path);
+    }
+  }
+
+  /**
+   * Best-effort prefetch of a single-package tarball preview. Runs `npm pack
+   * --dry-run` (no real tarball) and writes the summary back to the pending
+   * event via `store.setTarballSummary`, which re-emits over WS so the WebUI
+   * shows the preview live. Failures are swallowed — the publish flow is
+   * unaffected, and a missing preview is not fatal.
+   */
+  private async prefetchPublishSummary(eventId: string, dir: string): Promise<void> {
+    try {
+      const { previewPackageFiles } = await import("./packer.js");
+      const summary = await previewPackageFiles(dir);
+      this.store.setTarballSummary(eventId, summary);
+    } catch {
+      // Preview is best-effort; ignore.
+    }
+  }
+
+  /**
+   * Best-effort prefetch of per-target tarball previews for a recursive
+   * publish. Computes a summary for each target directory and writes the whole
+   * batch back atomically via `store.setTarballSummaries`. Targets are packed
+   * sequentially to avoid spawning many concurrent `npm` processes; the whole
+   * task is non-blocking and any failure leaves the event preview-less but does
+   * not affect the publish.
+   */
+  private async prefetchRecursiveSummaries(
+    eventId: string,
+    targets: { name: string; version: string; path: string }[],
+  ): Promise<void> {
+    try {
+      const { previewPackageFiles } = await import("./packer.js");
+      const summaries: { name: string; version: string; summary: PackageTarballSummary }[] = [];
+      for (const t of targets) {
+        try {
+          const summary = await previewPackageFiles(t.path);
+          summaries.push({ name: t.name, version: t.version, summary });
+        } catch {
+          // A single target failing should not drop the rest.
+        }
+      }
+      if (summaries.length > 0) this.store.setTarballSummaries(eventId, summaries);
+    } catch {
+      // Best-effort; ignore.
+    }
   }
 
   /**
@@ -1549,6 +1605,15 @@ export class PublishScheduler {
     }
     const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
     this.pending.set(event.id, { event, client: DETACHED_CLIENT });
+    // Prefetch the tarball preview (best-effort, non-blocking) so the confirm
+    // card shows the file tree during the pending phase. Mirrors the CLI
+    // `intercept` path so GUI-originated publishes (workspace button, retry)
+    // behave identically.
+    if (parsed.kind === "publish" && parsed.data.source.kind === "directory") {
+      void this.prefetchPublishSummary(event.id, parsed.data.source.path);
+    } else if (parsed.kind === "recursive-publish" && parsed.data.targets.length > 0) {
+      void this.prefetchRecursiveSummaries(event.id, parsed.data.targets);
+    }
     return { ok: true, event };
   }
 

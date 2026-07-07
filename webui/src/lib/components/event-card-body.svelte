@@ -39,6 +39,7 @@
 	import IconGitBranch from '@lucide/svelte/icons/git-branch';
 	import IconAlertTriangle from '@lucide/svelte/icons/triangle-alert';
 	import IconBadgeInfo from '@lucide/svelte/icons/badge-info';
+	import IconLoader from '@lucide/svelte/icons/loader-circle';
 	import { _ } from 'svelte-i18n';
 
 	type Props = {
@@ -128,6 +129,17 @@
 	let logExpanded = $state(false);
 	let advancedOpen = $state(false);
 
+	/** Whether the daemon is (or soon will be) prefetching a tarball preview for
+	 *  this event — a pending directory-source publish whose summary hasn't
+	 *  arrived yet. Drives the loading placeholder so the accordion shows up
+	 *  immediately instead of popping in once the async pack completes. */
+	const tarballLoading = $derived(
+		!tarballSummary &&
+			isPending &&
+			event.payload?.kind === 'publish' &&
+			event.payload.data.source.kind === 'directory',
+	);
+
 	/** Human-readable byte size. */
 	function humanSize(bytes: number): string {
 		if (bytes < 1024) return `${bytes} B`;
@@ -195,7 +207,7 @@
 	{/if}
 
 	{#if recursiveCtx}
-		<RecursiveTargetList targets={recursiveCtx.targets} pending={isPending} />
+		<RecursiveTargetList targets={recursiveCtx.targets} summaries={event.tarballSummaries ?? []} pending={isPending} />
 	{/if}
 
 	{#if !isPending && event.result && status !== 'rejected'}
@@ -232,23 +244,35 @@
 		</div>
 	{/if}
 
-	{#if tarballSummary}
+	{#if tarballSummary || tarballLoading}
 		<div class="rounded-md border border-border">
-			<button
-				type="button"
-				class="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-				onclick={() => (showFiles = !showFiles)}
-			>
-				<IconChevronRight class="h-3 w-3 transition-transform {showFiles ? 'rotate-90' : ''}" />
-				<IconFolder class="h-3 w-3" />
-				<span>{$_('eventCard.tarballContents')}</span>
-				<span class="ml-auto font-mono text-muted-foreground/70">
-					{$_('eventCard.tarballSummary', { values: { n: tarballSummary.files.length, size: humanSize(tarballSummary.unpackedSize) } })}
-				</span>
-			</button>
-			{#if showFiles}
-				<div class="max-h-56 overflow-auto border-t border-border px-2 py-1.5">
-					<TarballTree files={tarballSummary.files} />
+			{#if tarballSummary}
+				<button
+					type="button"
+					class="flex w-full items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+					onclick={() => (showFiles = !showFiles)}
+				>
+					<IconChevronRight class="h-3 w-3 transition-transform {showFiles ? 'rotate-90' : ''}" />
+					<IconFolder class="h-3 w-3" />
+					<span>{$_('eventCard.tarballContents')}</span>
+					<span class="ml-auto font-mono text-muted-foreground/70">
+						{$_('eventCard.tarballSummary', { values: { n: tarballSummary.files.length, size: humanSize(tarballSummary.unpackedSize) } })}
+					</span>
+				</button>
+				{#if showFiles}
+					<div class="max-h-56 overflow-auto border-t border-border px-2 py-1.5">
+						<TarballTree files={tarballSummary.files} />
+					</div>
+				{/if}
+			{:else}
+				<!-- Loading placeholder: the daemon is prefetching the file list
+				     (npm pack --dry-run). Show the accordion immediately with a
+				     spinner so the section doesn't pop in later. -->
+				<div class="flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-muted-foreground">
+					<IconLoader class="h-3 w-3 animate-spin" />
+					<IconFolder class="h-3 w-3" />
+					<span>{$_('eventCard.tarballContents')}</span>
+					<span class="ml-auto text-muted-foreground/50">{$_('eventCard.tarballLoading')}</span>
 				</div>
 			{/if}
 		</div>

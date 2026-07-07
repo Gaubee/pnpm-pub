@@ -22,6 +22,7 @@ import type {
   PubEvent,
   TarballSummary,
 } from "../shared/index.js";
+import { z } from "zod";
 import { EventPayloadSchema, PubEventSchema, TarballSummarySchema } from "../shared/schemas.js";
 
 /** Query dimensions for the paginated history endpoint. */
@@ -100,6 +101,7 @@ const COLUMNS = [
   "clock_drift_recovered",
   "group_id",
   "tarball_summary",
+  "tarball_summaries",
 ] as const;
 
 /** Open (or create) the events database, set up schema, sweep orphan pendings. */
@@ -121,7 +123,8 @@ export function openEventDb(dbPath: string): DatabaseType {
       result TEXT,
       clock_drift_recovered INTEGER,
       group_id TEXT,
-      tarball_summary TEXT
+      tarball_summary TEXT,
+      tarball_summaries TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_group_id ON events(group_id);
@@ -138,6 +141,14 @@ export function openEventDb(dbPath: string): DatabaseType {
     );
     CREATE INDEX IF NOT EXISTS idx_key_value_expires_at ON key_value(expires_at);
   `);
+  // Idempotent column additions for schema evolution (no migration framework):
+  // adding a column that already exists throws, so swallow that one error.
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN tarball_summaries TEXT`);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/duplicate column/i.test(msg)) throw error;
+  }
   // On restart, any event still 'pending' has no live scheduler client handle —
   // mark it failed so the UI doesn't show a forever-pending ghost.
   const swept = db
@@ -320,9 +331,16 @@ interface RawRow {
   clock_drift_recovered: number | null;
   group_id: string | null;
   tarball_summary: string | null;
+  tarball_summaries: string | null;
 }
 
 const warnedCorruptEventFields = new Set<string>();
+
+/** Schema for the `tarballSummaries` JSON column (per-target summaries for a
+ *  recursive publish). Mirrors `PubEventSchema.tarballSummaries`. */
+const TarballSummariesColumnSchema = z.array(
+  z.object({ name: z.string(), version: z.string(), summary: TarballSummarySchema }),
+);
 
 function serializeRow(evt: PubEvent): unknown[] {
   return [
@@ -338,6 +356,7 @@ function serializeRow(evt: PubEvent): unknown[] {
     evt.clockDriftRecovered === undefined ? null : evt.clockDriftRecovered ? 1 : 0,
     evt.groupId ?? null,
     evt.tarballSummary ? JSON.stringify(evt.tarballSummary) : null,
+    evt.tarballSummaries ? JSON.stringify(evt.tarballSummaries) : null,
   ];
 }
 
@@ -348,6 +367,12 @@ function deserializeRow(r: RawRow): PubEvent | null {
     TarballSummarySchema,
     r.id,
     "tarballSummary",
+  );
+  const tarballSummaries = parseJsonField(
+    r.tarball_summaries,
+    TarballSummariesColumnSchema,
+    r.id,
+    "tarballSummaries",
   );
   const parsed = PubEventSchema.safeParse({
     id: r.id,
@@ -363,6 +388,7 @@ function deserializeRow(r: RawRow): PubEvent | null {
       r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
     groupId: r.group_id ?? undefined,
     tarballSummary,
+    tarballSummaries,
   });
   if (parsed.success) return parsed.data;
   warnCorruptEventField(

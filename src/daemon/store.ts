@@ -22,6 +22,7 @@ import {
   type Preferences,
   type TrustedPublisherCreateConfig,
   type ConfigureTrustContext,
+  type TarballSummary,
 } from "../shared/index.js";
 import {
   profilesPath,
@@ -484,6 +485,42 @@ export class DaemonStore extends EventEmitter {
     if (evt.payload?.kind !== "publish" && evt.payload?.kind !== "recursive-publish")
       return undefined;
     evt.payload.data.args = args;
+    if (this.eventDb) updateEvent(this.eventDb, evt);
+    this.emit("event", { type: "event" as const, event: evt });
+    return evt;
+  }
+
+  /**
+   * Attach a prefetched tarball summary to a PENDING single-package publish
+   * event. Used so the WebUI's tarball preview is visible during the confirm
+   * phase (and persists for later review). The summary is computed off the
+   * critical path (best-effort) in the scheduler and written back here once
+   * ready; the WS bridge re-emits the event so the UI updates live. No-op once
+   * the event has resolved (guard against a late prefetch racing a confirm).
+   */
+  setTarballSummary(id: string, summary: TarballSummary): PubEvent | undefined {
+    const evt = this.events.find((e) => e.id === id);
+    if (!evt || evt.status !== "pending") return undefined;
+    if (evt.payload?.kind !== "publish") return undefined;
+    evt.tarballSummary = summary;
+    if (this.eventDb) updateEvent(this.eventDb, evt);
+    this.emit("event", { type: "event" as const, event: evt });
+    return evt;
+  }
+
+  /**
+   * Attach per-target tarball summaries to a PENDING recursive-publish event.
+   * Mirrors `setTarballSummary` for the multi-package case: each target's
+   * preview is prefetched during the pending phase and written back here.
+   */
+  setTarballSummaries(
+    id: string,
+    summaries: { name: string; version: string; summary: TarballSummary }[],
+  ): PubEvent | undefined {
+    const evt = this.events.find((e) => e.id === id);
+    if (!evt || evt.status !== "pending") return undefined;
+    if (evt.payload?.kind !== "recursive-publish") return undefined;
+    evt.tarballSummaries = summaries;
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit("event", { type: "event" as const, event: evt });
     return evt;
