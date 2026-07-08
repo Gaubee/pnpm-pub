@@ -10,6 +10,10 @@
 	 * The mode toggle (compact ↔ full) persists to the backend preferences
 	 * store under `trustedPublishing.formMode`, so it's shared across every
 	 * instance — flipping it on one card flips it everywhere.
+	 *
+	 * `bind:valid` and `bind:dirty` forward the form's validity / dirty state up
+	 * the chain. `resetToSeed()` (an exported instance method) re-exposes the
+	 * inner form's reset so a parent (dialog footer) can restore edits.
 	 */
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
@@ -37,6 +41,9 @@
 		repositoryHint = '',
 		disabled = false,
 		valid = $bindable(false),
+		dirty = $bindable(false),
+		stagedConfig = $bindable<TrustedPublisherCreateConfig | null>(null),
+		deferSubmit = false,
 	}: {
 		eventId: string;
 		groupId?: string;
@@ -45,7 +52,21 @@
 		repositoryHint?: string;
 		disabled?: boolean;
 		valid?: boolean;
+		/** Whether the user has edited the form away from its seed. */
+		dirty?: boolean;
+		/** Local-staged config (deferSubmit mode). See TrustedPublishingDraftForm. */
+		stagedConfig?: TrustedPublisherCreateConfig | null;
+		deferSubmit?: boolean;
 	} = $props();
+
+	// Ref to the inner form so its exported `resetToSeed` can be re-exposed.
+	let formRef: { resetToSeed: () => void } | null = $state(null);
+
+	/** Restore the form + daemon draft to the initial seed. No-op until the
+	 *  inner form has mounted / captured a seed. */
+	export function resetToSeed(): void {
+		formRef?.resetToSeed();
+	}
 </script>
 
 <div class="space-y-2">
@@ -56,6 +77,7 @@
 		</ButtonGroup>
 	</div>
 	<TrustedPublishingDraftForm
+		bind:this={formRef}
 		{eventId}
 		{groupId}
 		{config}
@@ -64,5 +86,8 @@
 		mode={trustFormMode}
 		{disabled}
 		bind:valid
+		bind:dirty
+		bind:stagedConfig
+		{deferSubmit}
 	/>
 </div>

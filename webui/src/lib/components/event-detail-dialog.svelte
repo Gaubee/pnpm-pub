@@ -22,16 +22,21 @@
 	 *     config (the member carries none of its own); edits are centralized in
 	 *     the group's default form.
 	 *   - Custom (editable): EventCard shows a full editable form seeded from
-	 *     the group default, and edits write the member's OWN config
-	 *     (`updateConfigureTrustDraft`, `trustGroupId = undefined`) — they do
-	 *     NOT touch the group default.
-	 * The toggle calls `onToggleInherit`, which the parent (GroupEventCard)
-	 * forwards to `actions.setMemberInherit`. The single source of truth for the
-	 * inherit flag is the daemon (`groupInheritMembers`), broadcast back via the
-	 * lightweight `group-trust-draft` frame — so the badge + collapsed summary
+	 *     the group default; edits are staged LOCALLY (deferSubmit) and write the
+	 *     member's OWN config only on Save (`updateConfigureTrustDraft`), NOT the
+	 *     group default.
+	 * The toggle is LOCAL (it does NOT fire the daemon RPC on every switch) —
+	 * the chosen mode + any staged config commit together when the user clicks
+	 * Save (`setMemberInherit` + `updateConfigureTrustDraft`). `onToggleInherit`
+	 * is still passed by the parent (GroupEventCard) but only as a signal that
+	 * this member participates in the group's inherit/custom scheme (it gates
+	 * the toggle's visibility); it is no longer invoked from the toggle. The
+	 * single source of truth for the inherit flag is the daemon
+	 * (`groupInheritMembers`), broadcast back via the lightweight
+	 * `group-trust-draft` frame — so the badge + collapsed summary
 	 * stay correct across refresh.
 	 */
-	import type { PubEvent } from '$lib/types.js';
+	import type { PubEvent, TrustedPublisherCreateConfig } from '$lib/types.js';
 	import {
 		Dialog,
 		DialogContent,
@@ -41,6 +46,9 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
 	import EventCard from '$lib/components/event-card.svelte';
+	import { actions } from '$lib/store.js';
+	import IconX from '@lucide/svelte/icons/x';
+	import IconReset from '@lucide/svelte/icons/refresh-ccw';
 	import { _ } from 'svelte-i18n';
 	import { untrack } from 'svelte';
 
@@ -63,33 +71,90 @@
 	const isGroupTrustMember = $derived.by(() => {
 		const e = event;
 		if (!e || !onToggleInherit) return false;
-		if (e.status !== 'pending') return false;
+		if (e.status !== "pending") return false;
 		const p = e.payload;
-		return p?.kind === 'configure-trust' && p.data.action !== 'remove';
+		return p?.kind === "configure-trust" && p.data.action !== "remove";
 	});
 
-	// Local readOnly state mirrors inheritMode. Re-seed whenever the bound
-	// event changes (opening a different member's dialog).
+	/** Whether the footer should render the three-state "discard/close" row
+	 *  instead of the default Confirm/Reject. True for a pending configure-trust
+	 *  event that is part of a group — single-event confirm is intentionally
+	 *  routed to the group's batch Confirm All (the inherit-member confirm path
+	 *  has no standalone config and would error), so this dialog only edits;
+	 *  standalone trust events keep their own Confirm/Reject. */
+	const useDiscardFooter = $derived(
+		!!event &&
+			event.status === "pending" &&
+			event.payload?.kind === "configure-trust" &&
+			event.payload.data.action !== "remove" &&
+			!!event.groupId,
+	);
+
+	// Local readOnly state mirrors inheritMode AT OPEN TIME. Unlike the old
+	// edit-live design, mode toggles here are LOCAL: setMode does NOT fire the
+	// daemon RPC. The chosen mode (and any form edits) are committed only when
+	// the user clicks Save (see saveMember). This is what makes the dirty check
+	// work and prevents custom edits from polluting the inherit view.
 	let readOnly = $state(untrack(() => inheritMode));
+	// Snapshot of the mode at dialog-open time, captured ONCE per opened event.
+	// NOTE: we deliberately do NOT re-sync this from the reactive `inheritMode`
+	// prop on every change — doing so would clobber the snapshot the moment the
+	// daemon broadcast echoed a toggle, breaking the dirty check. Re-seed ONLY
+	// on event identity change.
+	let initialMode = $state<'inherit' | 'custom'>(untrack(() => (inheritMode ? 'inherit' : 'custom')));
 	$effect(() => {
-		// Re-sync from the prop when the event identity changes.
-		void event?.id;
+		void event?.id; // track identity only
+		// Re-seed readOnly + initialMode when a DIFFERENT member opens.
 		readOnly = inheritMode;
+		initialMode = inheritMode ? 'inherit' : 'custom';
 	});
 
+	/** Whether the user has toggled inherit/custom since opening (independent of
+	 *  form-content edits — both count as "dirty" for the footer). */
+	const modeChanged = $derived(readOnly !== (initialMode === 'inherit'));
+
+	/** Local-only mode toggle (no daemon round-trip). */
 	function setMode(next: 'inherit' | 'custom'): void {
 		readOnly = next === 'inherit';
-		if (event && onToggleInherit) onToggleInherit(event.id, next);
+	}
+
+	/** Commit the dialog's local mode + staged config to the daemon, then close.
+	 *  Fires the RPCs the edit-live path used to fire on every keystroke — but
+	 *  only now, with the user's final intent. */
+	function saveMember(stagedConfig: TrustedPublisherCreateConfig | null): void {
+		const e = event;
+		if (!e) return;
+		if (modeChanged) {
+			actions.setMemberInherit(e.id, readOnly);
+		}
+		// Only ship a custom config when the final mode is custom and there is a
+		// valid staged config. In inherit mode the daemon clears the member's
+		// own config via setMemberInherit(true) above.
+		if (!readOnly && stagedConfig) {
+			actions.updateConfigureTrustDraft(e.id, stagedConfig);
+		}
+		open = false;
 	}
 </script>
 
 <Dialog bind:open>
+	<!-- max-h (not fixed h) so the dialog shrinks to its content when the body
+	     is short, only scrolling once it would exceed the cap. -->
 	<DialogContent
-		class="grid h-[min(100dvh,40rem)] w-[min(100%,44rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
+		class="grid max-h-[min(100dvh,40rem)] w-[min(100%,44rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
 		aria-describedby={undefined}
 	>
 		{#if event}
-			<EventCard {event} variant="full" surface="dialog" {readOnly} trustGroupId={readOnly ? event.groupId : undefined} headerClass="pr-9">
+			<EventCard
+				{event}
+				variant="full"
+				surface="dialog"
+				{readOnly}
+				trustGroupId={readOnly ? event.groupId : undefined}
+				headerClass="pr-9"
+				useFooterLeftCluster={useDiscardFooter}
+				deferSubmit={useDiscardFooter}
+			>
 				{#snippet titleLabel({ child: titleNode })}
 					<!-- The visible event title IS the dialog's accessible name.
 					     bits-ui's DialogTitle forwards its a11y props via its
@@ -122,6 +187,49 @@
 						</ButtonGroup>
 					{/if}
 				{/snippet}
+				<!-- Named-snippet child: auto-binds to the `footerLeftCluster`
+				     prop (idiomatic Svelte 5 — no forward-reference). The LEFT
+				     cluster of the pending footer: for a group trust member this
+				     replaces the default Confirm/Reject (single confirm is gated
+				     to the group's batch action); the RIGHT open-actions cluster
+				     is untouched. Receives `{ draftDirty, resetDraft, stagedConfig }`
+				     (deferSubmit form state) from EventCardFooter; combines with the
+				     mode-toggle dirty signal so a mode switch ALSO counts as a change.
+				     Two button states:
+				       - clean → 「Close」
+				       - dirty → 「Discard changes」(rollback local mode+form, stay open)
+				                 + 「Save」(commit mode+config to daemon, close).
+				     Mode + form are LOCAL until Save, so switching back to inherit
+				     simply drops the local form edits — no daemon round-trip, no
+				     pollution of the group default. -->
+				{#snippet footerLeftCluster({ draftDirty, resetDraft, stagedConfig })}
+					{@const combinedDirty = draftDirty || modeChanged}
+					<ButtonGroup>
+						{#if combinedDirty}
+							<Button
+								variant="outline"
+								size="sm"
+								onclick={() => {
+									// Roll back the LOCAL mode + form to their open-time state.
+									// No daemon calls — edits were staged locally (deferSubmit).
+									if (modeChanged) setMode(initialMode);
+									if (initialMode === 'custom' && draftDirty) resetDraft();
+								}}
+							>
+							<IconReset class="h-3.5 w-3.5" />
+							{$_('eventCard.discard')}
+						</Button>
+							<Button variant="brand" size="sm" onclick={() => saveMember(stagedConfig)}>
+								{$_('common.saveChanges')}
+							</Button>
+						{:else}
+							<Button variant="outline" size="sm" onclick={() => (open = false)}>
+								<IconX class="h-3.5 w-3.5" />
+								{$_('common.close')}
+							</Button>
+						{/if}
+					</ButtonGroup>
+				{/snippet}
 				{#snippet children({ header, body, footer, hasFooter })}
 					<!-- Pinned header row: the EventCard header (title IS the
 					     DialogTitle via titleLabel). -->
@@ -132,8 +240,9 @@
 					<div class="min-h-0 overflow-y-auto p-4">
 						{@render body()}
 					</div>
-					<!-- Pinned footer row — only when the card emits one, so an
-					     action-less event shows no empty divider bar. -->
+					<!-- Pinned footer row: the EventCard footer (with its LEFT
+					     cluster overridden for trust members, RIGHT open-actions
+					     untouched). Only when the card emits a footer. -->
 					{#if hasFooter}
 						<div class="border-t px-4 py-3">
 							{@render footer()}

@@ -19,6 +19,7 @@
 		PubEvent,
 		RecursivePublishContext,
 		TarballSummary,
+		TrustedPublisherCreateConfig,
 		UnpublishContext,
 	} from '$lib/types.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -48,6 +49,13 @@
 		isPending: boolean;
 		/** Trust-form binding lives in the parent (Footer confirm gating). */
 		valid: boolean;
+		/** Whether the trust form has been edited away from its seed. Bound up
+		 *  to EventCard so a dialog footer can toggle "Close" ↔ "Discard". */
+		dirty: boolean;
+		/** Local-staged config (deferSubmit mode) + the defer flag. Bound up to
+		 *  EventCard so a dialog can stage edits and submit only on Save. */
+		stagedConfig: TrustedPublisherCreateConfig | null;
+		deferSubmit: boolean;
 		readOnly: boolean;
 		trustGroupId: string | undefined;
 		/** Context objects extracted from the event payload. */
@@ -87,6 +95,9 @@
 		status,
 		isPending,
 		valid = $bindable(false),
+		dirty = $bindable(false),
+		stagedConfig = $bindable<TrustedPublisherCreateConfig | null>(null),
+		deferSubmit = false,
 		readOnly,
 		trustGroupId,
 		overrideActive,
@@ -128,6 +139,15 @@
 	let showFiles = $state(false);
 	let logExpanded = $state(false);
 	let advancedOpen = $state(false);
+	// Ref to the TrustFormCard (editable branch only). Re-exposes its
+	// resetToSeed so EventCard can hand a "discard edits" action to a dialog.
+	let trustFormRef: { resetToSeed: () => void } | null = $state(null);
+
+	/** Restore the trust form (fields + daemon draft) to its seed. No-op when
+	 *  the form isn't mounted (read-only / non-trust / non-editable branches). */
+	export function resetToSeed(): void {
+		trustFormRef?.resetToSeed();
+	}
 
 	/** Whether the daemon is (or soon will be) prefetching a tarball preview for
 	 *  this event — a pending directory-source publish whose summary hasn't
@@ -177,7 +197,7 @@
 			     none). The parent owns the read-only/editable switch. -->
 			<div class="flex items-center gap-1.5 text-xs text-muted-foreground">
 				<IconTrustedPublishing class="h-3.5 w-3.5 shrink-0 text-brand" />
-				{$_('trustedPublishing.currentConfig')}
+				{$_('trustedPublishing.inheritValues')}
 			</div>
 			<TrustedPublishingReadonly config={effectiveTrustConfig} mode="detailed" />
 		{:else if isPending}
@@ -193,6 +213,7 @@
 			     routes edits to `updateConfigureTrustDraft` (the member's own
 			     config), NOT the group default. -->
 			<TrustFormCard
+				bind:this={trustFormRef}
 				eventId={event.id}
 				groupId={trustGroupId ?? event.groupId}
 				config={configureTrustCtx.config
@@ -202,6 +223,9 @@
 				repositoryHint={configureTrustCtx.target.repository ?? ''}
 				disabled={confirming}
 				bind:valid
+				bind:dirty
+				bind:stagedConfig
+				{deferSubmit}
 			/>
 		{/if}
 	{/if}

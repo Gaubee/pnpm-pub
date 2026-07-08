@@ -20,7 +20,14 @@
  * are distinct shapes and are kept separate below.
  */
 import { defineConfig, defineProject, type Plugin as VitePlugin } from "vite-plus";
-import { type Plugin as PackPlugin } from "vite-plus/pack";
+// PackPlugin: the pack-time plugins below (closeBundle / apply) are Vite-plugin
+// shaped. Imported from "vite-plus" (re-exported Vite Plugin, a supertype of
+// rolldown's Plugin that also declares `apply`/`enforce`, which these plugins
+// use) rather than "vite-plus/pack" — the latter resolves only through a
+// 4-level `export *` chain that oxlint's type-check can't follow (false
+// TS2305), and `vite-plus/prefer-vite-plus-imports` forbids bare `vite`.
+// `tsc --noEmit` resolves all three paths identically.
+import type { Plugin as PackPlugin } from "vite-plus";
 import path from "node:path";
 import {
   existsSync,
@@ -37,7 +44,7 @@ const TARGET_PLATFORMS = ["win32-x64", "win32-arm64", "darwin-x64", "darwin-arm6
 function copyKeytarPrebuilds(): PackPlugin {
   return {
     name: "pnpm-pub/keytar-prebuilds",
-    apply: () => "build",
+    apply: "build",
     closeBundle() {
       const outDir = path.resolve(process.cwd(), "dist");
       const destRoot = path.join(outDir, "prebuilds", "keytar");
@@ -103,7 +110,7 @@ function copyKeytarPrebuilds(): PackPlugin {
 function copyAssets(): PackPlugin {
   return {
     name: "pnpm-pub/assets",
-    apply: () => "build",
+    apply: "build",
     async closeBundle() {
       const destDir = path.resolve(process.cwd(), "dist", "assets");
       mkdirSync(destDir, { recursive: true });
@@ -144,7 +151,7 @@ function copyAssets(): PackPlugin {
 function buildWebui(): PackPlugin {
   return {
     name: "pnpm-pub/build-webui",
-    apply: () => "build",
+    apply: "build",
     async closeBundle() {
       const { execa } = await import("execa");
       console.log("[build] building WebUI (webui/ via vp build)…");
@@ -195,6 +202,10 @@ function tsSourceExtensionPlugin(): VitePlugin {
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
+    // Locale dictionary edits must keep full key parity + translation coverage
+    // with en — surface drift at commit time, matching the CI strict gate so a
+    // bad locale edit fails locally before it reaches CI.
+    "webui/src/locales/**": "pnpm --filter ./webui i18n:check:strict",
   },
   fmt: {},
   lint: {
@@ -217,7 +228,10 @@ export default defineConfig({
             $shared: path.resolve(__dirname, "src/shared/"),
             // svelte-i18n lives in webui/node_modules; resolve it for daemon-side
             // tests that import webui modules which transitively use svelte-i18n.
-            "svelte-i18n": path.resolve(__dirname, "webui/node_modules/svelte-i18n/dist/runtime.js"),
+            "svelte-i18n": path.resolve(
+              __dirname,
+              "webui/node_modules/svelte-i18n/dist/runtime.js",
+            ),
           },
         },
         test: {

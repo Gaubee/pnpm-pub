@@ -152,8 +152,12 @@
 			paddingLeft: 8,
 			paddingRight: 8,
 			boxShadow: '0 0 0 rgba(0,0,0,0)',
-			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
-			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			// backdrop blur RADIUS (px) is animated via the `--island-blur` custom
+			// property (registered with @property as a <number> below). The full
+			// backdrop-filter string — incl. theme-aware contrast/brightness — is
+			// assembled in CSS, so Motion only interpolates the numeric radius and
+			// the colour-grade swaps automatically with light/dark mode.
+			'--island-blur': 8,
 		},
 		compact: {
 			opacity: 1,
@@ -165,8 +169,7 @@
 			paddingLeft: 8,
 			paddingRight: 8,
 			boxShadow: '0 4px 14px rgba(0,0,0,0.18)',
-			backdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
-			WebkitBackdropFilter: 'blur(8px) contrast(0.8) brightness(1.2)',
+			'--island-blur': 8,
 		},
 		expanded: {
 			opacity: 1,
@@ -178,8 +181,7 @@
 			paddingLeft: 18,
 			paddingRight: 18,
 			boxShadow: '0 18px 50px -8px rgba(0,0,0,0.28), 0 6px 16px -4px rgba(0,0,0,0.14)',
-			backdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
-			WebkitBackdropFilter: 'blur(24px) contrast(0.8) brightness(1.2)',
+			'--island-blur': 24,
 		},
 	} as const;
 	const islandAnimate = $derived(TARGETS[phase]);
@@ -316,13 +318,41 @@
 	}
 
 	/*
+	 * `--island-blur` is the ONLY animated part of the backdrop effect: the blur
+	 * radius (px). Registering it with @property as a <number> lets Motion
+	 * interpolate it as a real number (8 → 24), and the full `backdrop-filter`
+	 * string is assembled below from it — keeping the theme-aware contrast /
+	 * brightness in CSS, where they can swap with light/dark mode.
+	 */
+	@property --island-blur {
+		syntax: '<number>';
+		inherits: false;
+		initial-value: 8;
+	}
+
+	/*
 	 * The island container. CSS holds ONLY static visual styling — colour,
 	 * font, layout, static element shapes. The animated properties (opacity,
-	 * scale, max-width, border-radius, padding, box-shadow, backdrop-filter)
-	 * are owned entirely by Motion via `animate`; CSS sets no value for them
-	 * and no transition, so there is never a competing source.
+	 * scale, max-width, border-radius, padding, box-shadow) are owned entirely
+	 * by Motion via `animate`; CSS sets no value for them and no transition, so
+	 * there is never a competing source. backdrop-filter is the exception: its
+	 * blur RADIUS is driven by the `--island-blur` custom property (animated by
+	 * Motion), while its colour-grade (contrast/brightness) is pure CSS and
+	 * theme-aware.
+	 *
+	 * `.island` / `.island-detail` are written on `<motion.div>` (an external
+	 * component from @humanspeak/svelte-motion that forwards `class` to a real
+	 * `<div>`). Svelte's CSS scope analysis can't see across that component
+	 * boundary, so these selectors are declared `:global` and scoped to the
+	 * `.island-anchor` wrapper (a native div in THIS component) to avoid
+	 * leaking globally. Functionally identical to a scoped `.island` rule.
+	 *
+	 * Theme grade: dark mode lifts contrast/brightness (0.8/1.2) so the glass
+	 * reads vibrantly over dark wallpaper; light mode inverts it (2/0.8) so the
+	 * translucent fill stays legible over bright content. `.dark` lives on the
+	 * root <html> (mode-watcher), so it's matched via :global as an ancestor.
 	 */
-	.island {
+	.island-anchor :global(.island) {
 		display: grid;
 		grid-template-columns: 1fr auto;
 		grid-template-rows: auto auto;
@@ -333,6 +363,14 @@
 		color: var(--popover-foreground);
 		overflow: hidden;
 		transform-origin: top center;
+		/* Light mode (default): punch through bright content behind. */
+		--island-grade: contrast(2) brightness(0.8);
+		backdrop-filter: blur(calc(var(--island-blur) * 1px)) var(--island-grade);
+		-webkit-backdrop-filter: blur(calc(var(--island-blur) * 1px)) var(--island-grade);
+	}
+	/* Dark mode: lift vibrancy over dark wallpaper. */
+	.island-anchor :global(.dark) :global(.island) {
+		--island-grade: contrast(0.8) brightness(1.2);
 	}
 
 	.island-row {
@@ -368,7 +406,7 @@
 		white-space: nowrap;
 		font-weight: 500;
 	}
-	.island :global(svg) {
+	.island-anchor :global(.island) :global(svg) {
 		display: inline-block;
 	}
 
@@ -398,8 +436,10 @@
 	/*
 	 * Detail row. Height + opacity are animated by Motion (the `animate`
 	 * object is the single source). overflow:hidden clips while collapsing.
+	 * `:global` + `.island-anchor` scope for the same reason as `.island`
+	 * above (the class sits on a motion.div).
 	 */
-	.island-detail {
+	.island-anchor :global(.island-detail) {
 		grid-column: 1 / -1;
 		min-width: 0;
 		overflow: hidden;
