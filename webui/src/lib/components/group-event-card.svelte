@@ -81,6 +81,7 @@
         expired: "warning",
         "action-required": "warning",
         rejected: "secondary",
+        canceled: "secondary",
         // trusted-publishing pre-flight: skipped = neutral success tint.
         // (conflict is NOT a status — only a transient webui display label.)
         skipped: "success",
@@ -112,6 +113,7 @@
         expired: "bg-warning",
         "action-required": "bg-warning",
         rejected: "bg-muted-foreground/40",
+        canceled: "bg-muted-foreground/40",
         // skipped: gray-green (success-tinted but muted to read as "no-op").
         skipped: "bg-success/50",
     };
@@ -197,10 +199,15 @@
             ? "skip"
             : "conflict";
     }
-    /** Members that can be retried (failed or rejected). Excludes success —
+    /** Members that can be retried (failed/rejected/canceled). Excludes success —
      *  that's a separate "reset" affordance — and pending (still in flight). */
     const retryableMembers = $derived(
-        members.filter((e) => e.status === "failed" || e.status === "rejected"),
+        members.filter(
+            (e) =>
+                e.status === "failed" ||
+                e.status === "rejected" ||
+                e.status === "canceled",
+        ),
     );
     /** Members that succeeded and can be re-run ("reset" back to pending). */
     const succeededMembers = $derived(
@@ -428,7 +435,12 @@
         for (const m of memberResults) {
             if (m.status === "success") success++;
             else if (m.status === "skipped") skipped++;
-            else if (m.status === "failed" || m.status === "expired" || m.status === "rejected") {
+            else if (
+                m.status === "failed" ||
+                m.status === "expired" ||
+                m.status === "rejected" ||
+                m.status === "canceled"
+            ) {
                 failed++;
             } else other++;
         }
@@ -447,7 +459,8 @@
             (m) =>
                 m.status === "failed" ||
                 m.status === "expired" ||
-                m.status === "rejected",
+                m.status === "rejected" ||
+                m.status === "canceled",
         );
         const pick = err ?? memberResults[0];
         if (!pick) return "";
@@ -710,7 +723,8 @@
                             {@const isError =
                                 r.status === "failed" ||
                                 r.status === "expired" ||
-                                r.status === "rejected"}
+                                r.status === "rejected" ||
+                                r.status === "canceled"}
                             {@const isSkipped = r.status === "skipped"}
                             {@const statusTone = isError
                                 ? "bg-destructive/10 text-destructive"

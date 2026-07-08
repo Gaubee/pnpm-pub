@@ -55,8 +55,8 @@ type Props = {
 	/** Primary display name + version source. */
 	titleName: string;
 	version: string;
-	/** Whether the rejected-status badge should host a result tooltip. */
-	rejectedWithResult: boolean;
+	/** Whether a muted terminal status badge should host a result tooltip. */
+	mutedTerminalWithResult: boolean;
 	/** Right-corner identity chip. Only the cross-profile override chip
 	 *  remains here (identity context); the open actions moved to the footer. */
 	hasCornerActions: boolean;
@@ -83,7 +83,7 @@ let {
 	timeLabel,
 	titleName,
 	version,
-	rejectedWithResult,
+	mutedTerminalWithResult,
 	hasCornerActions,
 	overrideActive,
 	effectiveProfile,
@@ -119,7 +119,7 @@ let {
 				{#if version}
 					<Badge variant="outline" class="h-5 font-mono text-[10px]">@{version}</Badge>
 				{/if}
-				{#if rejectedWithResult}
+				{#if mutedTerminalWithResult}
 					<Tooltip>
 						<TooltipTrigger>
 							{#snippet child({ props })}

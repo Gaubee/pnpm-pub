@@ -201,6 +201,7 @@ export const en = {
       expired: "expired",
       actionRequired: "action required",
       rejected: "rejected",
+      canceled: "canceled",
       skipped: "skipped",
     },
   },

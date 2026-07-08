@@ -202,6 +202,7 @@ export const ru: Messages = {
       expired: "истёк",
       actionRequired: "требуется действие",
       rejected: "отклонено",
+      canceled: "отменено",
       skipped: "пропущен",
     },
   },

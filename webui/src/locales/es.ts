@@ -200,6 +200,7 @@ export const es: Messages = {
       expired: "expirado",
       actionRequired: "acción requerida",
       rejected: "rechazado",
+      canceled: "cancelado",
       skipped: "omitido",
     },
   },

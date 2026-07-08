@@ -25,7 +25,12 @@ import { promisify } from "node:util";
 import yargs, { type Argv } from "yargs";
 import { hideBin } from "yargs/helpers";
 import { encodeFrame, FrameReader, isIpcFrame } from "../shared/frame.js";
-import type { IpcPublishRequest, IpcHandshake, IpcManagementRequest } from "../shared/index.js";
+import type {
+  IpcPublishRequest,
+  IpcHandshake,
+  IpcManagementRequest,
+  IpcOidcRequest,
+} from "../shared/index.js";
 import { readPackageVersion } from "../shared/package-version.js";
 import { daemonLogPath, ensureAppDirs, socketPath } from "../shared/paths.js";
 
@@ -87,6 +92,15 @@ const CLI_COMMANDS = [
     daemonCommand: true,
     acceptsProfile: false,
     run: (_context) => runStop(),
+  },
+  {
+    name: "oidc",
+    kind: "action",
+    usage: "oidc [package-name ...] [--recursive] [--provider github|gitlab|circleci] [--file <workflow.yml>]",
+    description: "Create Trusted Publishing Event(s)",
+    daemonCommand: false,
+    acceptsProfile: true,
+    run: (_context) => runHelp(),
   },
   {
     name: "daemon",
@@ -211,6 +225,236 @@ async function runPublish(cwd: string, args: string[], profileOverride?: string)
   }
   process.stderr.write("Could not bring the daemon up to date after retry.\n");
   return 1;
+}
+
+async function runOidc(args: string[], profileOverride?: string): Promise<number> {
+  const parsed = parseOidcArgs(args);
+  if (!parsed.ok) {
+    process.stderr.write(`${parsed.error}\n`);
+    return 1;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { sock, outdated } = await handshakeAndWait();
+    if (outdated) {
+      try {
+        sock?.end();
+      } catch {
+        /* ignore */
+      }
+      spawnDaemon();
+      await sleep(500);
+      continue;
+    }
+    if (!sock) {
+      process.stderr.write("Failed to start the pnpm-pub daemon.\n");
+      return 1;
+    }
+    const req: IpcOidcRequest = {
+      command: "oidc",
+      ...parsed.request,
+      ...(profileOverride ? { profileOverride } : {}),
+    };
+    sock.write(encodeFrame(req));
+    return relay(sock);
+  }
+  process.stderr.write("Could not bring the daemon up to date after retry.\n");
+  return 1;
+}
+
+type ParsedOidcArgs =
+  | {
+      ok: true;
+      request: Omit<IpcOidcRequest, "command" | "profileOverride">;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+function parseOidcArgs(args: string[]): ParsedOidcArgs {
+  const request: Omit<IpcOidcRequest, "command" | "profileOverride"> = {
+    cwd: process.cwd(),
+    packageNames: [],
+    recursive: false,
+  };
+  const readValue = (
+    index: number,
+    option: string,
+  ): { value?: string; nextIndex: number; error?: string } => {
+    const value = args[index + 1];
+    if (!value || value.startsWith("-")) {
+      return { nextIndex: index, error: `${option} requires a value.` };
+    }
+    return { value, nextIndex: index + 1 };
+  };
+  const appendContextIds = (value: string): void => {
+    const ids = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    request.circleContextIds = [...(request.circleContextIds ?? []), ...ids];
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--") {
+      request.packageNames.push(...args.slice(index + 1).filter((value) => value.length > 0));
+      break;
+    }
+    if (arg === "-r" || arg === "--recursive") {
+      request.recursive = true;
+      continue;
+    }
+    if (arg === "--no-recursive") {
+      request.recursive = false;
+      continue;
+    }
+    if (arg === "--remove") {
+      request.remove = true;
+      continue;
+    }
+    if (arg === "--no-remove") {
+      request.remove = false;
+      continue;
+    }
+    if (arg === "--allow-publish") {
+      request.allowPublish = true;
+      continue;
+    }
+    if (arg === "--no-allow-publish") {
+      request.allowPublish = false;
+      continue;
+    }
+    if (arg === "--allow-stage-publish") {
+      request.allowStagePublish = true;
+      continue;
+    }
+    if (arg === "--no-allow-stage-publish") {
+      request.allowStagePublish = false;
+      continue;
+    }
+    if (arg === "--workflow" || arg.startsWith("--workflow=")) {
+      return { ok: false, error: "Use --file <workflow.yml>; --workflow is not supported." };
+    }
+
+    const inline = arg.match(/^--([^=]+)=(.*)$/);
+    const shortDir = arg.match(/^-C=(.*)$/);
+    if (shortDir) {
+      request.cwd = path.resolve(process.cwd(), shortDir[1]!);
+      continue;
+    }
+    if (inline) {
+      const key = inline[1]!;
+      const value = inline[2]!;
+      const applied = applyOidcOptionValue(request, key, value, appendContextIds);
+      if (!applied.ok) return { ok: false, error: applied.error };
+      continue;
+    }
+
+    const optionKey = oidcOptionKey(arg);
+    if (optionKey) {
+      const read = readValue(index, arg);
+      if (read.error) return { ok: false, error: read.error };
+      const applied = applyOidcOptionValue(request, optionKey, read.value!, appendContextIds);
+      if (!applied.ok) return { ok: false, error: applied.error };
+      index = read.nextIndex;
+      continue;
+    }
+
+    if (arg.startsWith("-")) {
+      return { ok: false, error: `unknown oidc option: ${arg}` };
+    }
+    request.packageNames.push(arg);
+  }
+  request.packageNames = [
+    ...new Set(request.packageNames.map((name) => name.trim()).filter(Boolean)),
+  ];
+  return { ok: true, request };
+}
+
+function oidcOptionKey(arg: string): string | null {
+  switch (arg) {
+    case "-C":
+    case "--dir":
+      return "dir";
+    case "--provider":
+      return "provider";
+    case "--repo":
+      return "repo";
+    case "--file":
+      return "file";
+    case "--env":
+      return "env";
+    case "--project-path":
+      return "project-path";
+    case "--ci-file":
+      return "ci-file";
+    case "--circle-org-id":
+      return "circle-org-id";
+    case "--circle-project-id":
+      return "circle-project-id";
+    case "--circle-pipeline-definition-id":
+      return "circle-pipeline-definition-id";
+    case "--circle-context-id":
+    case "--circle-context-ids":
+      return "circle-context-id";
+    case "--vcs-origin":
+      return "vcs-origin";
+    default:
+      return null;
+  }
+}
+
+function applyOidcOptionValue(
+  request: Omit<IpcOidcRequest, "command" | "profileOverride">,
+  key: string,
+  value: string,
+  appendContextIds: (value: string) => void,
+): { ok: true } | { ok: false; error: string } {
+  if (value.length === 0) return { ok: false, error: `--${key} requires a value.` };
+  switch (key) {
+    case "dir":
+      request.cwd = path.resolve(process.cwd(), value);
+      return { ok: true };
+    case "provider":
+      if (value !== "github" && value !== "gitlab" && value !== "circleci") {
+        return { ok: false, error: "--provider must be github, gitlab, or circleci." };
+      }
+      request.provider = value;
+      return { ok: true };
+    case "repo":
+      request.repo = value;
+      return { ok: true };
+    case "file":
+      request.file = value;
+      return { ok: true };
+    case "env":
+      request.env = value;
+      return { ok: true };
+    case "project-path":
+      request.projectPath = value;
+      return { ok: true };
+    case "ci-file":
+      request.ciFile = value;
+      return { ok: true };
+    case "circle-org-id":
+      request.circleOrgId = value;
+      return { ok: true };
+    case "circle-project-id":
+      request.circleProjectId = value;
+      return { ok: true };
+    case "circle-pipeline-definition-id":
+      request.circlePipelineDefinitionId = value;
+      return { ok: true };
+    case "circle-context-id":
+      appendContextIds(value);
+      return { ok: true };
+    case "vcs-origin":
+      request.vcsOrigin = value;
+      return { ok: true };
+    default:
+      return { ok: false, error: `unknown oidc option: --${key}` };
+  }
 }
 
 function isPublishTerminalIntent(args: string[]): boolean {
@@ -638,6 +882,14 @@ export async function main(argv: string[]): Promise<void> {
   const rawCommand = findCliActionCommand(rawArgs[0]);
   if (rawCommand?.name === "help") {
     process.exit(await runCliAction(rawCommand, { profile: undefined }));
+  }
+  const oidcProfile = extractProfile(rawArgs);
+  if (oidcProfile.error) {
+    process.stderr.write(`${oidcProfile.error}\n`);
+    process.exit(1);
+  }
+  if (oidcProfile.rest[0] === "oidc") {
+    process.exit(await runOidc(oidcProfile.rest.slice(1), oidcProfile.profile));
   }
 
   const parsed = await registerCliCommands(yargs(rawArgs).scriptName("pnpm-pub"))

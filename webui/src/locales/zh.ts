@@ -197,6 +197,7 @@ export const zh: Messages = {
       expired: "已过期",
       actionRequired: "需要操作",
       rejected: "已拒绝",
+      canceled: "已取消",
       skipped: "已跳过",
     },
   },

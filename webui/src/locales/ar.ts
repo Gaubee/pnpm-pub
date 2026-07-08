@@ -199,6 +199,7 @@ export const ar: Messages = {
       expired: "منتهي الصلاحية",
       actionRequired: "يتطلب إجراءً",
       rejected: "مرفوض",
+      canceled: "ملغى",
       skipped: "تم تخطيه",
     },
   },

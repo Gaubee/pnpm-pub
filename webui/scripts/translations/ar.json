@@ -76,6 +76,7 @@
   "eventCard.branchMismatch": "عدم تطابق الفرع — بدّل إلى «{branch}» أو حدّث الحقل.",
   "eventCard.branchNoCurrent": "ليس مستودع git — لا أثر لفرع النشر.",
   "eventCard.status.skipped": "تم تخطيه",
+  "eventCard.status.canceled": "ملغى",
   "island.publishing": "جارٍ نشر {target}",
   "island.unpublishing": "جارٍ إلغاء نشر {target}",
   "island.addingTrust": "إضافة Trusted Publishing",

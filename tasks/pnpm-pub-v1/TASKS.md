@@ -5911,3 +5911,30 @@ Status: complete
 ### Residuals
 
 - Effective env/npmrc git-checks config remains a daemon-side execution law, not an Advanced-panel switch projection. If needed later, expose it as a separate read-only daemon projection.
+
+## Milestone 242 — Pending Event canceled-state round
+
+Status: complete
+
+### Delivered
+
+- Added `canceled` to the shared Event status ontology and WebUI status projection instead of treating non-WebUI interruption as `rejected` or `failed`.
+- Changed daemon restart recovery so orphaned `pending` rows become `canceled` history with an explicit daemon-restart result.
+- Bound CLI publish socket lifetime to the pending Event it created, canceling the task when the CLI owner disappears before WebUI confirmation.
+- Split scheduler pending entries into `awaiting-decision` and `executing`, so `cancel()` / `reject()` cannot rewrite an external publish after confirmation starts.
+- Mounted CLI Trusted Publishing intent (`pnpm-pub oidc`) as pending `configure-trust` Event(s), including single-package and recursive workspace creation, so the non-publish subcommand also passes through WebUI confirmation.
+- Updated single-card and group-card WebUI projections plus i18n so `canceled` is visible, retryable, and visually muted like `rejected` while keeping the ontology distinct.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/242-pending-event-canceled-state.md`.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/event-db.test.ts test/unit/ipc-server.test.ts test/unit/proactive-events.test.ts test/unit/webui-protocol-types.test.ts test/unit/cli-handshake.test.ts test/unit/frame.test.ts --reporter=verbose`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm --filter ./webui run i18n:check:strict`
+- `pnpm exec tsx tasks/pnpm-pub-v1/scripts/issues.ts tasks/pnpm-pub-v1 validate --include-closed`
+- `git diff --check`
+
+### Residuals
+
+- none

@@ -46,7 +46,12 @@ function parseJsonLine(line: string): unknown {
 }
 
 export function isIpcRequest(frame: unknown): frame is IpcRequest {
-  return isIpcHandshake(frame) || isIpcPublishRequest(frame) || isIpcManagementRequest(frame);
+  return (
+    isIpcHandshake(frame) ||
+    isIpcPublishRequest(frame) ||
+    isIpcOidcRequest(frame) ||
+    isIpcManagementRequest(frame)
+  );
 }
 
 export function isIpcFrame(frame: unknown): frame is IpcFrame {
@@ -65,6 +70,34 @@ function isIpcPublishRequest(frame: unknown): frame is Extract<IpcRequest, { com
     Array.isArray(frame.args) &&
     frame.args.every((arg) => typeof arg === "string") &&
     isOptionalString(frame.profileOverride)
+  );
+}
+
+function isIpcOidcRequest(frame: unknown): frame is Extract<IpcRequest, { command: "oidc" }> {
+  return (
+    isRecord(frame) &&
+    frame.command === "oidc" &&
+    typeof frame.cwd === "string" &&
+    Array.isArray(frame.packageNames) &&
+    frame.packageNames.every((name) => typeof name === "string") &&
+    typeof frame.recursive === "boolean" &&
+    isOptionalString(frame.profileOverride) &&
+    isOptionalBoolean(frame.remove) &&
+    isOptionalProvider(frame.provider) &&
+    isOptionalString(frame.repo) &&
+    isOptionalString(frame.file) &&
+    isOptionalString(frame.env) &&
+    isOptionalString(frame.projectPath) &&
+    isOptionalString(frame.ciFile) &&
+    isOptionalString(frame.circleOrgId) &&
+    isOptionalString(frame.circleProjectId) &&
+    isOptionalString(frame.circlePipelineDefinitionId) &&
+    (frame.circleContextIds === undefined ||
+      (Array.isArray(frame.circleContextIds) &&
+        frame.circleContextIds.every((value) => typeof value === "string"))) &&
+    isOptionalString(frame.vcsOrigin) &&
+    isOptionalBoolean(frame.allowPublish) &&
+    isOptionalBoolean(frame.allowStagePublish)
   );
 }
 
@@ -107,6 +140,14 @@ function isIpcStatusFrame(frame: unknown): frame is Extract<IpcFrame, { type: "s
 
 function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || typeof value === "string";
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalProvider(value: unknown): value is "github" | "gitlab" | "circleci" | undefined {
+  return value === undefined || value === "github" || value === "gitlab" || value === "circleci";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

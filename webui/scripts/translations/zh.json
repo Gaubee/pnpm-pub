@@ -14,6 +14,7 @@
   "eventCard.packages": "包",
   "eventCard.publishTargets": "{count} {count, plural, other {个包}}待发布",
   "eventCard.noTargets": "尚未枚举可发布的包",
+  "eventCard.status.canceled": "已取消",
   "eventCard.tagPlaceholder": "latest",
   "backup.showPassword": "显示密码",
   "backup.hidePassword": "隐藏密码",

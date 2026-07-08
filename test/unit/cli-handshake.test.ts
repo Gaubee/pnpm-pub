@@ -52,6 +52,10 @@ function isPublishRequest(frame: IpcRequest): frame is Extract<IpcRequest, { com
   return "command" in frame && frame.command === "publish";
 }
 
+function isOidcRequest(frame: IpcRequest): frame is Extract<IpcRequest, { command: "oidc" }> {
+  return "command" in frame && frame.command === "oidc";
+}
+
 /** First connection: emit daemon-outdated; subsequent: accept & succeed. */
 function makeServer(): net.Server {
   return net.createServer((socket) => {
@@ -87,6 +91,11 @@ function makeServer(): net.Server {
         // Second connection: wait for the publish intent, then succeed.
         if (frame.command === "publish") {
           socket.write(encodeFrame({ type: "stdout", data: "publishing...\n" }));
+          socket.write(encodeFrame({ type: "exit", code: 0 }));
+          socket.end();
+        }
+        if (frame.command === "oidc") {
+          socket.write(encodeFrame({ type: "stdout", data: "[oidc] created 1 Trusted Publishing Event. Confirm in the tray.\n" }));
           socket.write(encodeFrame({ type: "exit", code: 0 }));
           socket.end();
         }
@@ -300,6 +309,43 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
     expect(
       capturedFrames.some((frame) => "cliVersion" in frame && frame.cliVersion === expectedVersion),
     ).toBe(true);
+    exitSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("Scenario: Given the oidc subcommand, When CLI sends it, Then it is an oidc IPC request instead of a publish fallback", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = mockProcessExit();
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await main([
+        "node",
+        "pnpm-pub",
+        "oidc",
+        "@scope/a",
+        "--repo",
+        "owner/repo",
+        "--file",
+        "publish.yml",
+        "--profile",
+        "work",
+      ]);
+    } catch (err) {
+      expectExitCode(err, 0);
+    }
+
+    const oidcFrame = capturedFrames.find(isOidcRequest);
+    expect(oidcFrame).toBeTruthy();
+    expect(oidcFrame?.profileOverride).toBe("work");
+    expect(oidcFrame?.packageNames).toEqual(["@scope/a"]);
+    expect(oidcFrame?.repo).toBe("owner/repo");
+    expect(oidcFrame?.file).toBe("publish.yml");
+    expect(capturedFrames.some(isPublishRequest)).toBe(false);
+    expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("[oidc] created 1"));
+    expect(stderrSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();

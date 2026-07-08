@@ -197,6 +197,7 @@ export const ko: Messages = {
       expired: "만료됨",
       actionRequired: "조치 필요",
       rejected: "거부됨",
+      canceled: "취소됨",
       skipped: "건너뜀",
     },
   },

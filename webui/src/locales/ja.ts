@@ -198,6 +198,7 @@ export const ja: Messages = {
       expired: "期限切れ",
       actionRequired: "操作が必要",
       rejected: "拒否済み",
+      canceled: "キャンセル済み",
       skipped: "スキップ",
     },
   },

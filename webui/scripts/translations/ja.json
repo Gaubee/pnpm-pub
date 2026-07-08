@@ -78,6 +78,7 @@
   "eventCard.branchMismatch": "ブランチ不一致 —「{branch}」に切り替えるか、フィールドを更新してください。",
   "eventCard.branchNoCurrent": "git リポジトリではありません — 公開ブランチは無効です。",
   "eventCard.status.skipped": "スキップ",
+  "eventCard.status.canceled": "キャンセル済み",
   "island.publishing": "{target} を公開中",
   "island.unpublishing": "{target} を非公開にしています",
   "island.addingTrust": "Trusted Publishing を追加中",

@@ -8,7 +8,7 @@
      * EventIconBadge — the square kind icon (top-left of every EventCard /
      * GroupEventCard) PLUS a status overlay:
      *   - pending: outgoing filled-disc ripples, tinted to MATCH the icon.
-     *   - failed / rejected: a small corner ribbon (red / grey), no text.
+     *   - failed / rejected / canceled: a small corner ribbon (red / grey), no text.
      *   - success / expired / action-required: no overlay.
      *
      * The base tile color is supplied by the caller (`tileClass`) since it's
@@ -26,7 +26,9 @@
     };
     let { icon: Icon, tileClass, iconColor, status }: Props = $props();
 
-    const showRibbon = $derived(status === "failed" || status === "rejected");
+    const showRibbon = $derived(
+        status === "failed" || status === "rejected" || status === "canceled",
+    );
     const showRipple = $derived(status === "pending");
     const ribbonClass = $derived(
         status === "failed" ? "ribbon-failed" : "ribbon-rejected",
@@ -119,7 +121,7 @@
         }
     }
 
-    /* --- Failed / Rejected: a corner ribbon hanging from the top into the
+    /* --- Failed / Rejected / Canceled: a corner ribbon hanging from the top into the
 	       bottom-right. The shape is a rectangle with two diagonal cuts:
 	         • (0,0)→(1,1)   — the main diagonal, removes everything below-left
 	         • (0.5,0)→(0,0.5) — bevels the top-left corner

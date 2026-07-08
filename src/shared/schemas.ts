@@ -112,6 +112,29 @@ export const IpcPublishRequestSchema = z.object({
 });
 export type IpcPublishRequest = z.infer<typeof IpcPublishRequestSchema>;
 
+export const IpcOidcRequestSchema = z.object({
+  command: z.literal("oidc"),
+  cwd: z.string(),
+  packageNames: z.array(z.string()),
+  recursive: z.boolean(),
+  profileOverride: z.string().optional(),
+  remove: z.boolean().optional(),
+  provider: z.enum(["github", "gitlab", "circleci"]).optional(),
+  repo: z.string().optional(),
+  file: z.string().optional(),
+  env: z.string().optional(),
+  projectPath: z.string().optional(),
+  ciFile: z.string().optional(),
+  circleOrgId: z.string().optional(),
+  circleProjectId: z.string().optional(),
+  circlePipelineDefinitionId: z.string().optional(),
+  circleContextIds: z.array(z.string()).optional(),
+  vcsOrigin: z.string().optional(),
+  allowPublish: z.boolean().optional(),
+  allowStagePublish: z.boolean().optional(),
+});
+export type IpcOidcRequest = z.infer<typeof IpcOidcRequestSchema>;
+
 export const IpcManagementRequestSchema = z.object({
   command: ManagementCommandSchema,
   profileOverride: z.string().optional(),
@@ -143,7 +166,7 @@ export type IpcStatusFrame = z.infer<typeof IpcStatusFrameSchema>;
 export type IpcFrame = IpcLogFrame | IpcExitFrame | IpcStatusFrame;
 
 /** Union of all IPC requests (CLI → daemon). */
-export type IpcRequest = IpcHandshake | IpcPublishRequest | IpcManagementRequest;
+export type IpcRequest = IpcHandshake | IpcPublishRequest | IpcOidcRequest | IpcManagementRequest;
 
 // ---------------------------------------------------------------------------
 // Events hub
@@ -166,6 +189,7 @@ export const EventStatusSchema = z.enum([
   "expired",
   "action-required",
   "rejected",
+  "canceled",
   // trusted-publishing pre-flight outcome (Chapter 6.2.7): the desired config
   // already matched the registry's current config; no HTTP write was needed.
   // NOTE: "conflict" is NOT a final status — it is only a transient webui

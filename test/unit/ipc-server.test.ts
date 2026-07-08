@@ -52,7 +52,11 @@ async function requestFrames(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      socket.destroy();
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore cleanup errors */
+      }
       resolve(frames);
     };
     const timer = setTimeout(finish, timeoutMs);
@@ -74,6 +78,26 @@ async function requestFrames(
       clearTimeout(timer);
       reject(error);
     });
+  });
+}
+
+async function waitForCondition(check: () => boolean, timeoutMs = 500): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function openFrameSocket(frame: IpcRequest | Record<string, unknown>): Promise<net.Socket> {
+  return await new Promise<net.Socket>((resolve, reject) => {
+    const socket = net.createConnection(socketPath());
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify(frame)}\n`, () => resolve(socket));
+    });
+    socket.on("error", reject);
   });
 }
 
@@ -100,6 +124,82 @@ describe("IPC server request boundary", () => {
         message: "invalid IPC request",
       });
       expect(store.getEvents()).toEqual([]);
+    } finally {
+      await ipc.stop();
+    }
+  });
+
+  it("Scenario: Given a CLI publish task is waiting for WebUI confirmation, When the CLI socket disappears, Then the task is canceled", async () => {
+    await fsp.writeFile(
+      path.join(sandbox, "package.json"),
+      JSON.stringify({ name: "ipc-disconnect-pkg", version: "1.0.0" }),
+      "utf8",
+    );
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+    const cancelSpy = vi.spyOn(scheduler, "cancel");
+
+    const ipc = await startIpcServer({
+      scheduler,
+      cliVersion: "0.1.0",
+    });
+    try {
+      const socket = await openFrameSocket({ command: "publish", cwd: sandbox, args: [] });
+      await waitForCondition(() => store.getEvents()[0]?.status === "pending");
+      socket.destroy();
+      await waitForCondition(() => cancelSpy.mock.calls.length > 0, 2_000);
+      await waitForCondition(
+        () =>
+          store.queryEvents({ status: "history", page: 0, limit: 10 }).rows[0]?.status ===
+          "canceled",
+        2_000,
+      );
+
+      const event = store.queryEvents({ status: "history", page: 0, limit: 10 }).rows[0];
+      expect(event).toMatchObject({
+        kind: "publish",
+        status: "canceled",
+        result: "Publish canceled because the CLI client disconnected.",
+      });
+    } finally {
+      await ipc.stop();
+    }
+  });
+
+  it("Scenario: Given an oidc frame, When it reaches the socket, Then the daemon creates a pending configure-trust Event", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const ipc = await startIpcServer({
+      scheduler,
+      cliVersion: "0.1.0",
+    });
+    try {
+      const frames = await requestFrames(
+        {
+          command: "oidc",
+          cwd: sandbox,
+          packageNames: ["@scope/pkg"],
+          recursive: false,
+        },
+        { done: (frames) => frames.some((frame) => frame.type === "exit") },
+      );
+
+      expect(frames.find((frame) => frame.type === "exit")).toMatchObject({
+        type: "exit",
+        code: 0,
+      });
+      const event = store.getEvents()[0];
+      expect(event?.payload?.kind).toBe("configure-trust");
+      if (event?.payload?.kind !== "configure-trust") return;
+      expect(event.payload.data).toMatchObject({
+        action: "add",
+        target: { name: "@scope/pkg" },
+      });
     } finally {
       await ipc.stop();
     }

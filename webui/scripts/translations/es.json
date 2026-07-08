@@ -79,6 +79,7 @@
   "eventCard.branchMismatch": "La rama no coincide: cambia a “{branch}” o actualiza el campo.",
   "eventCard.branchNoCurrent": "No es un repositorio git: publish-branch no tiene efecto.",
   "eventCard.status.skipped": "omitido",
+  "eventCard.status.canceled": "cancelado",
   "island.publishing": "Publicando {target}",
   "island.unpublishing": "Despublicando {target}",
   "island.addingTrust": "Añadiendo Trusted Publishing",

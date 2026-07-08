@@ -4,6 +4,7 @@
  * These are duplicated (rather than imported) so the SvelteKit bundle contains
  * no Node-only code. Keep in sync with the daemon side.
  */
+import type { EventStatus as SharedEventStatus } from "$shared/index.js";
 
 /**
  * App-wide preferences (mirrors `Preferences` in src/shared/schemas.ts). The
@@ -203,17 +204,7 @@ export type EventKind =
   | "unpublish"
   | "recursive-publish";
 
-export type EventStatus =
-  | "pending"
-  | "success"
-  | "failed"
-  | "expired"
-  | "action-required"
-  | "rejected"
-  // trusted-publishing pre-flight outcome (see shared/schemas.ts). NOTE:
-  // "conflict" is NOT a status — only a transient webui pre-flight display
-  // label; a conflict auto-resolves (delete-then-put) to success/failed.
-  | "skipped";
+export type EventStatus = SharedEventStatus;
 
 export type EventPayload =
   | { kind: "publish"; data: PublishContext }

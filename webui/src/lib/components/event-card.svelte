@@ -152,6 +152,7 @@
         expired: "warning",
         "action-required": "warning",
         rejected: "secondary",
+        canceled: "secondary",
         // trusted-publishing pre-flight: skipped = neutral success tint.
         // (conflict is NOT a status — only a transient webui display label.)
         skipped: "success",
@@ -207,7 +208,7 @@
                 : "var(--muted-foreground)",
     );
     // Card border / ring tint — driven by the event STATUS (not the kind).
-    // pending → brand, success → green, failed → red, rejected → muted,
+    // pending → brand, success → green, failed → red, rejected/canceled → muted,
     // expired/action-required → warning. Static class strings (Tailwind can't
     // compose dynamic fragments).
     const statusRing = $derived.by(() => {
@@ -224,7 +225,7 @@
             case "skipped":
                 return "ring-success/30";
             default:
-                return "ring-border"; // rejected
+                return "ring-border"; // rejected/canceled
         }
     });
     const statusBorder = $derived.by(() => {
@@ -241,7 +242,7 @@
             case "skipped":
                 return "border-success/20";
             default:
-                return "border-border"; // rejected
+                return "border-border"; // rejected/canceled
         }
     });
 
@@ -323,8 +324,9 @@
               ? unpublishCtx.version
               : "",
     );
-    const rejectedWithResult = $derived(
-        event.status === "rejected" && !!event.result,
+    const mutedTerminalWithResult = $derived(
+        (event.status === "rejected" || event.status === "canceled") &&
+            !!event.result,
     );
 
     // --- Right-corner actions (repo link / open folder / npm link) ---
@@ -375,9 +377,10 @@
     const npmUrl = $derived.by(() => {
         if (!packageName) return "";
         // Only link to the specific published version once the publish actually
-        // succeeded; while pending (or failed/expired/rejected) that version
-        // isn't on the registry yet, and placeholder/unpublish events never have
-        // a real published version — so link to the package landing page instead.
+        // succeeded; while pending (or failed/expired/rejected/canceled) that
+        // version isn't on the registry yet, and placeholder/unpublish events
+        // never have a real published version — so link to the package landing
+        // page instead.
         if (packageVersion && isPublish && event.status === "success") {
             return `https://www.npmjs.com/package/${packageName}/v/${packageVersion}`;
         }
@@ -388,9 +391,10 @@
     // only the cross-profile override chip remains up here.
     const hasCornerActions = $derived(overrideActive);
     const isRetryableStatus = $derived(
-        event.status === "failed" ||
+            event.status === "failed" ||
             event.status === "expired" ||
-            event.status === "rejected",
+            event.status === "rejected" ||
+            event.status === "canceled",
     );
     const isConfigureTrust = $derived(!!configureTrustCtx);
     const isRetryable = $derived(
@@ -613,7 +617,7 @@
                 {timeLabel}
                 titleName={titleName}
                 version={versionLabel}
-                {rejectedWithResult}
+                {mutedTerminalWithResult}
                 {hasCornerActions}
                 {overrideActive}
                 effectiveProfile={effectiveProfile}
@@ -708,7 +712,7 @@
             {timeLabel}
             titleName={titleName}
             version={versionLabel}
-            {rejectedWithResult}
+            {mutedTerminalWithResult}
             {hasCornerActions}
             {overrideActive}
             effectiveProfile={effectiveProfile}

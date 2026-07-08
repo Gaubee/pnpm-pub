@@ -11,7 +11,7 @@
  */
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
@@ -20,6 +20,7 @@ import type {
   CreatePlaceholderContext,
   EventKind,
   EventPayload,
+  IpcOidcRequest,
   IpcPublishRequest,
   ConfigureTrustContext,
   PublishConfig,
@@ -31,6 +32,7 @@ import type {
   RefreshTokenContext,
   TrustedPublisherConfig,
   TrustedPublisherCreateConfig,
+  TrustedPublisherPermission,
   TrustedPublishingTarget,
   UnpublishContext,
 } from "../shared/index.js";
@@ -38,7 +40,14 @@ import {
   TrustedPublisherConfigSchema,
   TrustedPublisherCreateConfigSchema,
 } from "../shared/index.js";
-import type { PackageTarballFile, PackageTarballSummary } from "./packer.js";
+import {
+  packPackage,
+  previewPackageFiles,
+  readPackageTarball,
+  summarizePackageTarball,
+  type PackageTarballFile,
+  type PackageTarballSummary,
+} from "./packer.js";
 import { publishPackage, unpublishVersion } from "./npm-api.js";
 import {
   publishPackageViaCli,
@@ -180,6 +189,14 @@ const DETACHED_CLIENT: PendingClient = {
   exit: () => {},
 };
 
+type PendingPhase = "awaiting-decision" | "executing";
+
+interface PendingEntry {
+  event: PubEvent;
+  client: PendingClient;
+  phase: PendingPhase;
+}
+
 /** Resolved metadata about a publish target from a directory or tarball source. */
 async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTarget, "path">> {
   try {
@@ -187,7 +204,6 @@ async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTar
     if (source.kind === "directory") {
       metadata = JSON.parse(await fsp.readFile(path.join(source.path, "package.json"), "utf8"));
     } else {
-      const { readPackageTarball } = await import("./packer.js");
       metadata = (await readPackageTarball(source.path)).metadata;
     }
     const pkg = parsePackageMetadata(metadata);
@@ -582,7 +598,6 @@ async function loadPublishSource(
   source: PublishSource,
   opts: { ignoreScripts?: boolean } = {},
 ): Promise<{ tarball: Buffer; metadata: Record<string, unknown> }> {
-  const { packPackage, readPackageTarball } = await import("./packer.js");
   if (source.kind === "tarball") return readPackageTarball(source.path);
   return opts.ignoreScripts
     ? packPackage(source.path, { ignoreScripts: true })
@@ -689,10 +704,7 @@ async function buildPublishJsonProjection(
   const summary =
     existingSummary !== undefined
       ? existingSummary
-      : await (async () => {
-          const { summarizePackageTarball } = await import("./packer.js");
-          return summarizePackageTarball(tarball).catch(() => null);
-        })();
+      : await summarizePackageTarball(tarball).catch(() => null);
   return {
     id: `${name}@${version}`,
     name,
@@ -736,7 +748,6 @@ async function formatDryRunNpmNotice(params: {
   /** Pre-computed summary (avoids a second packer pass when the caller already has one). */
   summary?: PackageTarballSummary | null;
 }): Promise<string> {
-  const { summarizePackageTarball } = await import("./packer.js");
   const summary =
     params.summary !== undefined
       ? params.summary
@@ -1345,9 +1356,151 @@ function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function hasOidcConfigInput(req: IpcOidcRequest): boolean {
+  return (
+    req.provider !== undefined ||
+    req.repo !== undefined ||
+    req.file !== undefined ||
+    req.env !== undefined ||
+    req.projectPath !== undefined ||
+    req.ciFile !== undefined ||
+    req.circleOrgId !== undefined ||
+    req.circleProjectId !== undefined ||
+    req.circlePipelineDefinitionId !== undefined ||
+    req.circleContextIds !== undefined ||
+    req.vcsOrigin !== undefined ||
+    req.allowPublish !== undefined ||
+    req.allowStagePublish !== undefined
+  );
+}
+
+function trimOptional(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function oidcPermissions(
+  req: IpcOidcRequest,
+): { ok: true; permissions: TrustedPublisherPermission[] } | { ok: false; error: string } {
+  const permissions: TrustedPublisherPermission[] = [];
+  if (req.allowPublish ?? true) permissions.push("createPackage");
+  if (req.allowStagePublish ?? true) permissions.push("createStagedPackage");
+  if (permissions.length === 0) {
+    return { ok: false, error: "At least one OIDC permission must stay enabled." };
+  }
+  return { ok: true, permissions };
+}
+
+function createOidcConfig(
+  req: IpcOidcRequest,
+  targets: TrustedPublishingTarget[],
+): { ok: true; config?: TrustedPublisherCreateConfig } | { ok: false; error: string } {
+  if (!hasOidcConfigInput(req)) return { ok: true };
+  if (req.remove) {
+    return { ok: false, error: "Provider config flags cannot be combined with --remove." };
+  }
+  const permissions = oidcPermissions(req);
+  if (!permissions.ok) return permissions;
+  const provider = req.provider ?? "github";
+  if (provider === "github") {
+    const repository = trimOptional(req.repo) ?? commonRepoSlug(targets, "github");
+    const file = trimOptional(req.file);
+    if (!repository) return { ok: false, error: "GitHub OIDC requires --repo <owner/repo>." };
+    if (!file) return { ok: false, error: "GitHub OIDC requires --file <workflow.yml>." };
+    const environment = trimOptional(req.env);
+    return {
+      ok: true,
+      config: {
+        type: "github",
+        permissions: permissions.permissions,
+        claims: {
+          repository,
+          workflow_ref: { file },
+          ...(environment ? { environment } : {}),
+        },
+      },
+    };
+  }
+  if (provider === "gitlab") {
+    const projectPath = trimOptional(req.projectPath) ?? commonRepoSlug(targets, "gitlab");
+    if (!projectPath) {
+      return { ok: false, error: "GitLab OIDC requires --project-path <group/project>." };
+    }
+    const ciFile = trimOptional(req.ciFile);
+    const environment = trimOptional(req.env);
+    return {
+      ok: true,
+      config: {
+        type: "gitlab",
+        permissions: permissions.permissions,
+        claims: {
+          project_path: projectPath,
+          ...(ciFile ? { ci_config_ref_uri: ciFile } : {}),
+          ...(environment ? { environment } : {}),
+        },
+      },
+    };
+  }
+  const orgId = trimOptional(req.circleOrgId);
+  const projectId = trimOptional(req.circleProjectId);
+  const pipelineDefinitionId = trimOptional(req.circlePipelineDefinitionId);
+  const vcsOrigin = trimOptional(req.vcsOrigin);
+  if (!orgId || !projectId || !pipelineDefinitionId || !vcsOrigin) {
+    return {
+      ok: false,
+      error:
+        "CircleCI OIDC requires --circle-org-id, --circle-project-id, --circle-pipeline-definition-id, and --vcs-origin.",
+    };
+  }
+  const contextIds = (req.circleContextIds ?? []).map((item) => item.trim()).filter(Boolean);
+  return {
+    ok: true,
+    config: {
+      type: "circleci",
+      permissions: permissions.permissions,
+      claims: {
+        "oidc.circleci.com/org-id": orgId,
+        "oidc.circleci.com/project-id": projectId,
+        "oidc.circleci.com/pipeline-definition-id": pipelineDefinitionId,
+        ...(contextIds.length > 0 ? { "oidc.circleci.com/context-ids": contextIds } : {}),
+        "oidc.circleci.com/vcs-origin": vcsOrigin,
+      },
+    },
+  };
+}
+
+function commonRepoSlug(
+  targets: TrustedPublishingTarget[],
+  provider: "github" | "gitlab",
+): string | undefined {
+  const slugs = targets.map((target) =>
+    target.repository ? repoSlugFromHint(target.repository, provider) : undefined,
+  );
+  if (slugs.some((slug) => !slug)) return undefined;
+  const unique = new Set(slugs.filter((slug): slug is string => slug !== undefined));
+  return unique.size === 1 ? [...unique][0] : undefined;
+}
+
+function repoSlugFromHint(hint: string, provider: "github" | "gitlab"): string | undefined {
+  const host = provider === "github" ? "github.com" : "gitlab.com";
+  const escapedHost = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const trimmed = hint.trim().replace(/\.git$/i, "");
+  const hostMatch =
+    trimmed.match(new RegExp(`${escapedHost}[:/]([^\\s]+)$`, "i")) ??
+    trimmed.match(new RegExp(`git@${escapedHost}:([^\\s]+)$`, "i"));
+  const pathPart = hostMatch?.[1] ?? (/^[\w.-]+\/[\w.@/-]+$/.test(trimmed) ? trimmed : "");
+  const pieces = pathPart
+    .replace(/^\/+/, "")
+    .replace(/\.git$/i, "")
+    .split("/")
+    .filter(Boolean);
+  if (pieces.length < 2) return undefined;
+  return pieces.join("/");
+}
+
 export class PublishScheduler {
-  /** taskId -> { event, client } */
-  private pending = new Map<string, { event: PubEvent; client: PendingClient }>();
+  /** taskId -> live task handle. `executing` entries own an external effect. */
+  private pending = new Map<string, PendingEntry>();
 
   constructor(private store: DaemonStore) {}
 
@@ -1373,7 +1526,7 @@ export class PublishScheduler {
    * as a pending event and register the waiting client. The WebUI is notified
    * via the store's `event` emitter (consumed by the WS bridge).
    */
-  async intercept(req: IpcPublishRequest, client: PendingClient): Promise<void> {
+  async intercept(req: IpcPublishRequest, client: PendingClient): Promise<PubEvent | undefined> {
     // Chapter 5.4.5: an explicit --profile override MUST be honored strictly.
     // If the named profile does not exist, fail loudly — never silently fall
     // back to the default identity (that would be the "身份割裂" the spec forbids).
@@ -1382,14 +1535,14 @@ export class PublishScheduler {
         const msg = `Profile "${req.profileOverride}" not found. Add it via the tray GUI first.`;
         client.log("stderr", msg + "\n");
         client.exit(1, msg);
-        return;
+        return undefined;
       }
     }
     const profile = resolveProfile(this.store, req.profileOverride);
     if (!profile) {
       client.log("stderr", "No profile configured. Add a profile via the tray GUI first.\n");
       client.exit(1, "No profile");
-      return;
+      return undefined;
     }
     // Chapter 7.1.2 — drop-in parity: unknown flags are forwarded verbatim to
     // `pnpm publish`. pnpm-pub only intercepts the flags it routes on
@@ -1421,7 +1574,7 @@ export class PublishScheduler {
         const msg = "Recursive publish requires pnpm on PATH; no fallback is available.";
         client.log("stderr", msg + "\n");
         client.exit(1, msg);
-        return;
+        return undefined;
       }
       let targets: PublishTarget[];
       try {
@@ -1430,13 +1583,13 @@ export class PublishScheduler {
         const msg = errorToMessage(error);
         client.log("stderr", msg + "\n");
         client.exit(1, msg);
-        return;
+        return undefined;
       }
       if (targets.length === 0) {
         const msg = "No publishable packages matched in the workspace.";
         client.log("stderr", msg + "\n");
         client.exit(1, msg);
-        return;
+        return undefined;
       }
       const branch = await detectGitBranchSafe(source.path);
       const event = this.store.createEvent({
@@ -1453,12 +1606,12 @@ export class PublishScheduler {
           },
         },
       });
-      this.pending.set(event.id, { event, client });
+      this.pending.set(event.id, { event, client, phase: "awaiting-decision" });
       // Prefetch per-target tarball previews (best-effort, non-blocking) so the
       // confirm card's target list can show each package's file tree during the
       // pending phase and persist it for later review.
       void this.prefetchRecursiveSummaries(event.id, targets);
-      return;
+      return event;
     }
 
     const target = await readPublishTarget(source);
@@ -1480,7 +1633,7 @@ export class PublishScheduler {
         },
       },
     });
-    this.pending.set(event.id, { event, client });
+    this.pending.set(event.id, { event, client, phase: "awaiting-decision" });
     // The WS bridge listens on the store and will notify every WebUI client.
     // Prefetch the tarball preview (best-effort, non-blocking) so the confirm
     // card shows the file tree during the pending phase and it persists for
@@ -1488,6 +1641,209 @@ export class PublishScheduler {
     if (source.kind === "directory") {
       void this.prefetchPublishSummary(event.id, source.path);
     }
+    return event;
+  }
+
+  /**
+   * CLI-originated Trusted Publishing intent. This only creates pending
+   * configure-trust Event(s); npm /trust writes still require WebUI
+   * confirmation through confirm().
+   */
+  async createOidcEvents(req: IpcOidcRequest, client: PendingClient): Promise<void> {
+    if (req.profileOverride && req.profileOverride.length > 0) {
+      if (!this.store.getProfile(req.profileOverride)) {
+        const msg = `Profile "${req.profileOverride}" not found. Add it via the tray GUI first.`;
+        client.log("stderr", msg + "\n");
+        client.exit(1, msg);
+        return;
+      }
+    }
+    const profile = resolveProfile(this.store, req.profileOverride);
+    if (!profile) {
+      client.log("stderr", "No profile configured. Add a profile via the tray GUI first.\n");
+      client.exit(1, "No profile");
+      return;
+    }
+
+    await this.collectWorkspaceFromCwd(req.cwd, client);
+    const targets = await this.resolveOidcTargets(req);
+    if (!targets.ok) {
+      client.log("stderr", targets.error + "\n");
+      client.exit(1, targets.error);
+      return;
+    }
+    const config = createOidcConfig(req, targets.targets);
+    if (!config.ok) {
+      client.log("stderr", config.error + "\n");
+      client.exit(1, config.error);
+      return;
+    }
+    const hydrated = await this.attachCurrentTrustConfigs(req, profile, targets.targets);
+    if (!hydrated.ok) {
+      client.log("stderr", hydrated.error + "\n");
+      client.exit(1, hydrated.error);
+      return;
+    }
+
+    const groupId = hydrated.targets.length > 1 ? randomUUID() : undefined;
+    const events: PubEvent[] = [];
+    for (const target of hydrated.targets) {
+      const action = req.remove ? "remove" : target.currentConfig ? "update" : "add";
+      const data: ConfigureTrustContext = {
+        action,
+        target,
+        ...(!groupId && config.config && !req.remove ? { config: config.config } : {}),
+      };
+      const event = this.store.createEvent({
+        kind: "configure-trust",
+        profile,
+        profileOverride: req.profileOverride,
+        payload: { kind: "configure-trust", data },
+        ...(groupId ? { groupId } : {}),
+      });
+      this.pending.set(event.id, { event, client: DETACHED_CLIENT, phase: "awaiting-decision" });
+      events.push(event);
+    }
+    if (groupId && config.config && !req.remove) {
+      this.store.updateConfigureTrustGroupDraft(groupId, config.config);
+    }
+
+    for (const skipped of hydrated.skipped) {
+      client.log("stdout", `[oidc] skipped ${skipped}: no trusted publisher is configured.\n`);
+    }
+    client.log(
+      "stdout",
+      `[oidc] created ${events.length} Trusted Publishing Event${events.length === 1 ? "" : "s"}. Confirm in the tray.\n`,
+    );
+    client.exit(0);
+  }
+
+  private async resolveOidcTargets(
+    req: IpcOidcRequest,
+  ): Promise<{ ok: true; targets: TrustedPublishingTarget[] } | { ok: false; error: string }> {
+    const names = [...new Set(req.packageNames.map((name) => name.trim()).filter(Boolean))];
+    const cwd = path.resolve(req.cwd);
+    if (req.recursive) {
+      const found = await findProjectRoot(cwd, realFs);
+      const root = found.root ?? cwd;
+      if (isRiskyRoot(root, realFs)) {
+        return { ok: false, error: `Refusing to scan risky OIDC root: ${root}` };
+      }
+      const scanned = await scanWorkspace(root, realFs, { root, respectGitignore: true });
+      const selected =
+        names.length === 0 ? scanned : scanned.filter((pkg) => names.includes(pkg.name));
+      if (selected.length === 0) {
+        return { ok: false, error: "No publishable workspace packages matched the OIDC target." };
+      }
+      return {
+        ok: true,
+        targets: selected.map((pkg) => ({
+          name: pkg.name,
+          path: pkg.path,
+          ...(pkg.repository ? { repository: pkg.repository } : {}),
+        })),
+      };
+    }
+
+    if (names.length === 0) {
+      const target = await readPublishTarget({ kind: "directory", path: cwd });
+      if (!target.name || target.name === "(unknown)") {
+        return { ok: false, error: `No package.json package name found at ${cwd}.` };
+      }
+      return {
+        ok: true,
+        targets: [
+          {
+            name: target.name,
+            path: cwd,
+            ...(target.repository ? { repository: target.repository } : {}),
+          },
+        ],
+      };
+    }
+
+    const localTargets = await this.scanOidcNamedTargets(cwd);
+    return {
+      ok: true,
+      targets: names.map((name) => {
+        const local = localTargets.get(name);
+        return local ?? { name };
+      }),
+    };
+  }
+
+  private async scanOidcNamedTargets(cwd: string): Promise<Map<string, TrustedPublishingTarget>> {
+    try {
+      const found = await findProjectRoot(cwd, realFs);
+      if (!found.root || isRiskyRoot(found.root, realFs)) return new Map();
+      const scanned = await scanWorkspace(found.root, realFs, {
+        root: found.root,
+        respectGitignore: true,
+      });
+      return new Map(
+        scanned.map((pkg) => [
+          pkg.name,
+          {
+            name: pkg.name,
+            path: pkg.path,
+            ...(pkg.repository ? { repository: pkg.repository } : {}),
+          },
+        ]),
+      );
+    } catch {
+      return new Map();
+    }
+  }
+
+  private async attachCurrentTrustConfigs(
+    req: IpcOidcRequest,
+    profile: string,
+    targets: TrustedPublishingTarget[],
+  ): Promise<
+    | { ok: true; targets: TrustedPublishingTarget[]; skipped: string[] }
+    | { ok: false; error: string }
+  > {
+    const profileConfig = this.store.getProfile(profile);
+    const registry = profileConfig?.registry ?? "https://registry.npmjs.org/";
+    const creds = this.store.getCredentials(profile);
+    if (!creds) {
+      return req.remove
+        ? { ok: false, error: `Credentials for ${profile} are missing. Re-apply them in the tray.` }
+        : { ok: true, targets, skipped: [] };
+    }
+    const resolved: TrustedPublishingTarget[] = [];
+    const skipped: string[] = [];
+    for (const target of targets) {
+      const lookup = await listTrustedPublishers(
+        { registry, token: creds.token, totpSecret: creds.totpSecret },
+        target.name,
+      ).catch((error: unknown) => ({
+        ok: false as const,
+        status: 0,
+        error: errorToMessage(error),
+      }));
+      if (!lookup.ok) {
+        if (req.remove) {
+          return { ok: false, error: lookup.error };
+        }
+        resolved.push(target);
+        continue;
+      }
+      const currentConfig = lookup.configs[0];
+      if (!currentConfig) {
+        if (req.remove) {
+          skipped.push(target.name);
+          continue;
+        }
+        resolved.push(target);
+        continue;
+      }
+      resolved.push({ ...target, currentConfig });
+    }
+    if (req.remove && resolved.length === 0) {
+      return { ok: false, error: "No selected package has a trusted publisher to remove." };
+    }
+    return { ok: true, targets: resolved, skipped };
   }
 
   /**
@@ -1499,7 +1855,6 @@ export class PublishScheduler {
    */
   private async prefetchPublishSummary(eventId: string, dir: string): Promise<void> {
     try {
-      const { previewPackageFiles } = await import("./packer.js");
       const summary = await previewPackageFiles(dir);
       this.store.setTarballSummary(eventId, summary);
     } catch {
@@ -1520,7 +1875,6 @@ export class PublishScheduler {
     targets: { name: string; version: string; path: string }[],
   ): Promise<void> {
     try {
-      const { previewPackageFiles } = await import("./packer.js");
       const summaries: { name: string; version: string; summary: PackageTarballSummary }[] = [];
       for (const t of targets) {
         try {
@@ -1604,7 +1958,7 @@ export class PublishScheduler {
       await this.refreshRecursiveTargets(parsed);
     }
     const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
-    this.pending.set(event.id, { event, client: DETACHED_CLIENT });
+    this.pending.set(event.id, { event, client: DETACHED_CLIENT, phase: "awaiting-decision" });
     // Prefetch the tarball preview (best-effort, non-blocking) so the confirm
     // card shows the file tree during the pending phase. Mirrors the CLI
     // `intercept` path so GUI-originated publishes (workspace button, retry)
@@ -1668,6 +2022,7 @@ export class PublishScheduler {
   async confirm(taskId: string): Promise<boolean> {
     const entry = this.pending.get(taskId);
     if (!entry) return false;
+    entry.phase = "executing";
     const { event, client } = entry;
     if (event.payload?.kind === "refresh-token") {
       const msg = `Token refresh for ${event.payload.data.username} requires credential re-apply.`;
@@ -1786,11 +2141,23 @@ export class PublishScheduler {
   /** Step 2-alt: WebUI rejected. Relay SIGINT-equivalent to the CLI (Chapter 6.2.2). */
   reject(taskId: string): boolean {
     const entry = this.pending.get(taskId);
-    if (!entry) return false;
+    if (!entry || entry.phase !== "awaiting-decision") return false;
     const { client } = entry;
     this.store.resolveEvent(taskId, "rejected", "Publish canceled by user.");
     client.log("stderr", "Publish canceled by user.\n");
     client.exit(1, "Publish canceled by user.");
+    this.pending.delete(taskId);
+    return true;
+  }
+
+  /** Non-WebUI owner disappeared before confirmation. Does not rewrite live writes. */
+  cancel(
+    taskId: string,
+    reason = "Publish canceled because the CLI client disconnected.",
+  ): boolean {
+    const entry = this.pending.get(taskId);
+    if (!entry || entry.phase !== "awaiting-decision") return false;
+    this.store.resolveEvent(taskId, "canceled", reason);
     this.pending.delete(taskId);
     return true;
   }
@@ -1867,7 +2234,6 @@ export class PublishScheduler {
         // CLI path will attempt its own pack via `pnpm publish`.
         if (source.kind === "tarball") throw previewError;
       }
-      const { summarizePackageTarball } = await import("./packer.js");
       const tarballSummary = packed
         ? await summarizePackageTarball(packed.tarball).catch(() => undefined)
         : undefined;
@@ -2051,7 +2417,6 @@ export class PublishScheduler {
       const publishedName = readMetadataString(packed.metadata, "name") ?? name;
       const publishedVersion = readMetadataString(packed.metadata, "version") ?? ctx.target.version;
       // Cache the packed file-tree preview for the WebUI.
-      const { summarizePackageTarball } = await import("./packer.js");
       const tarballSummary = await summarizePackageTarball(packed.tarball).catch(() => undefined);
       const profileRegistry =
         this.store.getProfile(event.profile)?.registry ?? "https://registry.npmjs.org/";
@@ -2202,7 +2567,6 @@ export class PublishScheduler {
       await fsp.writeFile(path.join(tempDir, "index.js"), "module.exports = {};\n", "utf8");
 
       client.log("stdout", `packing placeholder ${ctx.name}@${version}...\n`);
-      const { packPackage } = await import("./packer.js");
       const packed = await packPackage(tempDir);
       client.log("stdout", `packed ${packed.tarball.length} bytes\n`);
 
@@ -2427,7 +2791,7 @@ export class PublishScheduler {
 
   /** Reject every still-pending event (daemon shutdown). */
   drainAll(): void {
-    for (const id of [...this.pending.keys()]) {
+    for (const id of this.pending.keys()) {
       this.reject(id);
     }
   }

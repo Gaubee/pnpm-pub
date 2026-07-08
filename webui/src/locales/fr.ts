@@ -202,6 +202,7 @@ export const fr: Messages = {
       expired: "expiré",
       actionRequired: "action requise",
       rejected: "rejeté",
+      canceled: "annulé",
       skipped: "ignoré",
     },
   },

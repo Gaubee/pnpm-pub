@@ -15,13 +15,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Database as DatabaseType } from "./db.js";
 import { openDatabase } from "./db.js";
-import type {
-  EventKind,
-  EventStatus,
-  EventPayload,
-  PubEvent,
-  TarballSummary,
-} from "../shared/index.js";
+import type { EventKind, EventStatus, PubEvent } from "../shared/index.js";
 import { z } from "zod";
 import { EventPayloadSchema, PubEventSchema, TarballSummarySchema } from "../shared/schemas.js";
 
@@ -83,6 +77,7 @@ const HISTORY_STATUSES = [
   "expired",
   "action-required",
   "rejected",
+  "canceled",
   "skipped",
 ] as const;
 const HISTORY_STATUS_SQL = HISTORY_STATUSES.map((status) => `'${status}'`).join(", ");
@@ -150,10 +145,10 @@ export function openEventDb(dbPath: string): DatabaseType {
     if (!/duplicate column/i.test(msg)) throw error;
   }
   // On restart, any event still 'pending' has no live scheduler client handle —
-  // mark it failed so the UI doesn't show a forever-pending ghost.
+  // mark it canceled so the UI doesn't show a forever-pending ghost.
   const swept = db
     .prepare(
-      `UPDATE events SET status = 'failed', result = 'Daemon restarted before completion.', resolved_at = ? WHERE status = 'pending'`,
+      `UPDATE events SET status = 'canceled', result = 'Daemon restarted before the task completed.', resolved_at = ? WHERE status = 'pending'`,
     )
     .run(Date.now());
   void swept; // informational only

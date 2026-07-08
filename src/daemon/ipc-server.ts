@@ -8,10 +8,10 @@
  */
 import net from "node:net";
 import fs from "node:fs";
-import path from "node:path";
 import { encodeFrame, FrameReader, isIpcRequest } from "../shared/frame.js";
 import type {
   IpcPublishRequest,
+  IpcOidcRequest,
   IpcHandshake,
   IpcStatusFrame,
   IpcRequest,
@@ -84,9 +84,13 @@ export class IpcServer {
   private handle(socket: net.Socket): void {
     const reader = new FrameReader();
     let pendingClient: PendingClient | null = null;
+    let pendingTaskId: string | null = null;
+    let completedByDaemon = false;
+    let socketClosed = false;
     const makeClient = (): PendingClient => ({
       log: (stream, data) => safeWrite(socket, encodeFrame({ type: stream, data })),
       exit: (code, message) => {
+        completedByDaemon = true;
         safeWrite(socket, encodeFrame({ type: "exit", code, message }));
         try {
           socket.end();
@@ -95,47 +99,77 @@ export class IpcServer {
         }
       },
     });
+    socket.on("pnpm-pub:daemon-exit", () => {
+      completedByDaemon = true;
+    });
+    const cancelOnClientDisconnect = (): void => {
+      socketClosed = true;
+      if (completedByDaemon || !pendingTaskId) return;
+      this.deps.scheduler.cancel(
+        pendingTaskId,
+        "Publish canceled because the CLI client disconnected.",
+      );
+      pendingTaskId = null;
+    };
 
     socket.on("data", async (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcRequest(frame)) {
+          completedByDaemon = true;
           writeExit(socket, 1, "invalid IPC request");
           continue;
         }
-        await this.dispatch(frame, socket, () => {
+        const task = await this.dispatch(frame, socket, () => {
           if (!pendingClient) pendingClient = makeClient();
           return pendingClient;
         });
+        if (task?.kind === "publish-task") {
+          pendingTaskId = task.id;
+          if (socketClosed && !completedByDaemon) {
+            this.deps.scheduler.cancel(
+              pendingTaskId,
+              "Publish canceled because the CLI client disconnected.",
+            );
+            pendingTaskId = null;
+          }
+        }
       }
     });
     socket.on("error", () => {
       /* connection reset — ignore */
     });
+    socket.on("end", cancelOnClientDisconnect);
+    socket.on("close", cancelOnClientDisconnect);
   }
 
   private async dispatch(
     frame: IpcRequest,
     socket: net.Socket,
     client: () => PendingClient,
-  ): Promise<void> {
+  ): Promise<{ kind: "publish-task"; id: string } | undefined> {
     // Version handshake (Chapter 7.2.1).
     if (isIpcHandshake(frame)) {
       if (frame.cliVersion !== this.deps.cliVersion) {
         // Newer CLI -> old daemon: instruct self-destruct.
         if (isNewerVersion(frame.cliVersion, this.deps.cliVersion)) {
           // Signal exit; CLI will spawn a fresh daemon.
+          markDaemonExit(socket);
           writeExit(socket, 0, "daemon-outdated");
-          this.deps.onStop?.();
-          return;
+          void this.deps.onStop?.();
+          return undefined;
         }
       }
-      return;
+      return undefined;
     }
 
     if (isIpcPublishRequest(frame)) {
-      await this.deps.scheduler.intercept(frame, client());
-      return;
+      const event = await this.deps.scheduler.intercept(frame, client());
+      return event ? { kind: "publish-task", id: event.id } : undefined;
+    }
+    if (isIpcOidcRequest(frame)) {
+      await this.deps.scheduler.createOidcEvents(frame, client());
+      return undefined;
     }
     const cmd = frame.command;
     if (cmd === "status") {
@@ -147,42 +181,45 @@ export class IpcServer {
         pid: info.pid,
       };
       safeWrite(socket, encodeFrame(status));
+      markDaemonExit(socket);
       try {
         socket.end();
       } catch {
         /* ignore */
       }
-      return;
+      return undefined;
     }
     if (cmd === "stop") {
+      markDaemonExit(socket);
       safeWrite(socket, encodeFrame({ type: "status", active: false }));
       await this.deps.onStop?.();
-      return;
+      return undefined;
     }
     if (cmd === "start") {
       if (frame.profileOverride && frame.profileOverride.length > 0) {
         const applied = (await this.deps.onStart?.(frame.profileOverride)) ?? true;
         if (!applied) {
           const message = `Profile "${frame.profileOverride}" not found. Add it via the tray GUI first.`;
+          markDaemonExit(socket);
           writeExit(socket, 1, message);
           try {
             socket.end();
           } catch {
             /* ignore */
           }
-          return;
+          return undefined;
         }
       }
+      markDaemonExit(socket);
       safeWrite(socket, encodeFrame({ type: "status", active: true }));
       try {
         socket.end();
       } catch {
         /* ignore */
       }
-      return;
+      return undefined;
     }
-    // Unknown management command.
-    writeExit(socket, 1, `unknown command: ${cmd}`);
+    return undefined;
   }
 
   async stop(): Promise<void> {
@@ -205,6 +242,10 @@ function writeExit(socket: net.Socket, code: number, message: string): void {
   safeWrite(socket, encodeFrame({ type: "exit", code, message }));
 }
 
+function markDaemonExit(socket: net.Socket): void {
+  socket.emit("pnpm-pub:daemon-exit");
+}
+
 function isIpcHandshake(frame: IpcRequest): frame is IpcHandshake {
   return "cliVersion" in frame && typeof frame.cliVersion === "string";
 }
@@ -220,12 +261,12 @@ function isIpcPublishRequest(frame: IpcRequest): frame is IpcPublishRequest {
   );
 }
 
-function isOptionalString(value: unknown): value is string | undefined {
-  return value === undefined || typeof value === "string";
+function isIpcOidcRequest(frame: IpcRequest): frame is IpcOidcRequest {
+  return "command" in frame && frame.command === "oidc";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
 }
 
 function isNewerVersion(candidate: string, current: string): boolean {

@@ -78,6 +78,7 @@
   "eventCard.branchMismatch": "브랜치 불일치 — “{branch}”로 전환하거나 필드를 업데이트하세요.",
   "eventCard.branchNoCurrent": "git 저장소가 아닙니다 — 게시 브랜치 설정이 적용되지 않습니다.",
   "eventCard.status.skipped": "건너뜀",
+  "eventCard.status.canceled": "취소됨",
   "island.publishing": "{target} 게시 중",
   "island.unpublishing": "{target} 게시 취소 중",
   "island.addingTrust": "Trusted Publishing 추가 중",

@@ -69,8 +69,8 @@ export function deriveGroupKind(events: PubEvent[]): GroupKind {
 
 /**
  * Aggregate the members' statuses into a single representative status for the
- * group badge. Priority: any pending → pending; else any failed/expired/
- * action-required → the first such; else any rejected → rejected; else success.
+ * group badge. Priority: any pending → pending; else any non-success terminal
+ * status → the first such; else success.
  */
 export function aggregateGroupStatus(events: PubEvent[]): EventStatus {
   if (events.length === 0) return "success";
@@ -87,8 +87,8 @@ export function aggregateGroupStatus(events: PubEvent[]): EventStatus {
   }
   if (hasPending) return "pending";
   if (firstNonSuccess) return firstNonSuccess;
-  // No pending, no failed/expired/rejected/conflict ⇒ every member is success
-  // or skipped (the empty case was handled above).
+  // No pending and no non-success terminal status ⇒ every member is success or
+  // skipped (the empty case was handled above).
   return "success";
 }
 

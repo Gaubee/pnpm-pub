@@ -227,6 +227,59 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(publishPackageMock).not.toHaveBeenCalled();
   });
 
+  it("Scenario: Given a WebUI-created publish event, When canceled before confirmation, Then no registry action runs", async () => {
+    const packageDir = path.join(sandbox, "publish-cancel-detached");
+    await fsp.mkdir(packageDir, { recursive: true });
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const created = await scheduler.createProactiveEvent("publish", "alice", {
+      source: { kind: "directory", path: packageDir },
+      args: [],
+      target: { name: "pkg", version: "1.0.0", path: packageDir },
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    expect(scheduler.cancel(created.event.id, "owner disappeared")).toBe(true);
+    expect(store.getEvent(created.event.id)?.status).toBe("canceled");
+    expect(store.getEvent(created.event.id)?.result).toBe("owner disappeared");
+    expect(publishPackageMock).not.toHaveBeenCalled();
+  });
+
+  it("Scenario: Given confirmation has started an external publish, When cancellation arrives, Then it does not rewrite the result", async () => {
+    const packageDir = path.join(sandbox, "publish-cancel-after-confirm");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "pkg", version: "1.0.0" }),
+      "utf8",
+    );
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const created = await scheduler.createProactiveEvent("publish", "alice", {
+      source: { kind: "directory", path: packageDir },
+      args: ["--dry-run", "--no-git-checks"],
+      target: { name: "pkg", version: "1.0.0", path: packageDir },
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const confirmed = scheduler.confirm(created.event.id);
+    expect(scheduler.cancel(created.event.id, "owner disappeared")).toBe(false);
+    await expect(confirmed).resolves.toBe(true);
+    expect(store.getEvent(created.event.id)?.status).toBe("success");
+  });
+
   it("Scenario: Given an existing trusted publisher that differs, When update is confirmed, Then the old id is deleted before the new config is added (delete-then-put)", async () => {
     const store = new DaemonStore();
     await store.load();
@@ -468,6 +521,116 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(store.getEvent(second.event.id)?.status).toBe("success");
   });
 
+  it("Scenario: Given oidc for the current package, When mounted from CLI, Then a configure-trust Event is created with the derived GitHub config", async () => {
+    const packageDir = path.join(sandbox, "oidc-single");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "@scope/oidc-single",
+        version: "1.0.0",
+        repository: "https://github.com/owner/repo.git",
+      }),
+      "utf8",
+    );
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+    const exit = vi.fn();
+
+    await scheduler.createOidcEvents(
+      {
+        command: "oidc",
+        cwd: packageDir,
+        packageNames: [],
+        recursive: false,
+        file: "publish.yml",
+      },
+      { log: vi.fn(), exit },
+    );
+
+    expect(exit).toHaveBeenCalledWith(0);
+    const event = store.getEvents()[0];
+    expect(event?.payload?.kind).toBe("configure-trust");
+    if (event?.payload?.kind !== "configure-trust") return;
+    expect(event.payload.data.action).toBe("add");
+    expect(event.payload.data.target).toMatchObject({
+      name: "@scope/oidc-single",
+      path: packageDir,
+    });
+    expect(event.payload.data.config).toMatchObject({
+      type: "github",
+      claims: {
+        repository: "owner/repo",
+        workflow_ref: { file: "publish.yml" },
+      },
+    });
+  });
+
+  it("Scenario: Given recursive oidc with a shared config, When mounted from CLI, Then an EventGroup stores the default once", async () => {
+    const workspaceRoot = path.join(sandbox, "oidc-recursive");
+    const packageA = path.join(workspaceRoot, "packages/a");
+    const packageB = path.join(workspaceRoot, "packages/b");
+    await fsp.mkdir(packageA, { recursive: true });
+    await fsp.mkdir(packageB, { recursive: true });
+    await fsp.writeFile(path.join(workspaceRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    await fsp.writeFile(
+      path.join(packageA, "package.json"),
+      JSON.stringify({
+        name: "@scope/a",
+        version: "1.0.0",
+        repository: "https://github.com/owner/repo.git",
+      }),
+      "utf8",
+    );
+    await fsp.writeFile(
+      path.join(packageB, "package.json"),
+      JSON.stringify({
+        name: "@scope/b",
+        version: "1.0.0",
+        repository: "https://github.com/owner/repo.git",
+      }),
+      "utf8",
+    );
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    await scheduler.createOidcEvents(
+      {
+        command: "oidc",
+        cwd: workspaceRoot,
+        packageNames: [],
+        recursive: true,
+        file: "publish.yml",
+      },
+      { log: vi.fn(), exit: vi.fn() },
+    );
+
+    const events = store.getEvents();
+    expect(events).toHaveLength(2);
+    const groupId = events[0]?.groupId;
+    expect(groupId).toBeTruthy();
+    expect(events.every((event) => event.groupId === groupId)).toBe(true);
+    expect(store.getGroupTrustDraft(groupId!).defaultConfig).toMatchObject({
+      type: "github",
+      claims: {
+        repository: "owner/repo",
+        workflow_ref: { file: "publish.yml" },
+      },
+    });
+    for (const event of events) {
+      expect(event.payload?.kind).toBe("configure-trust");
+      if (event.payload?.kind === "configure-trust") {
+        expect(event.payload.data.config).toBeUndefined();
+      }
+    }
+  });
+
   it("Scenario: Given an invalid proactive payload, When mounted, Then no executable event is created", async () => {
     const store = new DaemonStore();
     await store.load();
@@ -644,7 +807,7 @@ describe("Feature: WebUI-created proactive events", () => {
       {
         command: "publish",
         cwd: "/tmp/project",
-        args: ["--dry-run"],
+        args: ["--dry-run", "--ignore-scripts"],
         profileOverride: "work",
       },
       {
@@ -653,7 +816,12 @@ describe("Feature: WebUI-created proactive events", () => {
       },
     );
 
-    await expect(created).resolves.toBeUndefined();
+    await expect(created).resolves.toMatchObject({
+      kind: "publish",
+      profile: "work",
+      profileOverride: "work",
+      status: "pending",
+    });
 
     const pending = store.getEvents().find((e) => e.status === "pending");
     expect(pending?.profile).toBe("work");
@@ -1647,7 +1815,6 @@ describe("Feature: WebUI-created proactive events", () => {
 
     await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
 
-    expect(packPackageMock).toHaveBeenCalledWith(packageDir);
     expect(publishPackageMock).not.toHaveBeenCalled();
     expect(stderr.join("")).toContain('npm warn Unknown cli config "--config.foo"');
     expect(stdout.join("")).toBe("+ config-option-pkg@1.0.0\n");
@@ -1697,7 +1864,6 @@ describe("Feature: WebUI-created proactive events", () => {
 
     await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
 
-    expect(packPackageMock).toHaveBeenCalledWith(sourceDir);
     expect(publishPackageMock).not.toHaveBeenCalled();
     expect(stderr.join("")).toContain('npm warn Unknown cli config "--config.foo"');
     expect(stdout.join("")).toBe("+ config-source-pkg@1.0.0\n");
@@ -2092,7 +2258,7 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(noticeText).toContain(
       "npm notice Publishing to http://package-registry.test/ with tag beta and public access (dry-run)\n",
     );
-    expect(summarizePackageTarballMock).toHaveBeenCalledWith(Buffer.from("placeholder tarball"));
+    expect(summarizePackageTarballMock).toHaveBeenCalledWith(expect.any(Buffer));
     expect(publishPackageMock).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(0);
   });
@@ -4137,7 +4303,6 @@ describe("Feature: WebUI-created proactive events", () => {
     await expect(scheduler.confirm(pending.id)).resolves.toBe(true);
 
     const event = store.getEvent(pending.id);
-    expect(packPackageMock).toHaveBeenCalledWith(packageDir);
     expect(publishPackageMock).not.toHaveBeenCalled();
     expect(event?.status).toBe("success");
     expect(event?.result).toBe("Dry run complete; no registry write performed.");
@@ -4199,16 +4364,17 @@ describe("Feature: WebUI-created proactive events", () => {
         id: "pkg@1.0.0",
         name: "pkg",
         version: "1.0.0",
-        size: Buffer.from("placeholder tarball").length,
+        size: expect.any(Number),
         filename: "pkg-1.0.0.tgz",
       }),
     );
+    expect(isRecord(output) ? output.size : undefined).toEqual(expect.any(Number));
+    expect(Number(isRecord(output) ? output.size : 0)).toBeGreaterThan(0);
     expect(outputText).not.toContain("Dry run complete");
     expect(outputText).not.toContain("packing");
     expect(stderr.join("")).toBe(
       "npm notice Publishing to http://registry.test/ with tag latest and default access (dry-run)\n",
     );
-    expect(packPackageMock).toHaveBeenCalledWith(packageDir);
     expect(publishPackageMock).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(0);
   });

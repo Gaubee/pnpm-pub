@@ -201,6 +201,7 @@ export const de: Messages = {
       expired: "abgelaufen",
       actionRequired: "Aktion erforderlich",
       rejected: "abgelehnt",
+      canceled: "abgebrochen",
       skipped: "übersprungen",
     },
   },

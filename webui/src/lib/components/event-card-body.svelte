@@ -234,7 +234,7 @@
 		<RecursiveTargetList targets={recursiveCtx.targets} summaries={event.tarballSummaries ?? []} pending={isPending} />
 	{/if}
 
-	{#if !isPending && event.result && status !== 'rejected'}
+	{#if !isPending && event.result && status !== 'rejected' && status !== 'canceled'}
 		{@const isError = isExpired || status === 'failed'}
 		{@const isSuccess = status === 'success'}
 		{@const firstLine = (event.result.split(/\r?\n/)[0] ?? '').trim()}

@@ -79,6 +79,7 @@
   "eventCard.branchMismatch": "Branch-Konflikt — wechsle zu „{branch}“ oder aktualisiere das Feld.",
   "eventCard.branchNoCurrent": "Kein Git-Repository — Veröffentlichungs-Branch hat keine Wirkung.",
   "eventCard.status.skipped": "übersprungen",
+  "eventCard.status.canceled": "abgebrochen",
   "island.publishing": "{target} wird veröffentlicht",
   "island.unpublishing": "Veröffentlichung von {target} wird aufgehoben",
   "island.addingTrust": "Trusted Publishing wird hinzugefügt",

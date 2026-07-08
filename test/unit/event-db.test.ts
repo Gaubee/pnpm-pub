@@ -3,7 +3,7 @@
  *
  * Uses a temp sandbox via setHomeOverride so each test gets a fresh events.db.
  * Verifies insert/update/query round-trips, name/keyword filtering,
- * pagination + total count, orphan-pending sweep on open, and JSON/boolean
+ * pagination + total count, orphan-pending cancel on open, and JSON/boolean
  * serialization fidelity.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
@@ -300,17 +300,17 @@ describe("event-db persistence", () => {
     expect(r.rows[0]!.id).toBe("a");
   });
 
-  it("sweeps orphan pending events to failed on open", () => {
+  it("Scenario: Given pending events from a previous daemon, When the DB opens, Then they become canceled history", () => {
     insertEvent(db, makeEvent({ id: "orphan", status: "pending" }));
     db.close();
-    // Reopen — openEventDb sweeps pending → failed.
+    // Reopen — openEventDb sweeps pending → canceled.
     db = openEventDb(eventsDbPath());
     const r = queryEvents(db, { status: "pending", page: 0, limit: 10 });
     expect(r.total).toBe(0);
-    const failed = queryEvents(db, { status: "history", page: 0, limit: 10 });
-    expect(failed.total).toBe(1);
-    expect(failed.rows[0]!.status).toBe("failed");
-    expect(failed.rows[0]!.result).toContain("Daemon restarted");
+    const history = queryEvents(db, { status: "history", page: 0, limit: 10 });
+    expect(history.total).toBe(1);
+    expect(history.rows[0]!.status).toBe("canceled");
+    expect(history.rows[0]!.result).toContain("Daemon restarted");
   });
 
   describe("Feature: grouped history pagination", () => {
@@ -473,12 +473,13 @@ describe("event-db persistence", () => {
 
     it("Scenario: flat history counts only current ontology statuses", () => {
       insertEvent(db, makeEvent({ id: "good", createdAt: 1002, status: "success" }));
+      insertEvent(db, makeEvent({ id: "canceled", createdAt: 1003, status: "canceled" }));
       insertLegacyStatusRow(db, { id: "legacy", createdAt: 1001, status: "conflict" });
 
       const page = queryEvents(db, { status: "history", page: 0, limit: 10 });
 
-      expect(page.total).toBe(1);
-      expect(page.rows.map((row) => row.id)).toEqual(["good"]);
+      expect(page.total).toBe(2);
+      expect(page.rows.map((row) => row.id)).toEqual(["canceled", "good"]);
     });
   });
 });

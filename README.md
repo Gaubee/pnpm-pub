@@ -164,6 +164,29 @@ command help, while `pnpm-pub --help` delegates to `pnpm publish --help`.
 compatibility (Chapter 7.1.2). The `daemon start|status|stop` namespace is
 reserved for daemon lifecycle management and never falls through to publish.
 
+### Creating Trusted Publishing Events from CLI
+
+`pnpm-pub oidc` creates pending Trusted Publishing Events in the daemon. It does
+not mutate npm `/trust` directly; confirm the generated Event or EventGroup in
+the tray before any registry write happens.
+
+```bash
+pnpm-pub oidc
+pnpm-pub oidc --repo owner/repo --file publish.yml --env npm-release
+pnpm-pub oidc -r --repo owner/repo --file publish.yml
+pnpm-pub oidc @scope/a @scope/b --repo owner/repo --file publish.yml
+pnpm-pub oidc --remove @scope/pkg
+```
+
+Common options: `-C, --dir <path>`, `-r, --recursive`, `--profile <name>`,
+`--provider <github|gitlab|circleci>`, `--repo <owner/repo>`, `--file
+<workflow.yml>`, `--env <name>`, `--allow-publish` /
+`--no-allow-publish`, and `--allow-stage-publish` /
+`--no-allow-stage-publish`. GitLab uses `--project-path` and `--ci-file`.
+CircleCI uses `--circle-org-id`, `--circle-project-id`,
+`--circle-pipeline-definition-id`, optional repeated `--circle-context-id`, and
+`--vcs-origin`.
+
 ## Scripts
 
 The project uses two launch conventions:
