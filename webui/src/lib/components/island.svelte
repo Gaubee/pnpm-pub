@@ -321,8 +321,15 @@
 	 * scale, max-width, border-radius, padding, box-shadow, backdrop-filter)
 	 * are owned entirely by Motion via `animate`; CSS sets no value for them
 	 * and no transition, so there is never a competing source.
+	 *
+	 * `.island` / `.island-detail` are written on `<motion.div>` (an external
+	 * component from @humanspeak/svelte-motion that forwards `class` to a real
+	 * `<div>`). Svelte's CSS scope analysis can't see across that component
+	 * boundary, so these selectors are declared `:global` and scoped to the
+	 * `.island-anchor` wrapper (a native div in THIS component) to avoid
+	 * leaking globally. Functionally identical to a scoped `.island` rule.
 	 */
-	.island {
+	.island-anchor :global(.island) {
 		display: grid;
 		grid-template-columns: 1fr auto;
 		grid-template-rows: auto auto;
@@ -368,7 +375,7 @@
 		white-space: nowrap;
 		font-weight: 500;
 	}
-	.island :global(svg) {
+	.island-anchor :global(.island) :global(svg) {
 		display: inline-block;
 	}
 
@@ -398,8 +405,10 @@
 	/*
 	 * Detail row. Height + opacity are animated by Motion (the `animate`
 	 * object is the single source). overflow:hidden clips while collapsing.
+	 * `:global` + `.island-anchor` scope for the same reason as `.island`
+	 * above (the class sits on a motion.div).
 	 */
-	.island-detail {
+	.island-anchor :global(.island-detail) {
 		grid-column: 1 / -1;
 		min-width: 0;
 		overflow: hidden;
