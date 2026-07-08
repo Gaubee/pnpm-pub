@@ -5888,3 +5888,26 @@ Status: complete
 ### Residuals
 
 - npm authentication must be restored before publishing `0.1.1` and running fresh registry-install verification.
+
+## Milestone 241 — Advanced publish args projection round
+
+Status: complete
+
+### Delivered
+
+- Extracted the EventCard Advanced publish argument law into `webui/src/lib/publish-advanced-args.ts`.
+- Fixed empty publish args so the WebUI no longer projects `--no-git-checks` as enabled unless the args explicitly disable git checks.
+- Preserved WebUI-authored defaults: events whose args contain `--no-git-checks` still render and execute that opt-out.
+- Changed Advanced edits to patch managed flags while preserving unmanaged publish args such as `--dry-run`, `--registry`, filters, `--json`, `--provenance`, and recursive intent.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/241-advanced-no-git-checks-projection.md`.
+
+### Verification
+
+- Svelte MCP autofixer on `webui/src/lib/components/event-card.svelte`
+- `pnpm exec vitest run test/unit/webui-publish-advanced-args.test.ts test/unit/publish-git-checks.test.ts test/unit/store.test.ts --reporter=verbose`
+- `pnpm --filter ./webui run check`
+- `pnpm typecheck`
+
+### Residuals
+
+- Effective env/npmrc git-checks config remains a daemon-side execution law, not an Advanced-panel switch projection. If needed later, expose it as a separate read-only daemon projection.

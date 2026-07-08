@@ -45,6 +45,11 @@
     import type { Snippet } from "svelte";
     import type { RepoInfo } from "$lib/components/repo-info-types.js";
     import { actions, daemon } from "$lib/store.js";
+    import {
+        parsePublishAdvancedArgs,
+        rebuildPublishAdvancedArgs,
+        type PublishAdvancedArgsOverrides,
+    } from "$lib/publish-advanced-args.js";
     import { isMemberInheriting } from "$lib/trusted-publishing.js";
     import EventCardHeader from "$lib/components/event-card-header.svelte";
     import EventCardBody from "$lib/components/event-card-body.svelte";
@@ -494,29 +499,9 @@
         publishData?.branch ?? recursiveCtx?.branch ?? "",
     );
 
-    /** Find `--flag <value>` (or `--flag=value`) in args; returns undefined if absent. */
-    function argValue(args: string[], flag: string): string | undefined {
-        for (let i = 0; i < args.length; i++) {
-            const a = args[i]!;
-            if (a === flag) {
-                const next = args[i + 1];
-                if (next && !next.startsWith("-")) return next;
-            }
-            if (a.startsWith(`${flag}=`)) return a.slice(flag.length + 1);
-        }
-        return undefined;
-    }
-    const accessArg = $derived(
-        argValue(editableArgs, "--access") === "restricted"
-            ? "restricted"
-            : "public",
-    );
-    const tagArg = $derived(argValue(editableArgs, "--tag") ?? "");
-    /** A boolean flag is "on" when present as `--flag` and "off" only when an
-     *  explicit `--no-flag` is present. Absent ⇒ default (per-option). */
-    function hasFlag(args: string[], flag: string): boolean {
-        return args.includes(flag);
-    }
+    const advancedArgs = $derived(parsePublishAdvancedArgs(editableArgs));
+    const accessArg = $derived(advancedArgs.access);
+    const tagArg = $derived(advancedArgs.tag);
 
     // Whether `--access` is meaningful: single-package ⇒ scoped check; recursive
     // ⇒ any scoped target (pnpm publish -r applies one --access to the run, and
@@ -528,18 +513,10 @@
             return recursiveCtx.targets.some((t) => t.name.startsWith("@"));
         return false;
     });
-    const ignoreScriptsOn = $derived(hasFlag(editableArgs, "--ignore-scripts"));
-    // No-git-checks defaults ON: if the args carry no explicit --git-checks,
-    // we treat it as opted-out (the common case for feature-branch publishes).
-    const noGitChecksOn = $derived(
-        hasFlag(editableArgs, "--git-checks") ? false : true,
-    );
-    const publishBranchOn = $derived(
-        argValue(editableArgs, "--publish-branch") !== undefined,
-    );
-    const publishBranchValue = $derived(
-        argValue(editableArgs, "--publish-branch") ?? "",
-    );
+    const ignoreScriptsOn = $derived(advancedArgs.ignoreScripts);
+    const noGitChecksOn = $derived(advancedArgs.noGitChecks);
+    const publishBranchOn = $derived(advancedArgs.publishBranchOn);
+    const publishBranchValue = $derived(advancedArgs.publishBranch);
 
     // publish-branch mismatch gate: blocks the Confirm button client-side.
     const branchMismatch = $derived(
@@ -582,41 +559,11 @@
     /** Rebuild args from the current structured state + a partial override, then
      *  ship an update-event. Works for both `publish` and `recursive-publish`
      *  (both carry an editable `args` array). */
-    function rebuildArgs(overrides?: {
-        access?: "public" | "restricted";
-        tag?: string;
-        ignoreScripts?: boolean;
-        noGitChecks?: boolean;
-        publishBranchOn?: boolean;
-        publishBranch?: string;
-    }): void {
+    function rebuildArgs(overrides?: PublishAdvancedArgsOverrides): void {
         if (!publishData && !recursiveCtx) return;
-        const access = overrides?.access ?? accessArg;
-        const tag = overrides?.tag !== undefined ? overrides.tag : tagArg;
-        const ignoreScripts = overrides?.ignoreScripts ?? ignoreScriptsOn;
-        const branchOn = overrides?.publishBranchOn ?? publishBranchOn;
-        const branchVal =
-            overrides?.publishBranch !== undefined
-                ? overrides.publishBranch
-                : publishBranchValue;
-        const noGitChecks =
-            overrides?.noGitChecks ?? (branchOn ? false : noGitChecksOn);
-
-        const args: string[] = ["--access", access];
-        if (tag && tag !== "latest") args.push("--tag", tag);
-        if (ignoreScripts) args.push("--ignore-scripts");
-        // Git checks default ON at the daemon; we emit --no-git-checks to opt out.
-        // Enabling publish-branch turns git checks back ON (drops --no-git-checks)
-        // and narrows the allowed branch via --publish-branch.
-        if (!branchOn && noGitChecks) args.push("--no-git-checks");
-        if (branchOn && branchVal) args.push("--publish-branch", branchVal);
-        // recursive-publish forwards the -r flag so the rebuilt args stay valid.
-        if (
-            recursiveCtx &&
-            !args.includes("-r") &&
-            !args.includes("--recursive")
-        )
-            args.unshift("-r");
+        const args = rebuildPublishAdvancedArgs(editableArgs, overrides, {
+            recursive: !!recursiveCtx,
+        });
         actions.updateEvent(event.id, args);
     }
 
@@ -858,4 +805,3 @@
         hasFooter,
     })}
 {/if}
-
