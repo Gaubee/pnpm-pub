@@ -6,19 +6,26 @@
 	publish. The data persists with the event (pending / resolved / history).
 
 	Header mirrors the publish EventCard's left cluster (icon + name@version +
-	a "Tarball contents" badge); body is the TarballTree; footer intentionally
-	empty (display-only). No RPC: the summary is passed in already computed.
+	a "Tarball contents" badge); body is the TarballTree, expanded by default
+	(the whole point of opening this dialog is to inspect the files). Footer
+	holds the same right-side ButtonGroup of "click to open" actions the
+	EventCard uses (repo / folder / npm), isolated at the inline-end.
 -->
 <script lang="ts">
 	import type { PublishTarget, TarballSummary } from '$lib/types.js';
 	import {
 		Dialog,
 		DialogContent,
+		DialogFooter,
 		DialogHeader,
 		DialogTitle,
 	} from '$lib/components/ui/dialog/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
 	import TarballTree from './tarball-tree.svelte';
+	import EventCardOpenActions from './event-card-open-actions.svelte';
+	import type { RepoInfo } from './repo-info-types.js';
+	import { actions } from '$lib/store.js';
 	import IconPackage from '@lucide/svelte/icons/package';
 	import IconFolder from '@lucide/svelte/icons/folder';
 	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -34,13 +41,14 @@
 		summary?: TarballSummary | null;
 	} = $props();
 
-	// Accordion expansion state for the tarball contents (default collapsed, same
-	// as the EventCard's inline accordion). Re-seed closed whenever a different
-	// target is opened.
-	let showFiles = $state(false);
+	// Accordion expansion state for the tarball contents. DEFAULT EXPANDED: the
+	// user opened this dialog specifically to see the file tree, so collapse the
+	// header row only as an opt-out. Re-seed open whenever a different target is
+	// opened.
+	let showFiles = $state(true);
 	$effect(() => {
 		void target?.path;
-		showFiles = false;
+		showFiles = true;
 	});
 
 	function humanSize(bytes: number): string {
@@ -48,11 +56,44 @@
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 	}
+
+	// --- Footer open-actions: resolve repo / folder / npm for THIS target ---
+	// Mirrors the EventCard assembler's corner-action derivation, narrowed to a
+	// single PublishTarget. repoInfo is async-resolved + cached by the store.
+	let repoInfo = $state<RepoInfo | null>(null);
+	const repoRaw = $derived(target?.repository ?? '');
+	$effect(() => {
+		if (!repoRaw) {
+			repoInfo = null;
+			return;
+		}
+		void actions.repoInfo(repoRaw).then((info) => {
+			repoInfo = info;
+		});
+	});
+	// The local package directory (open-folder). Recursive-publish targets each
+	// carry their own path.
+	const sourcePath = $derived(target?.path ?? '');
+	// npm registry link. Pending targets aren't on the registry yet, so always
+	// link to the package landing page (matches EventCard's pending behavior).
+	const packageName = $derived(target?.name ?? '');
+	const npmUrl = $derived(packageName ? `https://www.npmjs.com/package/${packageName}` : '');
+	const hasOpenActions = $derived(!!repoInfo || !!sourcePath || !!npmUrl);
+
+	function onOpenUrl(url: string): void {
+		void actions.openUrl(url);
+	}
+	function onOpenPath(path: string): void {
+		void actions.openPath(path);
+	}
 </script>
 
 <Dialog bind:open>
+	<!-- Height is a MAX, not fixed: `max-h` lets the dialog shrink to its
+	     content when the file tree is small, while the grid's middle row only
+	     scrolls once it would otherwise exceed the cap. -->
 	<DialogContent
-		class="flex max-h-[min(100dvh,40rem)] w-[min(100%,44rem)] flex-col gap-0 overflow-hidden p-0"
+		class="grid max-h-[min(100dvh,40rem)] w-[min(100%,44rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
 		aria-describedby={undefined}
 	>
 		{#if target}
@@ -72,13 +113,9 @@
 				</DialogTitle>
 			</DialogHeader>
 
-			<!-- Body: reuse the EventCard's tarball accordion verbatim. It is a
-			     self-contained block that manages its own scroll region
-			     (`max-h-56 overflow-auto`) ONLY when expanded; collapsed, the body
-			     is just a single header row. This avoids the nested/double
-			     scrollbar that appeared in Safari when the dialog body itself
-			     scrolled and the tree had its own overflow. -->
-			<div class="min-h-0 flex-1 overflow-y-auto p-3">
+			<!-- Body: the tarball contents, expanded by default. Collapsing the
+			     header row tucks the tree away; the dialog body still scrolls. -->
+			<div class="min-h-0 overflow-y-auto p-3">
 				{#if summary}
 					<div class="rounded-md border border-border">
 						<button
@@ -105,6 +142,20 @@
 					</div>
 				{/if}
 			</div>
+
+			<!-- Footer: the right-side ButtonGroup of "click to open" actions,
+			     isolated at the inline-end (mirrors the EventCard footer's right
+			     cluster). Omitted entirely when the target carries no repo/folder/
+			     npm context. DialogFooter's default negative margins + muted bg
+			     assume a p-4 DialogContent; this dialog uses p-0, so they are
+			     reset here while keeping its sm:justify-end (right alignment). -->
+			{#if hasOpenActions}
+				<DialogFooter class="mx-0 mb-0 rounded-none bg-transparent px-4 py-3">
+					<ButtonGroup>
+						<EventCardOpenActions {repoInfo} {sourcePath} {npmUrl} {onOpenUrl} {onOpenPath} />
+					</ButtonGroup>
+				</DialogFooter>
+			{/if}
 		{/if}
 	</DialogContent>
 </Dialog>

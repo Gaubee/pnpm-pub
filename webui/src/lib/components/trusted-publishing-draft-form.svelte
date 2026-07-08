@@ -12,6 +12,7 @@
 		providerFromHint,
 		splitRepositoryHint,
 		TRUSTED_PUBLISHING_FIELDS,
+		trustedPublisherCreateConfigsEqual,
 		type TrustedPublishingFieldKey,
 	} from '$lib/trusted-publishing.js';
 	import { _ } from 'svelte-i18n';
@@ -30,6 +31,9 @@
 		mode = 'full',
 		disabled = false,
 		valid = $bindable(false),
+		dirty = $bindable(false),
+		stagedConfig = $bindable<TrustedPublisherCreateConfig | null>(null),
+		deferSubmit = false,
 	}: {
 		eventId: string;
 		groupId?: string;
@@ -39,6 +43,16 @@
 		mode?: 'full' | 'compact';
 		disabled?: boolean;
 		valid?: boolean;
+		/** Whether the user has changed fields away from the initial seed.
+		 *  Bound up the chain so a dialog footer can switch between "Close" and
+		 *  "Discard changes + Close". */
+		dirty?: boolean;
+		/** When `deferSubmit` is true, edits are NOT shipped to the daemon on
+		 *  every keystroke; instead the current built config is exposed here so
+		 *  the host (a dialog) can stage it locally and submit only on Save.
+		 *  Null when the current fields don't build a valid config. */
+		stagedConfig?: TrustedPublisherCreateConfig | null;
+		deferSubmit?: boolean;
 	} = $props();
 
 	const providers: { value: TrustedPublisherType; labelKey: string }[] = [
@@ -70,6 +84,13 @@
 	let allowStagePublish = $state(true);
 	let initializedKey = '';
 	let sentKey = '';
+	/** Snapshot of the config the form was seeded with (the "clean" state).
+	 *  Captured once per identity so `dirty` can compare the live draft against
+	 *  it, and `resetToSeed()` can restore both the fields and the daemon
+	 *  state. `null` until the first valid build lands (e.g. an empty hint
+	 *  seed stays null until required fields are filled — which never happens
+	 *  pre-edit, so dirty correctly reads false). */
+	let seededConfig = $state<TrustedPublisherCreateConfig | null>(null);
 
 	const providerFields = $derived(PROVIDER_FIELDS[provider]);
 
@@ -141,6 +162,11 @@
 		if (initializedKey === key) return;
 		initializedKey = key;
 		sentKey = '';
+		seededKey = '';
+		// Reset the seed snapshot: a config/currentConfig seed is known up-front;
+		// a hint seed has no config object, so seededConfig is re-captured from
+		// the first valid build in the dirty effect below.
+		seededConfig = config ?? currentConfig ?? null;
 		if (config) prefillFromConfig(config);
 		else if (currentConfig) prefillFromConfig(currentConfig);
 		else prefillFromHint();
@@ -196,6 +222,12 @@
 
 	$effect(() => {
 		valid = !!builtConfig;
+		// In deferSubmit mode, expose the built config to the host WITHOUT
+		// touching the daemon; the host stages it and submits on Save.
+		if (deferSubmit) {
+			stagedConfig = builtConfig;
+			return;
+		}
 		if (!builtConfig) return;
 		const key = JSON.stringify(builtConfig);
 		if (sentKey === key) return;
@@ -203,6 +235,42 @@
 		if (groupId) actions.updateConfigureTrustGroupDraft(groupId, builtConfig);
 		else actions.updateConfigureTrustDraft(eventId, builtConfig);
 	});
+
+	// Dirty-state signal (READ-ONLY — never writes to the daemon). Compares the
+	// live draft against the seed snapshot. For a hint seed (seededConfig starts
+	// null), capture the first valid build as the seed so an untouched hint form
+	// reads clean; once the user edits, the comparison diverges → dirty true.
+	// The seed capture runs at most once per identity (guarded by seededKey
+	// mirroring initializedKey's lifecycle).
+	let seededKey = '';
+	$effect(() => {
+		const draft = builtConfig;
+		const identity = groupId ?? eventId;
+		if (seededConfig === null && draft && seededKey !== identity) {
+			// First valid build after a hint-seed init: adopt it as the clean
+			// baseline. (A config/currentConfig seed sets seededConfig directly in
+			// the init effect, so this branch only fires for the hint path.)
+			seededKey = identity;
+			seededConfig = draft;
+		}
+		dirty = !trustedPublisherCreateConfigsEqual(draft, seededConfig);
+	});
+
+	/** Restore the form fields to the seed snapshot. In edit-live mode ALSO
+	 *  re-send the seed config to the daemon (earlier edits already shipped) and
+	 *  sync `sentKey` so the send-effect doesn't re-POST. In deferSubmit mode the
+	 *  daemon was never touched — just restore fields; `stagedConfig` + `dirty`
+	 *  re-derive from the reseeded fields. Leaves `initializedKey` untouched.
+	 *  No-op if there is no seed to restore to. */
+	export function resetToSeed(): void {
+		if (!seededConfig) return;
+		prefillFromConfig(seededConfig);
+		if (deferSubmit) return;
+		const key = JSON.stringify(seededConfig);
+		sentKey = key;
+		if (groupId) actions.updateConfigureTrustGroupDraft(groupId, seededConfig);
+		else actions.updateConfigureTrustDraft(eventId, seededConfig);
+	}
 </script>
 
 <div class="@container flex flex-col gap-3 rounded-md border border-border bg-muted/20 p-3">

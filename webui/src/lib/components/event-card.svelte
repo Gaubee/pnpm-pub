@@ -31,6 +31,7 @@
     import type {
         EventStatus,
         PubEvent,
+        TrustedPublisherCreateConfig,
     } from "$lib/types.js";
     import {
         type BadgeVariant,
@@ -89,12 +90,28 @@
          *  content clears the absolutely positioned close button baked into
          *  DialogContent. Card mode passes nothing. */
         headerClass,
+        /** Overrides the pending footer's LEFT cluster (default: confirm/reject).
+         *  When supplied, this snippet replaces the confirm/reject ButtonGroup
+         *  in-place; the RIGHT open-actions cluster is untouched. Used by
+         *  EventDetailDialog to render a discard/close row for trust members.
+         *  Only takes effect while `useFooterLeftCluster` is true. */
+        footerLeftCluster,
+        /** Gate for `footerLeftCluster`. The host passes the snippet once and
+         *  flips this per-event so the template needs no forward reference. */
+        useFooterLeftCluster = false,
+        /** Stage trust-form edits locally instead of shipping to the daemon on
+         *  every keystroke. The dialog host reads the staged config back via
+         *  the footer's leftCluster snippet and submits it on Save. Ignored in
+         *  card mode (GroupEventCard's default form stays edit-live). */
+        deferSubmit = false,
         /**
          * Dialog-mode only. The host supplies a children snippet that receives
          * `{ header, body, footer, hasFooter }` and lays each into its
-         * DialogHeader / scrollable body / footer grid row. `hasFooter` lets the
-         * host omit the footer row (and its divider) entirely when the card
-         * would render no footer actions. Ignored in card mode.
+         * DialogHeader / scrollable body / footer grid row. `hasFooter` lets
+         * the host omit the footer row (and its divider) entirely when the
+         * card would render no footer actions. The trust form's dirty/reset
+         * signals flow through `footerLeftCluster` (a parameterized snippet),
+         * not here. Ignored in card mode.
          */
         children,
     }: {
@@ -108,6 +125,9 @@
         titleLabel?: Snippet<[{ child: Snippet }]>;
         headerTrailing?: Snippet;
         headerClass?: string;
+        footerLeftCluster?: Snippet<[{ draftDirty: boolean; resetDraft: () => void; stagedConfig: TrustedPublisherCreateConfig | null }]>;
+        useFooterLeftCluster?: boolean;
+        deferSubmit?: boolean;
         children?: Snippet<
             [
                 {
@@ -358,10 +378,10 @@
         }
         return `https://www.npmjs.com/package/${packageName}`;
     });
-    // Whether the right-corner group has any action to show at all.
-    const hasCornerActions = $derived(
-        !!repoInfo || !!sourcePath || !!npmUrl || overrideActive,
-    );
+    // Whether the right-corner area of the header has anything to show. The
+    // "click to open" actions (repo / folder / npm) now live in the footer, so
+    // only the cross-profile override chip remains up here.
+    const hasCornerActions = $derived(overrideActive);
     const isRetryableStatus = $derived(
         event.status === "failed" ||
             event.status === "expired" ||
@@ -388,6 +408,15 @@
     // confirming/rejecting cross Footer(action)↔Body(form disabled). These stay
     // here in the assembler. confirmUnpublish is footer-internal.
     let trustedPublishingDraftValid = $state(false);
+    // Whether the trust form carries unsaved edits (vs its seed). Surfaced to a
+    // dialog host via the children snippet so its footer can show "Discard".
+    let trustedPublishingDraftDirty = $state(false);
+    // Local-staged trust config (deferSubmit mode). Surfaced to the dialog's
+    // footer leftCluster so Save can submit it; null when invalid/unchanged.
+    let trustedPublishingStagedConfig = $state<TrustedPublisherCreateConfig | null>(null);
+    // Ref to the EventCardBody so its exported resetToSeed can be re-exposed to
+    // the dialog host. Null outside dialog mode / before mount.
+    let bodyRef: { resetToSeed: () => void } | null = $state(null);
     let confirming = $state(false);
     let rejecting = $state(false);
     $effect(() => {
@@ -595,14 +624,19 @@
     const description = $derived(publishTarget?.target.description ?? null);
 
     // Whether the footer renders anything at all (drives CardFooter visibility
-    // in card mode and the footer grid row in dialog mode).
+    // in card mode and the footer grid row in dialog mode). The "click to open"
+    // actions (repo / folder / npm) now live in the footer, so an event that
+    // carries any of them also shows the footer even when otherwise resolved.
     const hasFooter = $derived(
         isPending ||
             isExpired ||
             needsAction ||
             isRetryable ||
             isUnpublishable ||
-            (autoClose && variant === "full"),
+            (autoClose && variant === "full") ||
+            !!repoInfo ||
+            !!sourcePath ||
+            !!npmUrl,
     );
 
     // Forwarded open helpers (Header only).
@@ -636,11 +670,6 @@
                 {hasCornerActions}
                 {overrideActive}
                 effectiveProfile={effectiveProfile}
-                {repoInfo}
-                {sourcePath}
-                {npmUrl}
-                onOpenUrl={onOpenUrl}
-                onOpenPath={onOpenPath}
                 {titleLabel}
                 {headerTrailing}
                 class={headerClass}
@@ -648,10 +677,14 @@
         </CardHeader>
         <CardContent class="space-y-3">
             <EventCardBody
+                bind:this={bodyRef}
                 {event}
                 status={event.status}
                 {isPending}
                 bind:valid={trustedPublishingDraftValid}
+                bind:dirty={trustedPublishingDraftDirty}
+                bind:stagedConfig={trustedPublishingStagedConfig}
+                {deferSubmit}
                 {readOnly}
                 {trustGroupId}
                 {overrideActive}
@@ -695,9 +728,19 @@
                         {rejecting}
                         {autoClose}
                         {variant}
+                        {repoInfo}
+                        {sourcePath}
+                        {npmUrl}
+                        onOpenUrl={onOpenUrl}
+                        onOpenPath={onOpenPath}
                         onConfirm={doConfirm}
                         onReject={doReject}
                         onRetry={retry}
+                        leftCluster={footerLeftCluster}
+                        useLeftCluster={useFooterLeftCluster}
+                        draftDirty={trustedPublishingDraftDirty}
+                        resetDraft={() => bodyRef?.resetToSeed()}
+                        stagedConfig={trustedPublishingStagedConfig}
                         onUnpublish={doUnpublish}
                         onAutoClose={onAutoClose}
                     />
@@ -722,11 +765,6 @@
             {hasCornerActions}
             {overrideActive}
             effectiveProfile={effectiveProfile}
-            {repoInfo}
-            {sourcePath}
-            {npmUrl}
-            onOpenUrl={onOpenUrl}
-            onOpenPath={onOpenPath}
             {titleLabel}
             {headerTrailing}
             class={headerClass}
@@ -734,10 +772,14 @@
     {/snippet}
     {#snippet bodySegment()}
         <EventCardBody
+            bind:this={bodyRef}
             {event}
             status={event.status}
             {isPending}
             bind:valid={trustedPublishingDraftValid}
+            bind:dirty={trustedPublishingDraftDirty}
+            bind:stagedConfig={trustedPublishingStagedConfig}
+            {deferSubmit}
             {readOnly}
             {trustGroupId}
             {overrideActive}
@@ -782,8 +824,18 @@
                 {rejecting}
                 {autoClose}
                 {variant}
+                {repoInfo}
+                {sourcePath}
+                {npmUrl}
+                onOpenUrl={onOpenUrl}
+                onOpenPath={onOpenPath}
                 onConfirm={doConfirm}
                 onReject={doReject}
+                leftCluster={footerLeftCluster}
+                useLeftCluster={useFooterLeftCluster}
+                draftDirty={trustedPublishingDraftDirty}
+                resetDraft={() => bodyRef?.resetToSeed()}
+                stagedConfig={trustedPublishingStagedConfig}
                 onRetry={retry}
                 onUnpublish={doUnpublish}
                 onAutoClose={onAutoClose}
@@ -793,9 +845,11 @@
 
     <!--
         Dialog surface: the host (EventDetailDialog) supplies a `children`
-        snippet that receives `{ header, body, footer }` and lays each into its
-        DialogHeader / scrollable body / footer grid row — with NO second
-        <Card> wrapper, so the card chrome fuses into the dialog chrome.
+        snippet that receives `{ header, body, footer, hasFooter }` and lays
+        each into its DialogHeader / scrollable body / footer grid row — with
+        NO second <Card> wrapper, so the card chrome fuses into the dialog
+        chrome. The trust form's dirty/reset signals flow through
+        `footerLeftCluster` (a parameterized named-snippet child), not here.
     -->
     {@render children?.({
         header: headerSegment,

@@ -283,6 +283,35 @@ export function trustedPublisherConfigsEqual(
   return true;
 }
 
+/**
+ * Whether two EDITABLE configs (both `TrustedPublisherCreateConfig`, e.g. a
+ * form's current draft vs its initial seed snapshot) are effectively equal.
+ * Same normalization as {@link trustedPublisherConfigsEqual}, but typed for
+ * the create-vs-create comparison the dirty-state check needs (no registry
+ * `id` is involved on either side).
+ *
+ * Returns `false` if either side is `null` while the other isn't (a draft that
+ * became invalid vs a valid seed counts as dirty).
+ */
+export function trustedPublisherCreateConfigsEqual(
+  a: TrustedPublisherCreateConfig | null,
+  b: TrustedPublisherCreateConfig | null,
+): boolean {
+  if (!a || !b) return a === b;
+  if (a.type !== b.type) return false;
+  const ap = configPermissions(a);
+  const bp = configPermissions(b);
+  if (ap.allowPublish !== bp.allowPublish || ap.allowStagePublish !== bp.allowStagePublish) {
+    return false;
+  }
+  const av = extractTrustedPublishingValues(a);
+  const bv = extractTrustedPublishingValues(b);
+  for (const key of Object.keys(av) as TrustedPublishingFieldKey[]) {
+    if ((av[key] ?? "").trim() !== (bv[key] ?? "").trim()) return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Group inheritance resolution (Chapter 6.2.5).
 //
