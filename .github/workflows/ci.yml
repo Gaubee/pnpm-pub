@@ -33,12 +33,13 @@ jobs:
       - name: Check (webui)
         run: pnpm --filter ./webui exec svelte-check --tsconfig ./tsconfig.json
 
-      # i18n key parity: every locale must match en's shape (missing/extra
-      # keys fail). Untranslated keys (value === en) are warnings and do NOT
-      # fail CI; run `pnpm --filter ./webui i18n:check:strict` to enforce full
-      # translation locally before cutting a release.
+      # i18n key parity + full translation: every locale must match en's shape
+      # (missing/extra keys fail) AND have no untranslated keys (value === en,
+      # except the curated allowlist of brand/technical terms). Strict mode
+      # fails CI on any untranslated drift, so new keys must be translated
+      # (or allowlisted) before merge.
       - name: i18n key-parity (webui)
-        run: pnpm --filter ./webui i18n:check
+        run: pnpm --filter ./webui i18n:check:strict
 
       - name: Unit tests
         run: pnpm test

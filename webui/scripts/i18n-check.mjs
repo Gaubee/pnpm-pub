@@ -16,6 +16,7 @@
 // `en` is exported with `as const`; at runtime it's a plain object. tsx
 // resolves the .ts import so we can read the live values.
 const { en } = await import("../src/locales/en.ts");
+const { intentionallyUntranslated } = await import("./i18n-allowlist.mjs");
 const LOCALES = ["zh", "es", "fr", "ar", "ru", "de", "ja", "ko"];
 
 /** Flatten a nested message tree into dot-path → string leaves. */
@@ -55,7 +56,7 @@ for (const loc of LOCALES) {
   for (const key of Object.keys(enLeaves)) {
     if (!(key in locLeaves)) {
       missing.push(key);
-    } else if (locLeaves[key] === enLeaves[key]) {
+    } else if (locLeaves[key] === enLeaves[key] && !intentionallyUntranslated.has(key)) {
       untranslated.push(key);
     }
   }
