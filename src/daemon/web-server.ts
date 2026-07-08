@@ -736,11 +736,10 @@ export class WebServer {
       this.deps.store.updateEventArgs(result.event.id, result.event.payload.data.args);
     }
     send({ type: "event", event: result.event });
-    send({
-      type: "toast",
-      level: "info",
-      message: "Pending event created — review it under Events.",
-    });
+    // No "pending event created" toast — the new pending event surfaces on the
+    // Dynamic Island directly via the pending-group reflection in +layout.svelte
+    // (a richer live-activity slot: summary, detail, progress, jump-to-card).
+    // A redundant toast would just compete for the same single island slot.
   }
 
   /** Broadcast a typed projection frame to every WebUI oRPC subscriber. */
