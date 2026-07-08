@@ -9,7 +9,10 @@
     "preview": "vp preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "i18n:check": "node --import tsx scripts/i18n-check.mjs",
+    "i18n:check:strict": "node --import tsx scripts/i18n-check.mjs --strict",
+    "i18n:fill": "node --import tsx scripts/i18n-fill.mjs"
   },
   "dependencies": {
     "@humanspeak/svelte-motion": "^0.7.13",
@@ -36,6 +39,7 @@
     "svelte-check": "^4.6.0",
     "tailwind-variants": "^3.2.2",
     "tailwindcss": "^4.3.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vite": "catalog:",
     "vite-plus": "catalog:"
