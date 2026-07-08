@@ -128,9 +128,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
     "Scenario: Given %s, When CLI runs it, Then it exits locally without daemon IPC",
     async (_label, args, outputKind) => {
       const { main } = await import("../../src/cli/cli.js");
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-        throw new ExitCode(code ?? 0);
-      });
+      const exitSpy = mockProcessExit();
       const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
       const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -158,11 +156,36 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
     },
   );
 
+  it("Scenario: Given the help subcommand, When CLI runs it, Then it prints pnpm-pub help without daemon IPC", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = mockProcessExit();
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await main(["node", "pnpm-pub", "help"]);
+    } catch (err) {
+      expectExitCode(err, 0);
+    }
+
+    expect(connectionCount).toBe(0);
+    expect(capturedFrames).toEqual([]);
+    const stdout = stdoutSpy.mock.calls.map((call) => String(call[0])).join("");
+    expect(stdout).toContain("Usage:");
+    expect(stdout).toContain("pnpm-pub help");
+    expect(stdout).toContain("pnpm-pub [publish args...]");
+    expect(stdoutSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("Waiting for GUI confirmation"),
+    );
+    expect(stderrSpy).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
   it("Scenario: Given a status command, When the daemon reports an active profile, Then CLI prints that profile", async () => {
     const { main } = await import("../../src/cli/cli.js");
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new ExitCode(code ?? 0);
-    });
+    const exitSpy = mockProcessExit();
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -183,9 +206,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
 
   it("Scenario: Given a profile override before publish args, When CLI sends publish, Then the override stays on the IPC request", async () => {
     const { main } = await import("../../src/cli/cli.js");
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new ExitCode(code ?? 0);
-    });
+    const exitSpy = mockProcessExit();
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -206,9 +227,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
 
   it("Scenario: Given empty --profile= before publish args, When CLI parses it, Then it fails locally before IPC", async () => {
     const { main } = await import("../../src/cli/cli.js");
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new ExitCode(code ?? 0);
-    });
+    const exitSpy = mockProcessExit();
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -231,9 +250,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
 
   it("Scenario: Given -- before package args, When package args include --profile, Then CLI preserves it as a publish arg", async () => {
     const { main } = await import("../../src/cli/cli.js");
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new ExitCode(code ?? 0);
-    });
+    const exitSpy = mockProcessExit();
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -264,9 +281,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
   it("Scenario: Given a daemon-outdated signal, When CLI retries publish, Then it re-spawns and sends the package version handshake", async () => {
     const { main } = await import("../../src/cli/cli.js");
     // Capture the exit code the CLI would have used.
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
-      throw new ExitCode(code ?? 0);
-    });
+    const exitSpy = mockProcessExit();
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -293,6 +308,18 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
 
 class ExitCode {
   constructor(public code: number) {}
+}
+
+function mockProcessExit() {
+  return vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
+    throw new ExitCode(readExitCode(code));
+  });
+}
+
+function readExitCode(code: string | number | null | undefined): number {
+  if (typeof code === "number") return code;
+  if (typeof code === "string") return Number.parseInt(code, 10);
+  return 0;
 }
 
 function expectExitCode(value: unknown, code: number): void {

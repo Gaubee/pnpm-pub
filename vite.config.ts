@@ -30,6 +30,7 @@ import { defineConfig, defineProject, type Plugin as VitePlugin } from "vite-plu
 import type { Plugin as PackPlugin } from "vite-plus";
 import path from "node:path";
 import {
+  chmodSync,
   existsSync,
   readdirSync,
   copyFileSync,
@@ -39,6 +40,7 @@ import {
 } from "node:fs";
 
 const TARGET_PLATFORMS = ["win32-x64", "win32-arm64", "darwin-x64", "darwin-arm64"];
+const CLI_BIN_SHEBANG = "#!/usr/bin/env node";
 
 /** Copy @github/keytar prebuilds (native .node) AND its JS shim into the bundle (Chapter 9.2). */
 function copyKeytarPrebuilds(): PackPlugin {
@@ -172,6 +174,27 @@ function buildWebui(): PackPlugin {
   };
 }
 
+/** Enforce the npm `bin` contract: the shipped CLI must be directly executable. */
+function enforceCliBinExecutable(): PackPlugin {
+  return {
+    name: "pnpm-pub/cli-bin-executable",
+    apply: "build",
+    closeBundle() {
+      const cliBin = path.resolve(process.cwd(), "dist", "cli.js");
+      if (!existsSync(cliBin)) {
+        throw new Error(`[build] CLI bin output not found: ${cliBin}`);
+      }
+
+      const source = readFileSync(cliBin, "utf8");
+      if (!source.startsWith(`${CLI_BIN_SHEBANG}\n`)) {
+        throw new Error(`[build] CLI bin must start with ${CLI_BIN_SHEBANG}`);
+      }
+
+      chmodSync(cliBin, 0o755);
+    },
+  };
+}
+
 /**
  * Rewrite relative `.js`/`.mjs` import specifiers to their `.ts` source so the
  * daemon's ESM-style imports (e.g. `from '../../shared/index.js'`) resolve
@@ -283,7 +306,7 @@ export default defineConfig({
     deps: {
       neverBundle: ["opentray", "@opentray/ext-webview"],
     },
-    plugins: [copyKeytarPrebuilds(), copyAssets(), buildWebui()],
+    plugins: [copyKeytarPrebuilds(), copyAssets(), buildWebui(), enforceCliBinExecutable()],
     unbundle: false,
     minify: false,
     clean: true,

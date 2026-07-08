@@ -1,6 +1,6 @@
 {
   "name": "pnpm-pub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Desktop-level local daemon proxy and productivity tool for high-frequency NPM package authors.",
   "keywords": [
     "2fa",

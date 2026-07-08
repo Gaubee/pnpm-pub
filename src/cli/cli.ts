@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * pnpm-pub CLI entry — the thin client (Chapter 7).
  *
@@ -5,6 +6,7 @@
  *   pnpm-pub start [--profile]    -> spawn daemon + open tray
  *   pnpm-pub status               -> query daemon status
  *   pnpm-pub stop                 -> graceful shutdown
+ *   pnpm-pub help                 -> print pnpm-pub command help
  *   pnpm-pub daemon <start|status|stop>
  *                                   -> namespaced daemon management
  *   pnpm-pub <anything-else>      -> treated as `pnpm publish <args>` (fallback)
@@ -20,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import yargs from "yargs";
+import yargs, { type Argv } from "yargs";
 import { hideBin } from "yargs/helpers";
 import { encodeFrame, FrameReader, isIpcFrame } from "../shared/frame.js";
 import type { IpcPublishRequest, IpcHandshake, IpcManagementRequest } from "../shared/index.js";
@@ -35,8 +37,88 @@ const DAEMON_ENTRY = process.env.PNPM_PUB_DAEMON_ENTRY ?? path.join(__dirname, "
 const CLI_VERSION = readPackageVersion();
 const execFileAsync = promisify(execFile);
 const PROFILE_ERROR = "--profile requires a value (e.g. --profile alice).";
-type CliManagementCommand = "start" | "status" | "stop" | "version";
-type DaemonManagementCommand = Exclude<CliManagementCommand, "version">;
+type CliCommandRunContext = { profile?: string };
+type CliCommandRun = (context: CliCommandRunContext) => Promise<number> | number;
+type CliCommandSpec =
+  | {
+      name: string;
+      kind: "action";
+      usage: string;
+      description: string;
+      daemonCommand: boolean;
+      acceptsProfile: boolean;
+      run: CliCommandRun;
+    }
+  | {
+      name: string;
+      kind: "namespace";
+      usage: string;
+      description: string;
+      daemonCommand: false;
+      acceptsProfile: false;
+    };
+const CLI_OPTIONS = [
+  { usage: "--profile <name>", description: "Profile to use for the action" },
+] as const;
+const CLI_COMMANDS = [
+  {
+    name: "start",
+    kind: "action",
+    usage: "start [--profile <name>]",
+    description: "Boot the daemon and open the tray window",
+    daemonCommand: true,
+    acceptsProfile: true,
+    run: ({ profile }) => runStart(profile),
+  },
+  {
+    name: "status",
+    kind: "action",
+    usage: "status",
+    description: "Check the running daemon and active profile",
+    daemonCommand: true,
+    acceptsProfile: false,
+    run: (_context) => runStatus(),
+  },
+  {
+    name: "stop",
+    kind: "action",
+    usage: "stop",
+    description: "Gracefully stop the daemon",
+    daemonCommand: true,
+    acceptsProfile: false,
+    run: (_context) => runStop(),
+  },
+  {
+    name: "daemon",
+    kind: "namespace",
+    usage: "daemon",
+    description: "Run a namespaced daemon management command",
+    daemonCommand: false,
+    acceptsProfile: false,
+  },
+  {
+    name: "version",
+    kind: "action",
+    usage: "version",
+    description: "Print the pnpm-pub version",
+    daemonCommand: false,
+    acceptsProfile: false,
+    run: (_context) => runVersion(),
+  },
+  {
+    name: "help",
+    kind: "action",
+    usage: "help",
+    description: "Print this help",
+    daemonCommand: false,
+    acceptsProfile: false,
+    run: (_context) => runHelp(),
+  },
+] as const satisfies readonly CliCommandSpec[];
+type CliCommandDefinition = (typeof CLI_COMMANDS)[number];
+type CliActionCommandDefinition = Extract<CliCommandDefinition, { kind: "action" }>;
+type DaemonCommandDefinition = Extract<CliCommandDefinition, { daemonCommand: true }>;
+const DAEMON_COMMANDS = CLI_COMMANDS.filter(isDaemonCommandDefinition);
 
 // ---------------------------------------------------------------------------
 // Daemon connection helpers (Chapter 7.2.1 — auto-booting ghost process).
@@ -191,10 +273,13 @@ function readProfileValue(value: string | undefined): { profile?: string; error?
  * signal, and if none arrives we hand the still-open socket to `relay()`. We
  * never detach the data listener (the publish frames arrive on this socket).
  */
-function handshakeAndWait(graceMs = 300): Promise<{ sock: net.Socket | null; outdated: boolean }> {
-  return new Promise(async (resolve) => {
-    const sock = await ensureDaemon();
-    if (!sock) return resolve({ sock: null, outdated: false });
+async function handshakeAndWait(
+  graceMs = 300,
+): Promise<{ sock: net.Socket | null; outdated: boolean }> {
+  const sock = await ensureDaemon();
+  if (!sock) return { sock: null, outdated: false };
+
+  return new Promise((resolve) => {
     let settled = false;
     const finish = (outdated: boolean): void => {
       if (settled) return;
@@ -360,6 +445,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function runVersion(): number {
+  // pnpm-pub's own version. Note `pnpm-pub --version` is distinct: it is a
+  // publish terminal intent (Chapter 7.1.2) and forwards to `pnpm publish
+  // --version` (≡ `pnpm --version`), preserving muscle-memory parity.
+  process.stdout.write(`${CLI_VERSION}\n`);
+  return 0;
+}
+
+function runHelp(): number {
+  process.stdout.write(formatCliHelp());
+  return 0;
+}
+
 /** Extract --profile[=...] from a raw arg list. */
 function extractProfile(args: string[]): { profile?: string; rest: string[]; error?: string } {
   let profile: string | undefined;
@@ -401,27 +499,31 @@ function toPositionalStrings(value: unknown): string[] {
 }
 
 function resolveManagementCommand(positional: string[]): {
-  command?: CliManagementCommand;
+  command?: CliActionCommandDefinition;
   error?: string;
 } {
   const head = positional[0];
   if (head === "daemon") {
     return resolveDaemonManagementCommand(positional.slice(1));
   }
-  if (isCliManagementCommand(head)) return { command: head };
+  const command = findCliActionCommand(head);
+  if (command) return { command };
   return {};
 }
 
 function resolveDaemonManagementCommand(positional: string[]): {
-  command?: DaemonManagementCommand;
+  command?: DaemonCommandDefinition;
   error?: string;
 } {
   const command = positional[0];
   if (!command) {
-    return { error: "daemon requires a command: start, status, or stop." };
+    return { error: `daemon requires a command: ${formatDaemonCommandList()}.` };
   }
-  if (!isDaemonManagementCommand(command)) {
-    return { error: `unknown daemon command: ${command}. Expected start, status, or stop.` };
+  const daemonCommand = findDaemonCommand(command);
+  if (!daemonCommand) {
+    return {
+      error: `unknown daemon command: ${command}. Expected ${formatDaemonCommandList()}.`,
+    };
   }
   const extra = positional.slice(1);
   if (extra.length > 0) {
@@ -429,20 +531,101 @@ function resolveDaemonManagementCommand(positional: string[]): {
       error: `daemon ${command} does not accept positional arguments: ${extra.join(" ")}.`,
     };
   }
-  return { command };
+  return { command: daemonCommand };
 }
 
-function isCliManagementCommand(value: string | undefined): value is CliManagementCommand {
-  return value === "start" || value === "status" || value === "stop" || value === "version";
+function isDaemonCommandDefinition(
+  command: CliCommandDefinition,
+): command is DaemonCommandDefinition {
+  return command.daemonCommand;
 }
 
-function isDaemonManagementCommand(value: string | undefined): value is DaemonManagementCommand {
-  return value === "start" || value === "status" || value === "stop";
+function findCliActionCommand(value: string | undefined): CliActionCommandDefinition | undefined {
+  if (!value) return undefined;
+  return CLI_COMMANDS.find(
+    (command): command is CliActionCommandDefinition =>
+      command.kind === "action" && command.name === value,
+  );
+}
+
+function findDaemonCommand(value: string | undefined): DaemonCommandDefinition | undefined {
+  if (!value) return undefined;
+  return DAEMON_COMMANDS.find((command) => command.name === value);
+}
+
+function formatDaemonCommandList(): string {
+  return joinCommandNames(DAEMON_COMMANDS.map((command) => command.name));
+}
+
+function joinCommandNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`;
+}
+
+/** Render pnpm-pub's local command projection without changing publish fallback law. */
+export function formatCliHelp(): string {
+  const nameColumnWidth = Math.max(...CLI_COMMANDS.map((command) => command.name.length));
+  return [
+    "pnpm-pub",
+    "",
+    "Usage:",
+    ...CLI_COMMANDS.map((command) => `  pnpm-pub ${formatCliCommandUsage(command)}`),
+    "  pnpm-pub [publish args...]",
+    "",
+    "Commands:",
+    ...CLI_COMMANDS.map(
+      (command) => `  ${command.name.padEnd(nameColumnWidth)}  ${command.description}`,
+    ),
+    "",
+    "Options:",
+    ...CLI_OPTIONS.map((option) => `  ${option.usage}  ${option.description}`),
+    "",
+    "Unknown commands and flags are forwarded to pnpm publish as the publish intent.",
+    "",
+  ].join("\n");
+}
+
+function formatCliCommandUsage(command: CliCommandDefinition): string {
+  if (command.kind === "namespace") {
+    return `${command.usage} <${DAEMON_COMMANDS.map((item) => item.name).join("|")}>`;
+  }
+  return command.usage;
+}
+
+function registerCliCommands(parser: Argv): Argv {
+  let registered = parser;
+  for (const command of CLI_COMMANDS) {
+    registered = registered.command(command.name, command.description, (builder) => {
+      if (command.acceptsProfile) {
+        return builder.option("profile", { type: "string" });
+      }
+      return builder;
+    });
+  }
+  return registered;
 }
 
 /** Project a fatal CLI error to stderr without assuming thrown values are Error instances. */
 export function formatCliFatalError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
+/** Detect direct bin execution through npm's symlinked command shim. */
+export function isCliEntrypointInvocation(
+  argvEntry: string | undefined,
+  moduleUrl: string,
+): boolean {
+  if (!argvEntry) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  return resolveComparablePath(argvEntry) === resolveComparablePath(modulePath);
+}
+
+function resolveComparablePath(file: string): string {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,14 +634,13 @@ export function formatCliFatalError(error: unknown): string {
 // ---------------------------------------------------------------------------
 
 export async function main(argv: string[]): Promise<void> {
-  const parsed = await yargs(hideBin(argv))
-    .scriptName("pnpm-pub")
-    .command("start", "Boot the daemon and open the tray window", (y) =>
-      y.option("profile", { type: "string" }),
-    )
-    .command("status", "Check the running daemon and active profile")
-    .command("stop", "Gracefully stop the daemon")
-    .command("version", "Print the pnpm-pub version")
+  const rawArgs = hideBin(argv);
+  const rawCommand = findCliActionCommand(rawArgs[0]);
+  if (rawCommand?.name === "help") {
+    process.exit(await runCliAction(rawCommand, { profile: undefined }));
+  }
+
+  const parsed = await registerCliCommands(yargs(rawArgs).scriptName("pnpm-pub"))
     .option("profile", { type: "string", describe: "Profile to use for the action" })
     .help(false)
     .version(false)
@@ -482,27 +664,13 @@ export async function main(argv: string[]): Promise<void> {
     process.stderr.write(`${management.error}\n`);
     process.exit(1);
   }
-  if (management.command === "start") {
-    process.exit(await runStart(parsedProfile.profile));
-  }
-  if (management.command === "status") {
-    process.exit(await runStatus());
-  }
-  if (management.command === "stop") {
-    process.exit(await runStop());
-  }
-  if (management.command === "version") {
-    // pnpm-pub's own version. Note `pnpm-pub --version` is distinct: it is a
-    // publish terminal intent (Chapter 7.1.2) and forwards to `pnpm publish
-    // --version` (≡ `pnpm --version`), preserving muscle-memory parity.
-    process.stdout.write(`${CLI_VERSION}\n`);
-    process.exit(0);
+  if (management.command) {
+    process.exit(await runCliAction(management.command, { profile: parsedProfile.profile }));
   }
 
   // Fallback: everything is a publish intent. We deliberately re-read the raw
   // argv (excluding any --profile) so pnpm publish flags pass through 1:1.
-  const raw = hideBin(argv);
-  const extracted = extractProfile(raw);
+  const extracted = extractProfile(rawArgs);
   if (extracted.error) {
     process.stderr.write(`${extracted.error}\n`);
     process.exit(1);
@@ -515,10 +683,15 @@ export async function main(argv: string[]): Promise<void> {
   process.exit(await runPublish(process.cwd(), publishArgs, profile));
 }
 
+async function runCliAction(
+  command: CliActionCommandDefinition,
+  context: CliCommandRunContext,
+): Promise<number> {
+  return Promise.resolve(command.run(context));
+}
+
 // Run when invoked as the bin entrypoint.
-const invokedDirectly =
-  process.argv[1] &&
-  path.resolve(process.argv[1]!) === path.resolve(fileURLToPath(import.meta.url));
+const invokedDirectly = isCliEntrypointInvocation(process.argv[1], import.meta.url);
 if (invokedDirectly) {
   main(process.argv).catch((err) => {
     process.stderr.write(`${formatCliFatalError(err)}\n`);

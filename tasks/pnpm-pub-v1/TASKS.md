@@ -2,7 +2,7 @@
 
 ## Milestone 1 — review-fix round
 
-Status: complete
+Status: local fix complete; npm publish blocked by auth
 
 ### Delivered
 
@@ -5862,3 +5862,29 @@ Status: complete
 ### Residuals
 
 - Full visual review of real daemon-backed active EventCards remains dependent on a seeded pending `configure-trust` Event; covered here by grouped draft unit proof and WebUI type/Svelte checks.
+
+## Milestone 240 — CLI bin shebang release-contract round
+
+Status: complete
+
+### Delivered
+
+- Diagnosed the global-install failure as executable mode without an interpreter line: `package.json#bin` linked `dist/cli.js`, but the file started with ESM `import`.
+- Added a Node shebang to the CLI source entry, made direct-entry detection realpath-aware for npm bin symlinks, and added a pack-time guard that fails if `dist/cli.js` is not a direct Node executable.
+- Documented the installed CLI executable contract and bumped the package to `0.1.1` for patch release.
+- Closed and archived `tasks/pnpm-pub-v1/.issues/closed/240-cli-bin-missing-shebang.md`.
+
+### Verification
+
+- `pnpm exec vitest run test/unit/cli-bin-artifact.test.ts test/unit/cli-version.test.ts test/unit/cli-handshake.test.ts --reporter=verbose`
+- `pnpm typecheck`
+- `pnpm --filter ./webui run check`
+- `pnpm build`
+- `sed -n '1p' dist/cli.js`, `test -x dist/cli.js`, and `./dist/cli.js --help`
+- temp-prefix tarball install: `npm pack --pack-destination <tmp>` then `npm install -g --prefix <tmp> --ignore-scripts <tarball>` and `<tmp>/bin/pnpm-pub --help`
+- `npm view pnpm-pub@0.1.1 version bin --json` confirmed 0.1.1 was unpublished before publish.
+- `npm whoami` failed with `E401 Unauthorized`, so registry publish was not attempted.
+
+### Residuals
+
+- npm authentication must be restored before publishing `0.1.1` and running fresh registry-install verification.

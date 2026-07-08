@@ -154,12 +154,15 @@ pnpm release:start    # node dist/cli.js start   (boots the daemon + tray)
 pnpm release:status   # node dist/cli.js status
 pnpm release:stop     # node dist/cli.js stop
 pnpm pub daemon stop  # node dist/cli.js daemon stop
+pnpm pub help         # node dist/cli.js help
 ```
 
-The distributed binary is `dist/cli.js` (`bin` field); `pnpm-pub <anything>`
-falls back to `pnpm publish <anything>` for muscle-memory compatibility
-(Chapter 7.1.2). The `daemon start|status|stop` namespace is reserved for
-daemon lifecycle management and never falls through to publish.
+The distributed binary is `dist/cli.js` (`bin` field) and is shipped as a
+directly executable Node.js script. `pnpm-pub help` prints pnpm-pub's local
+command help, while `pnpm-pub --help` delegates to `pnpm publish --help`.
+`pnpm-pub <anything>` falls back to `pnpm publish <anything>` for muscle-memory
+compatibility (Chapter 7.1.2). The `daemon start|status|stop` namespace is
+reserved for daemon lifecycle management and never falls through to publish.
 
 ## Scripts
 
