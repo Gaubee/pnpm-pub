@@ -12,7 +12,6 @@
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "i18n:check": "node --import tsx scripts/i18n-check.mjs",
     "i18n:check:strict": "node --import tsx scripts/i18n-check.mjs --strict",
-    "i18n:fill": "node --import tsx scripts/i18n-fill.mjs",
     "i18n:translate": "node --import tsx scripts/i18n-translate.mjs"
   },
   "dependencies": {

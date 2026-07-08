@@ -202,9 +202,10 @@ function tsSourceExtensionPlugin(): VitePlugin {
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
-    // Locale dictionary edits must keep key parity with en — surface drift at
-    // commit time. (Non-blocking: runs alongside the `*` task.)
-    "webui/src/locales/**": "pnpm --filter ./webui i18n:check",
+    // Locale dictionary edits must keep full key parity + translation coverage
+    // with en — surface drift at commit time, matching the CI strict gate so a
+    // bad locale edit fails locally before it reaches CI.
+    "webui/src/locales/**": "pnpm --filter ./webui i18n:check:strict",
   },
   fmt: {},
   lint: {
