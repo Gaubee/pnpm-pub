@@ -15,7 +15,11 @@ import {
   PnpmNotOnPathError,
 } from "../../src/daemon/publisher.js";
 import { withTempNpmrc } from "../../src/daemon/npmrc-auth.js";
-import { combinePublishDiagnostics, extractNpmError } from "../../src/daemon/subprocess-runner.js";
+import {
+  buildPublishSubprocessEnv,
+  combinePublishDiagnostics,
+  extractNpmError,
+} from "../../src/daemon/subprocess-runner.js";
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-pub-${process.pid}-${Date.now()}`);
 
@@ -251,6 +255,31 @@ describe("Feature: publish subprocess diagnostics", () => {
     expect(
       combinePublishDiagnostics("", "npm error code EOTP\nnpm error OTP validation failed"),
     ).toBe("npm error code EOTP\nnpm error OTP validation failed");
+  });
+});
+
+describe("Feature: publish subprocess environment boundary", () => {
+  it("Scenario: Given pnpm-pub runs inside a parent pnpm lifecycle, When spawning publish, Then parent lifecycle facts are not forwarded", () => {
+    const env = buildPublishSubprocessEnv({
+      PATH: "/bin",
+      PNPM_HOME: "/pnpm",
+      npm_lifecycle_event: "test:e2e",
+      npm_lifecycle_script: "vp test run --project e2e",
+      npm_package_name: "pnpm-pub",
+      npm_package_version: "0.2.0",
+      npm_command: "run-script",
+      npm_execpath: "/path/to/pnpm.cjs",
+      npm_node_execpath: "/path/to/node",
+      INIT_CWD: "/repo",
+      npm_config_git_checks: "false",
+      npm_config_registry: "https://registry.npmjs.org/",
+      NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/",
+    });
+
+    expect(env).toEqual({
+      PATH: "/bin",
+      PNPM_HOME: "/pnpm",
+    });
   });
 });
 

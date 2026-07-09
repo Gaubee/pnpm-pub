@@ -101,6 +101,18 @@ async function openFrameSocket(frame: IpcRequest | Record<string, unknown>): Pro
   });
 }
 
+function collectSocketFrames(socket: net.Socket): IpcFrame[] {
+  const reader = new FrameReader();
+  const frames: IpcFrame[] = [];
+  socket.on("data", (chunk) => {
+    reader.push(chunk);
+    for (const decoded of reader.drain()) {
+      if (isIpcFrame(decoded)) frames.push(decoded);
+    }
+  });
+  return frames;
+}
+
 describe("IPC server request boundary", () => {
   it("Scenario: Given a malformed publish frame, When it reaches the socket, Then the daemon rejects it before creating an event", async () => {
     const store = new DaemonStore();
@@ -168,7 +180,49 @@ describe("IPC server request boundary", () => {
     }
   });
 
-  it("Scenario: Given an oidc frame, When it reaches the socket, Then the daemon creates a pending configure-trust Event", async () => {
+  it("Scenario: Given an oidc frame, When WebUI rejects it, Then the waiting CLI receives the rejection", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const ipc = await startIpcServer({
+      scheduler,
+      cliVersion: "0.1.0",
+    });
+    let socket: net.Socket | null = null;
+    try {
+      socket = await openFrameSocket({
+        command: "oidc",
+        cwd: sandbox,
+        packageNames: ["@scope/pkg"],
+        recursive: false,
+      });
+      const frames = collectSocketFrames(socket);
+      await waitForCondition(() => store.getEvents()[0]?.status === "pending");
+      await new Promise((resolve) => setTimeout(resolve, silentTimeoutMs));
+      expect(frames.find((frame) => frame.type === "exit")).toBeUndefined();
+
+      const event = store.getEvents()[0];
+      expect(event?.payload?.kind).toBe("configure-trust");
+      if (event?.payload?.kind !== "configure-trust") return;
+      expect(event.payload.data).toMatchObject({
+        action: "add",
+        target: { name: "@scope/pkg" },
+      });
+      expect(scheduler.reject(event.id)).toBe(true);
+      await waitForCondition(() => frames.some((frame) => frame.type === "exit"));
+      expect(frames.find((frame) => frame.type === "exit")).toMatchObject({
+        type: "exit",
+        code: 1,
+      });
+      socket.destroy();
+    } finally {
+      await ipc.stop();
+    }
+  });
+
+  it("Scenario: Given oidc Events are waiting, When the CLI socket disappears, Then every owned Event is canceled", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice" });
@@ -179,27 +233,25 @@ describe("IPC server request boundary", () => {
       cliVersion: "0.1.0",
     });
     try {
-      const frames = await requestFrames(
-        {
-          command: "oidc",
-          cwd: sandbox,
-          packageNames: ["@scope/pkg"],
-          recursive: false,
-        },
-        { done: (frames) => frames.some((frame) => frame.type === "exit") },
+      const socket = await openFrameSocket({
+        command: "oidc",
+        cwd: sandbox,
+        packageNames: ["@scope/a", "@scope/b"],
+        recursive: false,
+      });
+      await waitForCondition(() => store.getEvents().length === 2);
+      socket.destroy();
+      await waitForCondition(
+        () => store.queryEvents({ status: "history", page: 0, limit: 10 }).rows.length === 2,
+        2_000,
       );
 
-      expect(frames.find((frame) => frame.type === "exit")).toMatchObject({
-        type: "exit",
-        code: 0,
-      });
-      const event = store.getEvents()[0];
-      expect(event?.payload?.kind).toBe("configure-trust");
-      if (event?.payload?.kind !== "configure-trust") return;
-      expect(event.payload.data).toMatchObject({
-        action: "add",
-        target: { name: "@scope/pkg" },
-      });
+      const rows = store.queryEvents({ status: "history", page: 0, limit: 10 }).rows;
+      expect(rows.map((row) => row.status)).toEqual(["canceled", "canceled"]);
+      expect(rows.map((row) => row.result)).toEqual([
+        "OIDC canceled because the CLI client disconnected.",
+        "OIDC canceled because the CLI client disconnected.",
+      ]);
     } finally {
       await ipc.stop();
     }

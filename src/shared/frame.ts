@@ -50,7 +50,8 @@ export function isIpcRequest(frame: unknown): frame is IpcRequest {
     isIpcHandshake(frame) ||
     isIpcPublishRequest(frame) ||
     isIpcOidcRequest(frame) ||
-    isIpcManagementRequest(frame)
+    isIpcManagementRequest(frame) ||
+    isIpcCancelRequest(frame)
   );
 }
 
@@ -69,7 +70,8 @@ function isIpcPublishRequest(frame: unknown): frame is Extract<IpcRequest, { com
     typeof frame.cwd === "string" &&
     Array.isArray(frame.args) &&
     frame.args.every((arg) => typeof arg === "string") &&
-    isOptionalString(frame.profileOverride)
+    isOptionalString(frame.profileOverride) &&
+    isOptionalPositiveInteger(frame.clientPid)
   );
 }
 
@@ -97,7 +99,9 @@ function isIpcOidcRequest(frame: unknown): frame is Extract<IpcRequest, { comman
         frame.circleContextIds.every((value) => typeof value === "string"))) &&
     isOptionalString(frame.vcsOrigin) &&
     isOptionalBoolean(frame.allowPublish) &&
-    isOptionalBoolean(frame.allowStagePublish)
+    isOptionalBoolean(frame.allowStagePublish) &&
+    isOptionalBoolean(frame.json) &&
+    isOptionalPositiveInteger(frame.clientPid)
   );
 }
 
@@ -109,6 +113,12 @@ function isIpcManagementRequest(
     (frame.command === "start" || frame.command === "status" || frame.command === "stop") &&
     isOptionalString(frame.profileOverride)
   );
+}
+
+export function isIpcCancelRequest(
+  frame: unknown,
+): frame is Extract<IpcRequest, { command: "cancel" }> {
+  return isRecord(frame) && frame.command === "cancel" && isOptionalString(frame.reason);
 }
 
 function isIpcLogFrame(frame: unknown): frame is Extract<IpcFrame, { type: "stdout" | "stderr" }> {
@@ -144,6 +154,10 @@ function isOptionalString(value: unknown): value is string | undefined {
 
 function isOptionalBoolean(value: unknown): value is boolean | undefined {
   return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalPositiveInteger(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === "number" && Number.isInteger(value) && value > 0);
 }
 
 function isOptionalProvider(value: unknown): value is "github" | "gitlab" | "circleci" | undefined {

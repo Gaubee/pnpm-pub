@@ -214,6 +214,11 @@ function findPendingPublishByPackage(name: string) {
     );
 }
 
+function e2eRegistryOverride(): string | undefined {
+  const value = process.env.PNPM_PUB_E2E_REGISTRY?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
 /** Is a Verdaccio instance reachable at the given URL (Docker or otherwise)? */
 async function verdaccioReachable(url = "http://localhost:4873"): Promise<boolean> {
   try {
@@ -234,8 +239,7 @@ beforeAll(async () => {
   // Default to the Docker Verdaccio registry (Chapter 10.3); fall back to the
   // in-process mock when no registry is reachable (local/no-Docker dev).
   const url =
-    process.env.PNPM_PUB_E2E_REGISTRY ??
-    ((await verdaccioReachable()) ? "http://localhost:4873" : registryUrl);
+    e2eRegistryOverride() ?? ((await verdaccioReachable()) ? "http://localhost:4873" : registryUrl);
   handles = await bootDaemon({ cliVersion: "0.1.0", withTray: false });
   if (handles) {
     await handles.store.upsertProfile({ username: "e2e-author", registry: url });
@@ -265,8 +269,9 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
     const pkgVersion = "1.0.0";
     await writeFixturePackage(pkgName, pkgVersion);
 
-    const targetRegistry = process.env.PNPM_PUB_E2E_REGISTRY ?? registryUrl;
-    const againstMock = !process.env.PNPM_PUB_E2E_REGISTRY;
+    const registryOverride = e2eRegistryOverride();
+    const targetRegistry = registryOverride ?? registryUrl;
+    const againstMock = !registryOverride;
 
     const sock = await connectIpc();
     sendIpc(sock, { cliVersion: "0.1.0" });
@@ -333,8 +338,9 @@ describe("Publish interception E2E (Chapter 10.3)", () => {
 
   it("confirms a publish over a REAL WebToken-authenticated oRPC WebSocket (Chapter 10.3.3)", async () => {
     expect(handles).not.toBeNull();
-    const targetRegistry = process.env.PNPM_PUB_E2E_REGISTRY ?? registryUrl;
-    const againstMock = !process.env.PNPM_PUB_E2E_REGISTRY;
+    const registryOverride = e2eRegistryOverride();
+    const targetRegistry = registryOverride ?? registryUrl;
+    const againstMock = !registryOverride;
     const webPort = handles!.port;
     const webToken = handles!.webToken;
 

@@ -109,6 +109,7 @@ export const IpcPublishRequestSchema = z.object({
   cwd: z.string(),
   args: z.array(z.string()),
   profileOverride: z.string().optional(),
+  clientPid: z.number().int().positive().optional(),
 });
 export type IpcPublishRequest = z.infer<typeof IpcPublishRequestSchema>;
 
@@ -132,6 +133,8 @@ export const IpcOidcRequestSchema = z.object({
   vcsOrigin: z.string().optional(),
   allowPublish: z.boolean().optional(),
   allowStagePublish: z.boolean().optional(),
+  json: z.boolean().optional(),
+  clientPid: z.number().int().positive().optional(),
 });
 export type IpcOidcRequest = z.infer<typeof IpcOidcRequestSchema>;
 
@@ -140,6 +143,12 @@ export const IpcManagementRequestSchema = z.object({
   profileOverride: z.string().optional(),
 });
 export type IpcManagementRequest = z.infer<typeof IpcManagementRequestSchema>;
+
+export const IpcCancelRequestSchema = z.object({
+  command: z.literal("cancel"),
+  reason: z.string().optional(),
+});
+export type IpcCancelRequest = z.infer<typeof IpcCancelRequestSchema>;
 
 export const IpcLogFrameSchema = z.object({
   type: z.enum(["stdout", "stderr"]),
@@ -166,7 +175,12 @@ export type IpcStatusFrame = z.infer<typeof IpcStatusFrameSchema>;
 export type IpcFrame = IpcLogFrame | IpcExitFrame | IpcStatusFrame;
 
 /** Union of all IPC requests (CLI → daemon). */
-export type IpcRequest = IpcHandshake | IpcPublishRequest | IpcOidcRequest | IpcManagementRequest;
+export type IpcRequest =
+  | IpcHandshake
+  | IpcPublishRequest
+  | IpcOidcRequest
+  | IpcManagementRequest
+  | IpcCancelRequest;
 
 // ---------------------------------------------------------------------------
 // Events hub

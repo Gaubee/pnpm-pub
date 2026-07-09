@@ -1,12 +1,30 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
+import type { SpawnOptions } from "node:child_process";
 
 const HOST = "127.0.0.1";
 
-const main = async (): Promise<void> => {
+export interface ManagedChild {
+  exitCode: number | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  once(
+    event: "exit",
+    listener: (exitCode: number | null, signal: NodeJS.Signals | null) => void,
+  ): void;
+}
+
+export type DevWebuiSpawn = (
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+) => ManagedChild;
+
+export const main = async (spawnImpl: DevWebuiSpawn = spawn): Promise<void> => {
   const port = await resolveDevWebuiPort();
-  const child = spawn(
+  const child = spawnImpl(
     "pnpm",
     ["--dir", "webui", "exec", "vp", "dev", "--host", HOST, "--port", String(port), "--strictPort"],
     {
@@ -66,7 +84,13 @@ function allocateRandomPort(): Promise<number> {
   });
 }
 
-void main().catch((error: unknown) => {
-  console.error(error);
-  process.exit(1);
-});
+function isDirectInvocation(): boolean {
+  return process.argv[1] ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) : false;
+}
+
+if (isDirectInvocation()) {
+  void main().catch((error: unknown) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

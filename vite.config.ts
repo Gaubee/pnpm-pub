@@ -106,6 +106,7 @@ export default defineConfig({
           name: "browser",
           environment: "node",
           include: ["test/browser/**/*.test.ts"],
+          fileParallelism: false,
           testTimeout: 120_000,
           hookTimeout: 60_000,
         },

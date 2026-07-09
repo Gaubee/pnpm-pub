@@ -80,6 +80,42 @@ interface SubprocessOutcome {
   stderr: string;
 }
 
+function isParentLifecycleEnv(key: string): boolean {
+  return (
+    key === "INIT_CWD" ||
+    key === "npm_command" ||
+    key === "npm_execpath" ||
+    key === "npm_node_execpath" ||
+    key.startsWith("npm_config_") ||
+    key.startsWith("NPM_CONFIG_") ||
+    key.startsWith("npm_lifecycle_") ||
+    key.startsWith("npm_package_")
+  );
+}
+
+/**
+ * Build the environment for the real `pnpm publish` subprocess.
+ *
+ * A publish action may be triggered while pnpm-pub itself is running inside a
+ * parent `pnpm run ...` lifecycle (tests, dev scripts, CI wrappers). Those
+ * lifecycle facts describe the parent runner, not the user's publish action,
+ * and can make pnpm classify the child publish as part of the parent script.
+ * Preserve normal process config/PATH, but strip parent lifecycle/config
+ * ontology. The runner injects the authoritative publish registry through a
+ * temporary project `.npmrc`; inherited `npm_config_registry` or pnpm-specific
+ * config env must not override that source.
+ */
+export function buildPublishSubprocessEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (isParentLifecycleEnv(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
 /** Best-effort extraction of the human message from pnpm/npm stderr. */
 export function extractNpmError(stderr: string): string | undefined {
   // `npm error <message>` lines carry the most actionable text.
@@ -110,6 +146,8 @@ async function runPublishSubprocess(opts: RunPublishSubprocessOpts): Promise<Sub
     const args = stripOverriddenArgs(opts.args, ["--otp", "--registry"]);
     const subprocess = execa("pnpm", ["publish", ...args, "--otp", opts.otp], {
       cwd: opts.cwd,
+      env: buildPublishSubprocessEnv(),
+      extendEnv: false,
       reject: false,
       buffer: false,
     });

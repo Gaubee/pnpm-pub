@@ -13,6 +13,7 @@ import {
   scanWorkspace,
   filterByProfile,
   isPublishableByProfile,
+  type ScannedPackage,
 } from "../../src/daemon/workspace.js";
 
 describe("findProjectRoot (Chapter 5.3.1)", () => {
@@ -357,11 +358,11 @@ describe("filterByProfile (Chapter 5.3.5)", () => {
     { name: "@org-admin/private-thing", version: "0.0.1", private: true, path: "/d" },
   ];
 
-  it("returns scoped packages matching the profile username + all unscoped", () => {
+  it("Scenario: Given scoped sibling packages, When filtering for a profile, Then local discovery keeps package facts and only drops private packages", () => {
     const out = filterByProfile(pkgs, "org-admin").map((p) => p.name);
     expect(out).toContain("@org-admin/widget");
     expect(out).toContain("unscoped-pkg");
-    expect(out).not.toContain("@personal/blog");
+    expect(out).toContain("@personal/blog");
   });
 
   it("always drops private packages", () => {
@@ -380,7 +381,7 @@ describe("filterByProfile (Chapter 5.3.5)", () => {
       version: "1.0.0",
       path: "/repo/packages/ext-webview",
     };
-    expect(isPublishableByProfile(opentrayPackage, "kzf")).toBe(false);
+    expect(isPublishableByProfile(opentrayPackage, "kzf")).toBe(true);
     expect(isPublishableByProfile(opentrayPackage, "opentray")).toBe(true);
   });
 });

@@ -65,7 +65,7 @@ beforeAll(async () => {
       "--dir",
       "webui",
       "exec",
-      "vite",
+      "vp",
       "dev",
       "--host",
       "127.0.0.1",
@@ -272,11 +272,13 @@ describe("Feature: Renew route rendered projection", () => {
     });
   }, 90_000);
 
-  it("Scenario: Given daemon renew failure without explicit error, When submitted in a browser, Then fallback error follows the route source", async () => {
-    await expect(defaultErrorFor("/renew?reason=expired")).resolves.toBe("Renew failed.");
-    await expect(defaultErrorFor("/renew?reason=action-required")).resolves.toBe(
-      "Credential re-apply failed.",
+  it("Scenario: Given no authenticated daemon client, When submitted in a browser, Then the transport fallback stays distinct from renew projection copy", async () => {
+    await expect(defaultErrorFor("/renew?reason=expired")).resolves.toBe(
+      "Invalid daemon response.",
     );
-    await expect(defaultErrorFor("/renew")).resolves.toBe("Credential re-apply failed.");
+    await expect(defaultErrorFor("/renew?reason=action-required")).resolves.toBe(
+      "Invalid daemon response.",
+    );
+    await expect(defaultErrorFor("/renew")).resolves.toBe("Invalid daemon response.");
   }, 90_000);
 });

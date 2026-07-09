@@ -1488,7 +1488,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is no longer completely blocked: current code routes `recursive-publish` through `runRecursivePublish()` and `publishRecursiveViaCli()`. The remaining gap is registry-backed E2E evidence for that path, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, single-package `--config.*` warnings, CLI terminal-only publish intents, and malformed bare `--profile` rejection, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -4731,7 +4731,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity is intentionally simple in this round: exact package names, relative paths, and basic `*`/`**` path globs are covered, but advanced pnpm selector syntax remains future parity work.
 - Recursive `--json` now emits a daemon-owned JSON array projection; exact native recursive stdout/stderr formatting remains broader parity work.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4757,7 +4757,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity still does not implement the full pnpm selector language, including dependency/dependent graph selectors, since this round only covered package-name glob matching.
 - Recursive `--json` still emits a daemon-owned JSON array projection; exact native recursive stdout/stderr formatting remains broader parity work.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4783,7 +4783,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity still does not implement the full pnpm selector language, including dependency/dependent graph selectors.
 - Recursive stdout/stderr parity is closer for `--json`, but non-json recursive notices and progress text still do not exactly mirror native pnpm output.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4809,7 +4809,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity still does not implement the full pnpm selector language, including dependency/dependent graph selectors.
 - Recursive dry-run stdout now matches native success-line shape, but stderr still lacks native npm notice details from the package tarball.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4837,7 +4837,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity still does not implement dependency/dependent graph selectors or other advanced pnpm selector syntax beyond exact, glob, path, and negation matching.
 - Recursive dry-run stderr still lacks native npm notice details from the package tarball.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4863,7 +4863,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive filter parity still does not implement dependency/dependent graph selectors or other advanced pnpm selector syntax beyond exact, glob, path, and negation matching.
 - Recursive dry-run stderr notice formatting now covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4889,7 +4889,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive graph selector parity remains unimplemented; native `publish -r --dry-run` graph selector expansion is not clear enough from current probes to encode a broader law yet.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - The Git safety gate still compares against currently fetched upstream refs and does not fetch remotes by itself.
@@ -4922,7 +4922,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, negation, dependency graph, and dependent graph selectors, but other advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - The previous git-fetch residual is reclassified: native `pnpm publish --dry-run` did not fetch remotes in the probe, so the current no-fetch behavior is not a parity gap unless the spec changes.
@@ -4952,7 +4952,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity covers exact, glob, path, negation, dependency graph, dependent graph, and now report-summary projection, but other advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -4980,7 +4980,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, and full-brace directory selectors, but combined package-name-plus-directory selectors still need native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5009,7 +5009,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, and combined package-plus-directory selectors, but changed-since selectors such as `[origin/main]` still need native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5038,7 +5038,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, and changed-since selectors, but production-only filter behavior such as `--filter-prod` still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5065,7 +5065,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, and production-only graph traversal; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5092,7 +5092,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, and changed-since selector intersections; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5120,7 +5120,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, and changed-files ignore patterns; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5148,7 +5148,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, and changed-files ignore patterns; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5177,7 +5177,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, negation, dependency graph, dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5203,7 +5203,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, negation, dependency graph, dependent graph, combined dependency/dependent graph, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5235,7 +5235,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, negation, dependency graph, dependent graph, combined dependency/dependent graph including caret seed variants, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5273,7 +5273,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, current-project dot graph forms, negation, dependency graph, dependent graph, combined dependency/dependent graph including caret seed variants, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5308,7 +5308,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, current-project dot graph forms, negation, dependency graph, dependent graph, combined dependency/dependent graph including caret seed variants, unsupported bare graph selector failures, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5338,7 +5338,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity now covers exact, glob, path, current-project, current-project dot graph forms, negation, dependency graph, dependent graph, combined dependency/dependent graph including caret seed variants, unsupported bare graph selector failures including production-only diagnostics, report-summary projection, full-brace directory selectors, combined package-plus-directory selectors, changed-since selectors, production-only graph traversal, changed-since selector intersections, changed-files ignore patterns, and fail-if-no-match no-match exits; remaining advanced pnpm selector syntax still needs native probes before encoding more laws.
 - Recursive dry-run stderr notice formatting covers package facts from tarball summaries, but exact byte-for-byte npm notice rendering may still drift for large sizes or npm-specific integrity truncation.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5370,7 +5370,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Recursive dry-run stderr notice formatting now covers bundled dependency sections, but exact byte-for-byte npm notice rendering may still drift for npm-specific warning preambles or unusual package-manager config warnings.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5399,7 +5399,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package and recursive package facts, including bundled dependency sections, but exact byte-for-byte npm notice rendering may still drift for npm-specific warning preambles or unusual package-manager config warnings.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5425,7 +5425,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON and recursive package facts, including bundled dependency sections, but exact byte-for-byte npm notice rendering may still drift for npm-specific warning preambles or unusual package-manager config warnings.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5452,7 +5452,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting covers single-package JSON/non-JSON and recursive package facts, including bundled dependency sections, but exact byte-for-byte npm notice rendering may still drift for npm-specific warning preambles or unusual package-manager config warnings.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5480,7 +5480,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, and `--config.*` warnings, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5506,7 +5506,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, and single-package `--config.*` warnings, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5532,7 +5532,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, single-package `--config.*` warnings, and CLI terminal-only publish intents, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5557,7 +5557,7 @@ Status: complete
 
 ### Residuals
 
-- Real recursive/workspace registry publish remains blocked and still needs a dedicated multi-package transaction atom before any registry writes are allowed.
+- Real recursive/workspace registry publish is superseded by the current CLI-backed recursive publish path; remaining work is registry-backed E2E evidence, especially Dockerized Verdaccio once Docker daemon access is available.
 - Recursive selector parity still requires native probes before encoding remaining advanced selector syntax.
 - Dry-run stderr notice formatting now covers single-package JSON/non-JSON, recursive package facts, bundled dependency sections, single-package `--config.*` warnings, and CLI terminal-only publish intents, but exact byte-for-byte npm notice rendering may still drift for unusual npm warning preambles.
 - Dockerized Verdaccio still needs to be executed once Docker daemon access is available.
@@ -5938,3 +5938,32 @@ Status: complete
 ### Residuals
 
 - none
+
+## Milestone 243 — Test channel repair and publish-env boundary round
+
+Status: complete
+
+### Delivered
+
+- Repaired root test scripts so browser and E2E lanes target the consolidated Vite+ projects (`--project browser|e2e`) instead of removed `vitest.browser.config.ts` / `vitest.e2e.config.ts` files.
+- Serialized browser test files because they start real WebUI/dev-server/browser surfaces; left E2E files isolated so process-local test homes do not leak.
+- Updated avatar tests to the current typed-cache law: WebUI avatar cache accepts PNG/JPEG/WebP/GIF with content type, while tray icons still require a valid PNG.
+- Updated workspace tests to the current package-fact law: local scanning drops only `private: true`; scope/profile permission remains registry-time evidence, not a local discovery filter.
+- Retargeted the dev supervisor test to `scripts/dev-webui.ts`, the current WebUI Vite+ process atom, instead of the removed `src/dev.js` entry.
+- Hardened `pnpm publish` subprocess execution so parent `pnpm run` lifecycle/config env does not override the daemon-owned temporary `.npmrc` registry/auth source.
+- Normalized blank `PNPM_PUB_E2E_REGISTRY` as absent in the E2E registry selector.
+
+### Verification
+
+- `pnpm exec vp test run --project unit test/unit/publisher.test.ts`
+- `pnpm test:e2e`
+- `pnpm test:browser`
+- `pnpm exec vp test run --reporter=dot`
+- `pnpm test:e2e:docker` (expected failure in this environment: Docker daemon unavailable at `unix:///Users/kzf/.docker/run/docker.sock`)
+- `npm view pnpm-pub version versions --json` confirms latest registry version is still `0.2.0`.
+- `npm view pnpm-pub@1.0.0 version --json` returns `E404`.
+
+### Residuals
+
+- Dockerized Verdaccio evidence remains blocked until Docker daemon access is available.
+- Registry release truth has not entered `1.0.0`; npm still reports `0.2.0` as latest and no `1.0.0` version.

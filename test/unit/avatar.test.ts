@@ -13,6 +13,7 @@ import { promises as fsp } from "node:fs";
 import {
   avatarCachePath,
   fetchAndCacheAvatar,
+  findCachedAvatar,
   hasCachedAvatar,
   lookupNpmProfileIdentity,
   trayIconForProfile,
@@ -52,6 +53,12 @@ const sandbox = path.join(os.tmpdir(), `pnpm-pub-avatar-${process.pid}-${Date.no
 interface FetchCall {
   input: string | URL | Request;
   init?: RequestInit;
+}
+
+function fetchInputUrl(input: string | URL | Request): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
 }
 
 function stubFetch(responses: Response[]): FetchCall[] {
@@ -114,15 +121,16 @@ describe("fetchAndCacheAvatar", () => {
       new Response(pngBytes, { status: 200, headers: { "content-type": "image/png" } }),
     ]);
 
-    await expect(fetchAndCacheAvatar("alice", "https://registry.test/")).resolves.toBe(
-      avatarCachePath("alice"),
-    );
+    await expect(fetchAndCacheAvatar("alice", "https://registry.test/")).resolves.toEqual({
+      path: avatarCachePath("alice"),
+      contentType: "image/png",
+    });
 
-    expect(calls.map((call) => String(call.input))).toEqual(["https://img.test/alice.png"]);
+    expect(calls.map((call) => fetchInputUrl(call.input))).toEqual(["https://img.test/alice.png"]);
     await expect(fsp.readFile(avatarCachePath("alice"))).resolves.toEqual(pngBytes);
   });
 
-  it("Scenario: Given the avatar URL returns JPEG bytes, When fetching for tray cache, Then it is not cached as PNG", async () => {
+  it("Scenario: Given the avatar URL returns JPEG bytes, When fetching, Then it is cached as web avatar data but not used as a tray PNG", async () => {
     sdkMocks.lookupAvatar.mockResolvedValue(
       okResult({
         username: "alice",
@@ -135,17 +143,26 @@ describe("fetchAndCacheAvatar", () => {
       new Response(jpegBytes, { status: 200, headers: { "content-type": "image/jpeg" } }),
     ]);
 
-    await expect(fetchAndCacheAvatar("alice", "https://registry.test/")).resolves.toBeNull();
+    await expect(fetchAndCacheAvatar("alice", "https://registry.test/")).resolves.toEqual({
+      path: path.join(path.dirname(avatarCachePath("alice")), "alice.jpg"),
+      contentType: "image/jpeg",
+    });
     await expect(fsp.access(avatarCachePath("alice"))).rejects.toBeTruthy();
+    expect(findCachedAvatar("alice")).toEqual({
+      path: path.join(path.dirname(avatarCachePath("alice")), "alice.jpg"),
+      contentType: "image/jpeg",
+    });
+    expect(trayIconForProfile("alice")).toBeNull();
   });
 
-  it("Scenario: Given a stale JPEG file in the PNG avatar cache, When resolving a tray icon, Then the stale file is removed", async () => {
+  it("Scenario: Given a stale JPEG file in the PNG tray cache path, When resolving a tray icon, Then the stale file is removed while web avatar cache remains typed", async () => {
     await fsp.mkdir(path.dirname(avatarCachePath("alice")), { recursive: true });
     await fsp.writeFile(avatarCachePath("alice"), jpegBytes);
 
-    expect(hasCachedAvatar("alice")).toBe(false);
+    expect(hasCachedAvatar("alice")).toBe(true);
     expect(trayIconForProfile("alice")).toBeNull();
     await expect(fsp.access(avatarCachePath("alice"))).rejects.toBeTruthy();
+    expect(hasCachedAvatar("alice")).toBe(false);
   });
 });
 

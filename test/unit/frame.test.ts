@@ -54,6 +54,16 @@ describe("IPC frame protocol boundary", () => {
     expect(isIpcRequest(frames[0])).toBe(false);
   });
 
+  it("Scenario: Given a cancel socket frame, When complete, Then it is promoted as a CLI request", () => {
+    const reader = new FrameReader();
+    reader.push(JSON.stringify({ command: "cancel" }) + "\n");
+    const frames = [...reader.drain()];
+
+    expect(frames).toHaveLength(1);
+    expect(isIpcRequest(frames[0])).toBe(true);
+    expect(isIpcFrame(frames[0])).toBe(false);
+  });
+
   it("Scenario: Given daemon response bytes, When the frame is complete, Then it is promoted only by the response guard", () => {
     const reader = new FrameReader();
     reader.push(encodeFrame({ type: "exit", code: 0, message: "done" }));

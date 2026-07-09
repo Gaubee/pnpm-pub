@@ -197,6 +197,11 @@ interface PendingEntry {
   phase: PendingPhase;
 }
 
+interface OidcMemberExit {
+  code: number;
+  message?: string;
+}
+
 /** Resolved metadata about a publish target from a directory or tarball source. */
 async function readPublishTarget(source: PublishSource): Promise<Omit<PublishTarget, "path">> {
   try {
@@ -1649,40 +1654,43 @@ export class PublishScheduler {
    * configure-trust Event(s); npm /trust writes still require WebUI
    * confirmation through confirm().
    */
-  async createOidcEvents(req: IpcOidcRequest, client: PendingClient): Promise<void> {
+  async createOidcEvents(
+    req: IpcOidcRequest,
+    client: PendingClient,
+  ): Promise<PubEvent[] | undefined> {
     if (req.profileOverride && req.profileOverride.length > 0) {
       if (!this.store.getProfile(req.profileOverride)) {
         const msg = `Profile "${req.profileOverride}" not found. Add it via the tray GUI first.`;
-        client.log("stderr", msg + "\n");
-        client.exit(1, msg);
-        return;
+        this.exitOidcRequest(req, client, 1, msg);
+        return undefined;
       }
     }
     const profile = resolveProfile(this.store, req.profileOverride);
     if (!profile) {
-      client.log("stderr", "No profile configured. Add a profile via the tray GUI first.\n");
-      client.exit(1, "No profile");
-      return;
+      this.exitOidcRequest(
+        req,
+        client,
+        1,
+        "No profile configured. Add a profile via the tray GUI first.",
+      );
+      return undefined;
     }
 
-    await this.collectWorkspaceFromCwd(req.cwd, client);
+    await this.collectWorkspaceFromCwd(req.cwd, req.json ? DETACHED_CLIENT : client);
     const targets = await this.resolveOidcTargets(req);
     if (!targets.ok) {
-      client.log("stderr", targets.error + "\n");
-      client.exit(1, targets.error);
-      return;
+      this.exitOidcRequest(req, client, 1, targets.error);
+      return undefined;
     }
     const config = createOidcConfig(req, targets.targets);
     if (!config.ok) {
-      client.log("stderr", config.error + "\n");
-      client.exit(1, config.error);
-      return;
+      this.exitOidcRequest(req, client, 1, config.error);
+      return undefined;
     }
     const hydrated = await this.attachCurrentTrustConfigs(req, profile, targets.targets);
     if (!hydrated.ok) {
-      client.log("stderr", hydrated.error + "\n");
-      client.exit(1, hydrated.error);
-      return;
+      this.exitOidcRequest(req, client, 1, hydrated.error);
+      return undefined;
     }
 
     const groupId = hydrated.targets.length > 1 ? randomUUID() : undefined;
@@ -1701,21 +1709,118 @@ export class PublishScheduler {
         payload: { kind: "configure-trust", data },
         ...(groupId ? { groupId } : {}),
       });
-      this.pending.set(event.id, { event, client: DETACHED_CLIENT, phase: "awaiting-decision" });
       events.push(event);
+    }
+    const memberClients = this.createOidcRequestClients(events, client, req.json ?? false);
+    for (const event of events) {
+      this.pending.set(event.id, {
+        event,
+        client: memberClients.get(event.id) ?? client,
+        phase: "awaiting-decision",
+      });
     }
     if (groupId && config.config && !req.remove) {
       this.store.updateConfigureTrustGroupDraft(groupId, config.config);
     }
 
-    for (const skipped of hydrated.skipped) {
-      client.log("stdout", `[oidc] skipped ${skipped}: no trusted publisher is configured.\n`);
+    if (!req.json) {
+      for (const skipped of hydrated.skipped) {
+        client.log("stdout", `[oidc] skipped ${skipped}: no trusted publisher is configured.\n`);
+      }
+      client.log(
+        "stdout",
+        `[oidc] created ${events.length} Trusted Publishing Event${events.length === 1 ? "" : "s"}. Confirm in the tray.\n`,
+      );
     }
-    client.log(
-      "stdout",
-      `[oidc] created ${events.length} Trusted Publishing Event${events.length === 1 ? "" : "s"}. Confirm in the tray.\n`,
+    return events;
+  }
+
+  private exitOidcRequest(
+    req: Pick<IpcOidcRequest, "json">,
+    client: PendingClient,
+    code: number,
+    message: string,
+  ): void {
+    if (req.json) {
+      client.log(
+        "stdout",
+        JSON.stringify({ ok: false, command: "oidc", error: message, events: [] }, null, 2) + "\n",
+      );
+    } else {
+      client.log("stderr", message + "\n");
+    }
+    client.exit(code, message);
+  }
+
+  private createOidcRequestClients(
+    events: PubEvent[],
+    client: PendingClient,
+    json: boolean,
+  ): Map<string, PendingClient> {
+    const exits = new Map<string, OidcMemberExit>();
+    const logs: { eventId: string; stream: "stdout" | "stderr"; data: string }[] = [];
+    let terminalSent = false;
+    const eventIds = events.map((event) => event.id);
+
+    const eventResult = (event: PubEvent, exit: OidcMemberExit | undefined) => {
+      const current = this.store.getEvent(event.id) ?? event;
+      const data = current.payload?.kind === "configure-trust" ? current.payload.data : undefined;
+      return {
+        id: current.id,
+        status: current.status,
+        action: data?.action,
+        target: data?.target.name,
+        result: current.result,
+        code: exit?.code,
+        message: exit?.message,
+      };
+    };
+
+    const finishIfDone = (): void => {
+      if (terminalSent || exits.size < events.length) return;
+      terminalSent = true;
+      const results = events.map((event) => eventResult(event, exits.get(event.id)));
+      const exitCode = results.some((result) => (result.code ?? 1) !== 0) ? 1 : 0;
+      if (json) {
+        client.log(
+          "stdout",
+          JSON.stringify(
+            {
+              ok: exitCode === 0,
+              command: "oidc",
+              eventIds,
+              groupId: events[0]?.groupId,
+              events: results,
+              logs,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+      } else if (events.length > 1) {
+        const okCount = results.filter((result) => (result.code ?? 1) === 0).length;
+        const failedCount = results.length - okCount;
+        const line = `[oidc] completed ${results.length} Trusted Publishing Events: ${okCount} ok, ${failedCount} failed.\n`;
+        client.log(exitCode === 0 ? "stdout" : "stderr", line);
+      }
+      client.exit(exitCode, exitCode === 0 ? "OIDC events completed." : "OIDC events failed.");
+    };
+
+    return new Map(
+      events.map((event) => [
+        event.id,
+        {
+          log: (stream, data) => {
+            if (json) logs.push({ eventId: event.id, stream, data });
+            else client.log(stream, data);
+          },
+          exit: (code, message) => {
+            if (!exits.has(event.id)) exits.set(event.id, { code, message });
+            finishIfDone();
+          },
+        },
+      ]),
     );
-    client.exit(0);
   }
 
   private async resolveOidcTargets(
@@ -2143,9 +2248,13 @@ export class PublishScheduler {
     const entry = this.pending.get(taskId);
     if (!entry || entry.phase !== "awaiting-decision") return false;
     const { client } = entry;
-    this.store.resolveEvent(taskId, "rejected", "Publish canceled by user.");
-    client.log("stderr", "Publish canceled by user.\n");
-    client.exit(1, "Publish canceled by user.");
+    const message =
+      entry.event.payload?.kind === "configure-trust"
+        ? "Trusted Publishing Event rejected by user."
+        : "Publish canceled by user.";
+    this.store.resolveEvent(taskId, "rejected", message);
+    client.log("stderr", message + "\n");
+    client.exit(1, message);
     this.pending.delete(taskId);
     return true;
   }

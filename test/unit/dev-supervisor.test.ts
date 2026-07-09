@@ -1,9 +1,11 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { EventEmitter } from "node:events";
+import type { DevWebuiSpawn } from "../../scripts/dev-webui.js";
 
 class FakeChild extends EventEmitter {
   killed = false;
   readonly label: string;
+  exitCode: number | null = null;
 
   constructor(label: string) {
     super();
@@ -13,110 +15,98 @@ class FakeChild extends EventEmitter {
   kill = vi.fn((signal?: NodeJS.Signals) => {
     this.killed = true;
     queueMicrotask(() => {
-      this.emit("exit", signal === "SIGINT" ? 0 : 0, signal);
+      this.exitCode = 0;
+      this.emit("exit", 0, signal);
       this.emit("close", 0, signal);
     });
     return true;
   });
 }
 
-class StubbornChild extends FakeChild {
-  kill = vi.fn((signal?: NodeJS.Signals) => {
-    this.killed = true;
-    if (signal === "SIGKILL") {
-      queueMicrotask(() => {
-        this.emit("exit", null, signal);
-        this.emit("close", null, signal);
-      });
-    }
-    return true;
-  });
-}
-
 function makeSpawnSequence(...children: FakeChild[]) {
-  return vi.fn(() => {
+  return vi.fn<DevWebuiSpawn>((command, args, options) => {
+    void command;
+    void args;
+    void options;
     const child = children.shift();
     if (!child) throw new Error("unexpected spawn");
-    return child as never;
+    return child;
   });
 }
 
-describe("pnpm dev supervisor", () => {
+describe("pnpm dev WebUI supervisor", () => {
   const originalExitCode = process.exitCode;
+  const originalPort = process.env.PNPM_PUB_DEV_WEBUI_PORT;
 
   beforeEach(() => {
     process.exitCode = undefined;
+    process.env.PNPM_PUB_DEV_WEBUI_PORT = "45678";
     vi.useRealTimers();
   });
 
   afterEach(() => {
     process.exitCode = originalExitCode;
+    if (originalPort === undefined) delete process.env.PNPM_PUB_DEV_WEBUI_PORT;
+    else process.env.PNPM_PUB_DEV_WEBUI_PORT = originalPort;
     vi.restoreAllMocks();
   });
 
-  it("Scenario: Given live dev servers, When the supervisor starts, Then it spawns Vite and daemon without waiting for a WebUI build", async () => {
+  it("Scenario: Given pnpm dev starts, When the supervisor runs, Then it spawns the WebUI Vite+ atom without waiting for a build", async () => {
     const webui = new FakeChild("webui");
-    const daemon = new FakeChild("daemon");
-    const spawn = makeSpawnSequence(webui, daemon);
-    const { main } = await import("../../src/dev.js");
+    const spawn = makeSpawnSequence(webui);
+    const { main } = await import("../../scripts/dev-webui.js");
 
     const run = main(spawn);
-    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
     process.emit("SIGINT", "SIGINT");
     await run;
 
-    expect(spawn).toHaveBeenNthCalledWith(
-      1,
+    expect(spawn).toHaveBeenCalledWith(
       "pnpm",
-      expect.arrayContaining(["--dir", "webui", "exec", "vite", "dev"]),
+      [
+        "--dir",
+        "webui",
+        "exec",
+        "vp",
+        "dev",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "45678",
+        "--strictPort",
+      ],
       expect.objectContaining({
-        env: expect.objectContaining({ PNPM_PUB_DEV_DAEMON_PORT: expect.any(String) }),
-      }),
-    );
-    expect(spawn).toHaveBeenNthCalledWith(
-      2,
-      "pnpm",
-      ["exec", "tsx", "src/daemon/dev.ts"],
-      expect.objectContaining({
-        env: expect.objectContaining({
-          PNPM_PUB_DEV_DAEMON_PORT: expect.any(String),
-          PNPM_PUB_DEV_WEBVIEW_URL: expect.stringContaining("__PNPM_PUB_WEB_TOKEN__"),
-        }),
+        env: expect.objectContaining({ PNPM_PUB_DEV_WEBUI_PORT: "45678" }),
       }),
     );
     expect(webui.kill).toHaveBeenCalledWith("SIGINT");
-    expect(daemon.kill).toHaveBeenCalledWith("SIGINT");
+    expect(process.exitCode).toBe(0);
   });
 
-  it("Scenario: Given Ctrl-C during startup, When the supervisor handles SIGINT, Then it stops managed children", async () => {
+  it("Scenario: Given Ctrl-C during startup, When the supervisor handles SIGINT, Then it stops the managed WebUI child", async () => {
     const webui = new FakeChild("webui");
-    const daemon = new FakeChild("daemon");
-    const spawn = makeSpawnSequence(webui, daemon);
-    const { main } = await import("../../src/dev.js");
+    const spawn = makeSpawnSequence(webui);
+    const { main } = await import("../../scripts/dev-webui.js");
 
     const run = main(spawn);
-    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
     process.emit("SIGINT", "SIGINT");
     await run;
 
     expect(webui.kill).toHaveBeenCalledWith("SIGINT");
-    expect(daemon.kill).toHaveBeenCalledWith("SIGINT");
   });
 
-  it("Scenario: Given a daemon ignores graceful shutdown, When the supervisor handles SIGINT, Then it force-kills the daemon group", async () => {
-    vi.useFakeTimers();
+  it("Scenario: Given the WebUI child exits by itself, When no stop was requested, Then the supervisor preserves the child exit code", async () => {
     const webui = new FakeChild("webui");
-    const daemon = new StubbornChild("daemon");
-    const spawn = makeSpawnSequence(webui, daemon);
-    const { main } = await import("../../src/dev.js");
+    const spawn = makeSpawnSequence(webui);
+    const { main } = await import("../../scripts/dev-webui.js");
 
     const run = main(spawn);
-    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
-    process.emit("SIGINT", "SIGINT");
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+    webui.exitCode = 23;
+    webui.emit("exit", 23, null);
     await run;
 
-    expect(daemon.kill).toHaveBeenCalledWith("SIGINT");
-    expect(daemon.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(process.exitCode).toBe(23);
   });
 });

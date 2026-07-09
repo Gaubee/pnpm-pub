@@ -95,7 +95,12 @@ function makeServer(): net.Server {
           socket.end();
         }
         if (frame.command === "oidc") {
-          socket.write(encodeFrame({ type: "stdout", data: "[oidc] created 1 Trusted Publishing Event. Confirm in the tray.\n" }));
+          socket.write(
+            encodeFrame({
+              type: "stdout",
+              data: "[oidc] created 1 Trusted Publishing Event. Confirm in the tray.\n",
+            }),
+          );
           socket.write(encodeFrame({ type: "exit", code: 0 }));
           socket.end();
         }
@@ -330,6 +335,7 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
         "owner/repo",
         "--file",
         "publish.yml",
+        "--json",
         "--profile",
         "work",
       ]);
@@ -343,9 +349,36 @@ describe("CLI version-handshake loop (Chapter 7.2.1)", () => {
     expect(oidcFrame?.packageNames).toEqual(["@scope/a"]);
     expect(oidcFrame?.repo).toBe("owner/repo");
     expect(oidcFrame?.file).toBe("publish.yml");
+    expect(oidcFrame?.json).toBe(true);
     expect(capturedFrames.some(isPublishRequest)).toBe(false);
     expect(stdoutSpy).toHaveBeenCalledWith(expect.stringContaining("[oidc] created 1"));
     expect(stderrSpy).not.toHaveBeenCalled();
+    exitSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  });
+
+  it("Scenario: Given invalid oidc args with --json, When parsing fails, Then stdout is structured JSON", async () => {
+    const { main } = await import("../../src/cli/cli.js");
+    const exitSpy = mockProcessExit();
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await main(["node", "pnpm-pub", "oidc", "--json", "--workflow", "publish.yml"]);
+    } catch (err) {
+      expectExitCode(err, 1);
+    }
+
+    const output = String(stdoutSpy.mock.calls[0]?.[0] ?? "");
+    expect(JSON.parse(output)).toEqual({
+      ok: false,
+      command: "oidc",
+      error: "Use --file <workflow.yml>; --workflow is not supported.",
+      events: [],
+    });
+    expect(stderrSpy).not.toHaveBeenCalled();
+    expect(capturedFrames).toEqual([]);
     exitSpy.mockRestore();
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();

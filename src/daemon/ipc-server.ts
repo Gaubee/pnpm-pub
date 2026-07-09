@@ -8,7 +8,7 @@
  */
 import net from "node:net";
 import fs from "node:fs";
-import { encodeFrame, FrameReader, isIpcRequest } from "../shared/frame.js";
+import { encodeFrame, FrameReader, isIpcCancelRequest, isIpcRequest } from "../shared/frame.js";
 import type {
   IpcPublishRequest,
   IpcOidcRequest,
@@ -84,13 +84,35 @@ export class IpcServer {
   private handle(socket: net.Socket): void {
     const reader = new FrameReader();
     let pendingClient: PendingClient | null = null;
-    let pendingTaskId: string | null = null;
+    const pendingTaskIds = new Set<string>();
+    let pendingCancelReason = "Publish canceled because the CLI client disconnected.";
+    let cancelRequested = false;
+    let requestedCancelReason: string | undefined;
+    let ownerWatch: NodeJS.Timeout | undefined;
     let completedByDaemon = false;
     let socketClosed = false;
+    const clearOwnerWatch = (): void => {
+      if (!ownerWatch) return;
+      clearInterval(ownerWatch);
+      ownerWatch = undefined;
+    };
+    const startOwnerWatch = (pid: number | undefined): void => {
+      if (!pid || ownerWatch) return;
+      ownerWatch = setInterval(() => {
+        if (completedByDaemon || pendingTaskIds.size === 0) {
+          clearOwnerWatch();
+          return;
+        }
+        if (isProcessAlive(pid)) return;
+        cancelOwnedTasks();
+      }, 250);
+      ownerWatch.unref();
+    };
     const makeClient = (): PendingClient => ({
       log: (stream, data) => safeWrite(socket, encodeFrame({ type: stream, data })),
       exit: (code, message) => {
         completedByDaemon = true;
+        clearOwnerWatch();
         safeWrite(socket, encodeFrame({ type: "exit", code, message }));
         try {
           socket.end();
@@ -104,17 +126,33 @@ export class IpcServer {
     });
     const cancelOnClientDisconnect = (): void => {
       socketClosed = true;
-      if (completedByDaemon || !pendingTaskId) return;
-      this.deps.scheduler.cancel(
-        pendingTaskId,
-        "Publish canceled because the CLI client disconnected.",
-      );
-      pendingTaskId = null;
+      if (completedByDaemon || pendingTaskIds.size === 0) return;
+      for (const id of pendingTaskIds) {
+        this.deps.scheduler.cancel(id, pendingCancelReason);
+      }
+      pendingTaskIds.clear();
+    };
+    const cancelOwnedTasks = (reason?: string): void => {
+      cancelRequested = true;
+      requestedCancelReason = reason;
+      const cancelReason = reason ?? pendingCancelReason;
+      if (pendingTaskIds.size === 0) return;
+      for (const id of pendingTaskIds) {
+        this.deps.scheduler.cancel(id, cancelReason);
+      }
+      pendingTaskIds.clear();
+      clearOwnerWatch();
+      cancelRequested = false;
+      requestedCancelReason = undefined;
     };
 
     socket.on("data", async (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
+        if (isIpcCancelRequest(frame)) {
+          cancelOwnedTasks(frame.reason);
+          continue;
+        }
         if (!isIpcRequest(frame)) {
           completedByDaemon = true;
           writeExit(socket, 1, "invalid IPC request");
@@ -124,14 +162,18 @@ export class IpcServer {
           if (!pendingClient) pendingClient = makeClient();
           return pendingClient;
         });
-        if (task?.kind === "publish-task") {
-          pendingTaskId = task.id;
+        if (task?.kind === "owned-tasks") {
+          pendingCancelReason = task.cancelReason;
+          for (const id of task.ids) pendingTaskIds.add(id);
+          startOwnerWatch(task.clientPid);
+          if (cancelRequested && !completedByDaemon) {
+            cancelOwnedTasks(requestedCancelReason);
+          }
           if (socketClosed && !completedByDaemon) {
-            this.deps.scheduler.cancel(
-              pendingTaskId,
-              "Publish canceled because the CLI client disconnected.",
-            );
-            pendingTaskId = null;
+            for (const id of pendingTaskIds) {
+              this.deps.scheduler.cancel(id, pendingCancelReason);
+            }
+            pendingTaskIds.clear();
           }
         }
       }
@@ -147,7 +189,9 @@ export class IpcServer {
     frame: IpcRequest,
     socket: net.Socket,
     client: () => PendingClient,
-  ): Promise<{ kind: "publish-task"; id: string } | undefined> {
+  ): Promise<
+    { kind: "owned-tasks"; ids: string[]; cancelReason: string; clientPid?: number } | undefined
+  > {
     // Version handshake (Chapter 7.2.1).
     if (isIpcHandshake(frame)) {
       if (frame.cliVersion !== this.deps.cliVersion) {
@@ -165,11 +209,25 @@ export class IpcServer {
 
     if (isIpcPublishRequest(frame)) {
       const event = await this.deps.scheduler.intercept(frame, client());
-      return event ? { kind: "publish-task", id: event.id } : undefined;
+      return event
+        ? {
+            kind: "owned-tasks",
+            ids: [event.id],
+            cancelReason: "Publish canceled because the CLI client disconnected.",
+            clientPid: frame.clientPid,
+          }
+        : undefined;
     }
     if (isIpcOidcRequest(frame)) {
-      await this.deps.scheduler.createOidcEvents(frame, client());
-      return undefined;
+      const events = await this.deps.scheduler.createOidcEvents(frame, client());
+      return events && events.length > 0
+        ? {
+            kind: "owned-tasks",
+            ids: events.map((event) => event.id),
+            cancelReason: "OIDC canceled because the CLI client disconnected.",
+            clientPid: frame.clientPid,
+          }
+        : undefined;
     }
     const cmd = frame.command;
     if (cmd === "status") {
@@ -240,6 +298,19 @@ function safeWrite(socket: net.Socket, buf: Uint8Array): void {
 
 function writeExit(socket: net.Socket, code: number, message: string): void {
   safeWrite(socket, encodeFrame({ type: "exit", code, message }));
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return isNodeError(error) && error.code === "EPERM";
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function markDaemonExit(socket: net.Socket): void {

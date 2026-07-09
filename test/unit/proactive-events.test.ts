@@ -537,8 +537,10 @@ describe("Feature: WebUI-created proactive events", () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
     const scheduler = new PublishScheduler(store);
     const exit = vi.fn();
+    const log = vi.fn();
 
     await scheduler.createOidcEvents(
       {
@@ -548,10 +550,10 @@ describe("Feature: WebUI-created proactive events", () => {
         recursive: false,
         file: "publish.yml",
       },
-      { log: vi.fn(), exit },
+      { log, exit },
     );
 
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).not.toHaveBeenCalled();
     const event = store.getEvents()[0];
     expect(event?.payload?.kind).toBe("configure-trust");
     if (event?.payload?.kind !== "configure-trust") return;
@@ -567,6 +569,77 @@ describe("Feature: WebUI-created proactive events", () => {
         workflow_ref: { file: "publish.yml" },
       },
     });
+    await expect(scheduler.confirm(event.id)).resolves.toBe(true);
+    expect(addTrustedPublisherMock).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0, "OIDC events completed.");
+  });
+
+  it("Scenario: Given oidc --json, When confirmed, Then the CLI receives one structured result object", async () => {
+    const packageDir = path.join(sandbox, "oidc-json");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "@scope/oidc-json",
+        version: "1.0.0",
+        repository: "https://github.com/owner/repo.git",
+      }),
+      "utf8",
+    );
+
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exit = vi.fn();
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+    const scheduler = new PublishScheduler(store);
+
+    const created = await scheduler.createOidcEvents(
+      {
+        command: "oidc",
+        cwd: packageDir,
+        packageNames: [],
+        recursive: false,
+        file: "publish.yml",
+        json: true,
+      },
+      {
+        log: (stream, data) => {
+          if (stream === "stdout") stdout.push(data);
+          else stderr.push(data);
+        },
+        exit,
+      },
+    );
+
+    expect(created).toHaveLength(1);
+    expect(stdout.join("")).toBe("");
+    expect(stderr.join("")).toBe("");
+    const event = created?.[0];
+    if (!event) return;
+
+    await expect(scheduler.confirm(event.id)).resolves.toBe(true);
+    const output: unknown = JSON.parse(stdout.join(""));
+    expect(output).toEqual(
+      expect.objectContaining({
+        ok: true,
+        command: "oidc",
+        eventIds: [event.id],
+      }),
+    );
+    expect(isRecord(output) ? output.events : undefined).toEqual([
+      expect.objectContaining({
+        id: event.id,
+        status: "success",
+        action: "add",
+        target: "@scope/oidc-json",
+        code: 0,
+      }),
+    ]);
+    expect(stderr.join("")).toBe("");
+    expect(exit).toHaveBeenCalledWith(0, "OIDC events completed.");
   });
 
   it("Scenario: Given recursive oidc with a shared config, When mounted from CLI, Then an EventGroup stores the default once", async () => {
@@ -575,7 +648,10 @@ describe("Feature: WebUI-created proactive events", () => {
     const packageB = path.join(workspaceRoot, "packages/b");
     await fsp.mkdir(packageA, { recursive: true });
     await fsp.mkdir(packageB, { recursive: true });
-    await fsp.writeFile(path.join(workspaceRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    await fsp.writeFile(
+      path.join(workspaceRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - packages/*\n",
+    );
     await fsp.writeFile(
       path.join(packageA, "package.json"),
       JSON.stringify({

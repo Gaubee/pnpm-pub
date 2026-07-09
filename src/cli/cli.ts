@@ -30,15 +30,16 @@ import type {
   IpcHandshake,
   IpcManagementRequest,
   IpcOidcRequest,
+  IpcCancelRequest,
 } from "../shared/index.js";
 import { readPackageVersion } from "../shared/package-version.js";
 import { daemonLogPath, ensureAppDirs, socketPath } from "../shared/paths.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// The daemon entry the CLI spawns. In the bundled output this is dist/daemon.js
-// (sibling of dist/cli.js). For dev (bun/tsx from source) override via env so
-// the CLI can launch src/daemon/main.ts directly without a build step.
-const DAEMON_ENTRY = process.env.PNPM_PUB_DAEMON_ENTRY ?? path.join(__dirname, "daemon.js");
+// The daemon entry the CLI spawns. Bundled output uses dist/daemon.js; source
+// execution falls back to src/daemon/main.ts so `pnpm dev:cli` works without a
+// build step. PNPM_PUB_DAEMON_ENTRY remains the explicit override.
+const DAEMON_ENTRY = resolveDaemonEntry();
 const CLI_VERSION = readPackageVersion();
 const execFileAsync = promisify(execFile);
 const PROFILE_ERROR = "--profile requires a value (e.g. --profile alice).";
@@ -96,7 +97,8 @@ const CLI_COMMANDS = [
   {
     name: "oidc",
     kind: "action",
-    usage: "oidc [package-name ...] [--recursive] [--provider github|gitlab|circleci] [--file <workflow.yml>]",
+    usage:
+      "oidc [package-name ...] [--recursive] [--provider github|gitlab|circleci] [--file <workflow.yml>]",
     description: "Create Trusted Publishing Event(s)",
     daemonCommand: false,
     acceptsProfile: true,
@@ -133,6 +135,42 @@ type CliCommandDefinition = (typeof CLI_COMMANDS)[number];
 type CliActionCommandDefinition = Extract<CliCommandDefinition, { kind: "action" }>;
 type DaemonCommandDefinition = Extract<CliCommandDefinition, { daemonCommand: true }>;
 const DAEMON_COMMANDS = CLI_COMMANDS.filter(isDaemonCommandDefinition);
+
+function resolveDaemonEntry(): string {
+  const configured = process.env.PNPM_PUB_DAEMON_ENTRY;
+  if (configured && configured.length > 0) return configured;
+  const bundledEntry = path.join(__dirname, "daemon.js");
+  if (fs.existsSync(bundledEntry)) return bundledEntry;
+  const sourceEntry = path.resolve(__dirname, "../daemon/main.ts");
+  return fs.existsSync(sourceEntry) ? sourceEntry : bundledEntry;
+}
+
+function daemonSpawnArgs(entry: string): string[] {
+  if (!entry.endsWith(".ts") || path.basename(process.execPath) !== "node") return [entry];
+  return [...filterDaemonExecArgv(process.execArgv), entry];
+}
+
+function filterDaemonExecArgv(args: string[]): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg) continue;
+    if (arg === "-e" || arg === "--eval" || arg === "-p" || arg === "--print") {
+      index += 1;
+      continue;
+    }
+    if (
+      arg.startsWith("--eval=") ||
+      arg.startsWith("--print=") ||
+      arg === "--check" ||
+      arg === "-c"
+    ) {
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Daemon connection helpers (Chapter 7.2.1 — auto-booting ghost process).
@@ -173,7 +211,7 @@ function spawnDaemon(): void {
   } catch {
     /* fall back to ignore */
   }
-  const child = spawn(process.execPath, [DAEMON_ENTRY], {
+  const child = spawn(process.execPath, daemonSpawnArgs(DAEMON_ENTRY), {
     detached: true,
     stdio: stdio as ["ignore" | number, "ignore" | number, "ignore" | number],
     env: { ...process.env },
@@ -217,7 +255,13 @@ async function runPublish(cwd: string, args: string[], profileOverride?: string)
       return 1;
     }
 
-    const req: IpcPublishRequest = { command: "publish", cwd, args, profileOverride };
+    const req: IpcPublishRequest = {
+      command: "publish",
+      cwd,
+      args,
+      profileOverride,
+      clientPid: process.pid,
+    };
     sock.write(encodeFrame(req));
 
     process.stdout.write("> Waiting for GUI confirmation. Please check your system tray...\n");
@@ -230,7 +274,7 @@ async function runPublish(cwd: string, args: string[], profileOverride?: string)
 async function runOidc(args: string[], profileOverride?: string): Promise<number> {
   const parsed = parseOidcArgs(args);
   if (!parsed.ok) {
-    process.stderr.write(`${parsed.error}\n`);
+    writeOidcCliError(args, parsed.error);
     return 1;
   }
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -253,12 +297,23 @@ async function runOidc(args: string[], profileOverride?: string): Promise<number
       command: "oidc",
       ...parsed.request,
       ...(profileOverride ? { profileOverride } : {}),
+      clientPid: process.pid,
     };
     sock.write(encodeFrame(req));
     return relay(sock);
   }
   process.stderr.write("Could not bring the daemon up to date after retry.\n");
   return 1;
+}
+
+function writeOidcCliError(args: string[], error: string): void {
+  if (args.includes("--json")) {
+    process.stdout.write(
+      JSON.stringify({ ok: false, command: "oidc", error, events: [] }, null, 2) + "\n",
+    );
+    return;
+  }
+  process.stderr.write(`${error}\n`);
 }
 
 type ParsedOidcArgs =
@@ -331,6 +386,14 @@ function parseOidcArgs(args: string[]): ParsedOidcArgs {
     }
     if (arg === "--no-allow-stage-publish") {
       request.allowStagePublish = false;
+      continue;
+    }
+    if (arg === "--json") {
+      request.json = true;
+      continue;
+    }
+    if (arg === "--no-json") {
+      request.json = false;
       continue;
     }
     if (arg === "--workflow" || arg.startsWith("--workflow=")) {
@@ -555,12 +618,60 @@ async function handshakeAndWait(
 function relay(sock: net.Socket): Promise<number> {
   return new Promise((resolve) => {
     const reader = new FrameReader();
+    let settled = false;
+    const signalExitCode = (signal: NodeJS.Signals): number =>
+      signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 1;
+    const cleanup = (): void => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      process.off("SIGHUP", onSignal);
+    };
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(code);
+    };
+    const onSignal = (signal: NodeJS.Signals): void => {
+      if (settled) process.exit(signalExitCode(signal));
+      settled = true;
+      const code = signalExitCode(signal);
+      cleanup();
+      const forceExit = setTimeout(() => {
+        try {
+          sock.destroy();
+        } catch {
+          /* ignore */
+        }
+        process.exit(code);
+      }, 250);
+      sock.once("close", () => {
+        clearTimeout(forceExit);
+        process.exit(code);
+      });
+      try {
+        sock.write(encodeFrame({ command: "cancel" } satisfies IpcCancelRequest), () => {
+          try {
+            sock.end();
+          } catch {
+            clearTimeout(forceExit);
+            process.exit(code);
+          }
+        });
+      } catch {
+        clearTimeout(forceExit);
+        process.exit(code);
+      }
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+    process.once("SIGHUP", onSignal);
     sock.on("data", (chunk) => {
       reader.push(chunk);
       for (const frame of reader.drain()) {
         if (!isIpcFrame(frame)) {
           process.stderr.write("Invalid daemon IPC frame.\n");
-          resolve(1);
+          finish(1);
           continue;
         }
         if (frame.type === "stdout") process.stdout.write(frame.data);
@@ -571,12 +682,12 @@ function relay(sock: net.Socket): Promise<number> {
           } catch {
             /* ignore */
           }
-          resolve(frame.code);
+          finish(frame.code);
         }
       }
     });
-    sock.on("close", () => resolve(1));
-    sock.on("error", () => resolve(1));
+    sock.on("close", () => finish(1));
+    sock.on("error", () => finish(1));
   });
 }
 
