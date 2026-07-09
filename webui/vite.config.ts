@@ -1,7 +1,8 @@
 import tailwindcss from "@tailwindcss/vite";
 import adapter from "@sveltejs/adapter-static";
 import { sveltekit } from "@sveltejs/kit/vite";
-import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
+// oxlint-disable-next-line vite-plus/prefer-vite-plus-imports -- avoids vite-plus injecting test-only plugins into the WebUI production build.
+import { defineConfig, type Plugin } from "vite";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execa, type ResultPromise } from "execa";
@@ -19,16 +20,22 @@ const tsxLoader = rootRequire.resolve("tsx");
 // Chapter 4.4.1: adapter-static compiles the SvelteKit app to a pure SPA whose
 // output the daemon serves from dist/webui.
 export default defineConfig({
-  resolve: {
-    alias: {
-      // Allow the webui to import the shared Zod schemas from the repo root
-      // (src/shared/schemas.ts is pure Zod — no Node APIs).
-      $shared: fileURLToPath(new URL("../src/shared/", import.meta.url)),
+  build: {
+    rolldownOptions: {
+      // After test-only plugins are removed, this warning only reports normal
+      // SvelteKit internals dominating plugin time for this SPA build.
+      checks: { pluginTimings: false },
     },
   },
-  plugins: lazyPlugins(() => [
+  // Use plain Vite config here: vite-plus injects Vitest resolver plugins that
+  // belong to test runs, not this production SvelteKit build.
+  plugins: [
     tailwindcss(),
     sveltekit({
+      // Allow the webui to import browser-safe shared contracts from repo root.
+      alias: {
+        $shared: fileURLToPath(new URL("../src/shared/", import.meta.url)),
+      },
       compilerOptions: {
         // Force runes mode for the project, except for libraries. Can be removed in svelte 6.
         runes: ({ filename }) =>
@@ -49,7 +56,7 @@ export default defineConfig({
     // allocates it — `server.proxy` is read at config-load time, before the
     // plugin runs, so it would resolve to undefined and disable the proxy.
     pnpmPubDaemonDev(),
-  ]),
+  ],
 });
 
 /**

@@ -24,7 +24,7 @@
   "type": "module",
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
-    "build": "vp pack",
+    "build": "bun run scripts/build/run.ts",
     "dev": "tsx scripts/dev-webui.ts",
     "dev:core": "tsx src/daemon/dev.ts",
     "dev:cli": "bun run src/cli/cli.ts",
