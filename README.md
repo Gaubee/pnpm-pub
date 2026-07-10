@@ -1,238 +1,85 @@
 # pnpm-pub
 
-A desktop-level local daemon proxy + tray GUI that turns the tedious
-"fetch-and-type-the-6-digit-2FA" publish flow into a single physical click, plus
-NPM identity/asset management. Implements the spec under `spec/*.md`.
+**A desktop control plane for npm publishing.**
 
-Architecture (Chapter 2): a **thin CLI** (`src/cli`), a **Node.js daemon hub**
-(`src/daemon`), and a **SvelteKit WebUI** (`webui/`) hosted in an `opentray`
-native window.
+`pnpm-pub` turns a terminal publish command into a local, reviewable action: inspect the package, approve or reject it from the tray window, and let the waiting terminal continue only after that decision. It also gives npm package authors one place to manage identities, packages, workspaces, TOTP, and npm Trusted Publishing.
 
-## The WebUI container: opentray + ext-webview
+![pnpm-pub 1.0.0: publish and trusted-publishing activity in the desktop tray window](docs/images/pnpm-pub-1.0.0.png)
 
-The WebUI is NOT opened in a plain browser in production on supported desktop
-hosts — it is mounted inside a real native window via
-[`opentray`](https://www.npmjs.com/package/opentray) and its
-`@opentray/ext-webview` extension (Chapter 6.4). On unsupported hosts, `pnpm
-dev` falls back to the printed WebUI URL so the app remains usable. The
-canonical recipe from the opentray README is wired up in `src/daemon/index.ts`
-→ `tryCreateTray`:
+## Why pnpm-pub
 
-```ts
-import { WebviewExt } from "@opentray/ext-webview";
-import { createTray } from "opentray";
+Publishing is an external, irreversible action. The command line is excellent at describing intent, but it is a poor place to inspect a tarball, compare workspace packages, manage several npm identities, or interrupt a rushed release. pnpm-pub keeps the CLI as the source of action and adds a local review surface before npm is changed.
 
-const tray = (await createTray({ trayId, title, icon, menu })).extend(WebviewExt);
-const panel = tray.createWebviewWindow({ url: webUiUrl, width, height, style });
-await panel.show();
+```text
+pnpm-pub publish --access public
+                |
+                v
+       local daemon creates a pending action
+                |
+                v
+   tray window: inspect, approve, or reject
+                |
+                v
+      confirmed action writes to npm; terminal receives result
 ```
 
-The `WebviewWindowHandle` (`panel`) is what backs the `TrayHost` surface:
-`panel.show()/hide()` → reversible tray-window visibility,
-`panel.setStyle({ keepOnTop })` → permanent native stacking,
-`panel.listen('blur'/'focus', ...)` → auto-close eligibility, and page-side
-`navigator.opentrayWindow.setStyle({ opacity })` → the WebUI-owned enter/exit
-opacity timeline.
+The daemon starts on demand, so the normal workflow does not require a separate server-management step.
 
-`Hide window` is only a projection change on the existing tray-owned window.
-`Quit`, `pnpm pub daemon stop`, and daemon version self-destruct are process
-lifetime sources: after destroying the tray/window surfaces they exit the daemon
-process so the OpenTray broker session socket closes and the single-session
-runtime lease is released before the next `pnpm dev`.
+## What It Does
 
-The window uses opentray's tray-panel glass-shell style:
+- **Approve publishes deliberately.** Review pending publish actions before the package is packed and sent to the registry. Rejecting an action cancels the waiting CLI process.
+- **Inspect package work.** Browse your npm packages, package details, recent publish history, tarball contents, and workspace packages from one desktop surface.
+- **Manage npm identities safely.** Add and switch profiles, scan a TOTP QR code or paste a secret, renew credentials, and keep credentials in macOS Keychain or Windows Credential Manager.
+- **Set up Trusted Publishing with review.** Generate npm Trusted Publishing actions for GitHub Actions, GitLab CI, or CircleCI; confirmation is required before the npm trust configuration is changed.
+- **Work with projects, not only one package.** Scan and pin package or pnpm workspace roots, then create actions against the packages they contain.
+- **Keep a local audit trail.** The Events view records completed, rejected, cancelled, and failed actions alongside their relevant output.
 
-- **macOS:** `frameless`, `keepOnTop`, `background: { kind: "platformMaterial", material: "hudWindow", state: "active" }`
-- **Windows:** `frameless`, `keepOnTop`, `background: "mica"`, `cornerPreference: "round"`
+## Install
 
-### Native binary requirement
-
-`createWebviewWindow` needs the platform-specific native webview binary
-(`@opentray/ext-webview-darwin-arm64` etc., an optional dependency) **and** a
-current OpenTray 0.10.x release line. When both are present, `tryCreateTray`
-logs `opentray webview window mounted` and a real native window opens.
-
-If the native binary or runtime binding isn't available, `tryCreateTray` logs
-`opentray mount failed (...) — running headless` and the daemon still serves the
-WebUI over HTTP so you can open the printed URL in a browser. To get the real
-native window, consult the **`opentray` skill** (or the opentray README) for
-native-runtime setup, then run the app normally:
+pnpm-pub 1.0.0 supports macOS and Windows. Install it globally with Node.js 20+ and npm or pnpm:
 
 ```bash
-pnpm dev                # mounts the tray on supported hosts, otherwise serves the WebUI URL
+npm install --global pnpm-pub
+
+# or
+pnpm add --global pnpm-pub
 ```
 
-#### Verified flow
+## First Publish
 
-Under opentray 0.10.2 with the native webview binary installed, the daemon log
-shows the full mount:
+1. Start the desktop surface once and add an npm profile in the onboarding window. You can scan or paste the profile's TOTP secret there.
 
-```
-opentray webview window mounted
-WebUI available at http://127.0.0.1:<port>/#token=<webtoken>
-[tray] show                      ← TrayHost reacts to a pending publish event
-```
+   ```bash
+   pnpm-pub start
+   ```
 
-## Prerequisites
+2. From a package directory, use `pnpm-pub` in place of `pnpm publish`.
 
-- [bun](https://bun.sh) ≥ 1.3 — used by source CLI helper scripts.
-- Node.js ≥ 20 (for the production bundle, `tsx`, and `vitest`).
-- pnpm ≥ 10 (`corepack enable` or `npm i -g pnpm@10`).
+   ```bash
+   pnpm-pub publish --access public
+   ```
+
+3. Review the pending action in the tray window. Approve to publish, or reject to cancel the terminal command.
+
+`pnpm-pub` preserves familiar publish arguments. Its explicit management commands are `start`, `status`, `stop`, `daemon`, `oidc`, `version`, and `help`; other arguments are handled as a publish request.
 
 ```bash
-pnpm install
-```
-
-## Launching for development (no `dist` build)
-
-Everything below runs TypeScript source directly. The WebUI is served by Vite
-with HMR; `pnpm dev` does not build or copy `dist/webui/`.
-
-### One-shot: boot the live dev runtime
-
-```bash
-pnpm dev
-```
-
-This:
-
-1. Starts the WebUI as a live Vite dev server on a random local port.
-2. Boots the daemon (`src/daemon/dev.ts`) through `tsx` on a second random local port.
-3. Proxies WebUI `/api`, `/__token`, and `/ws` traffic to the daemon.
-4. Opens OpenTray DevTools for the tray WebView on supported native WebView runtimes.
-5. Prints the WebUI URL — open it in a browser (or via `opentray` if installed):
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  pnpm-pub dev server is up.                                     │
-│  WebUI:   http://127.0.0.1:<port>/#token=<webtoken>             │
-│  Profile: add one in the UI                                     │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-Dev state is isolated in `PNPM_PUB_HOME` (defaults to
-`$TMPDIR/pnpm-pub-dev`) so it never touches your real `~/.pnpm-pub`.
-
-### Triggering a publish interception
-
-In another terminal, from any directory containing a `package.json`:
-
-```bash
-PNPM_PUB_HOME=$TMPDIR/pnpm-pub-dev \
-  bun run src/cli/cli.ts publish --access public
-```
-
-The CLI connects to the dev daemon and **suspends**, printing:
-
-```
-> Waiting for GUI confirmation. Please check your system tray...
-```
-
-Open the WebUI URL → the **Events** page shows the pending publish with a
-**Confirm Publish** / **Reject** card (Chapter 6.2). Confirm to run the real
-`pnpm pack` + registry PUT; reject to SIGINT the CLI (Chapter 6.2.2).
-
-### Testing a real publish against a local registry
-
-Point a profile at a local Verdaccio:
-
-```bash
-# start Verdaccio (permissive, no auth)
-npx verdaccio --config verdaccio-dev.yaml
-
-# boot the daemon, then add a profile with registry http://127.0.0.1:4873
-pnpm dev
-```
-
-Then trigger a publish as above — confirming it will pack the tarball and PUT it
-to Verdaccio.
-
-## Production build & the installed CLI
-
-```bash
-pnpm build            # WebUI → dist/webui, daemon+CLI → dist/{daemon,cli}.js
-pnpm release:start    # node dist/cli.js start   (boots the daemon + tray)
-pnpm release:status   # node dist/cli.js status
-pnpm release:stop     # node dist/cli.js stop
-pnpm pub daemon stop  # node dist/cli.js daemon stop
-pnpm pub help         # node dist/cli.js help
-```
-
-The distributed binary is `dist/cli.js` (`bin` field) and is shipped as a
-directly executable Node.js script. `pnpm-pub help` prints pnpm-pub's local
-command help, while `pnpm-pub --help` delegates to `pnpm publish --help`.
-`pnpm-pub <anything>` falls back to `pnpm publish <anything>` for muscle-memory
-compatibility (Chapter 7.1.2). The `daemon start|status|stop` namespace is
-reserved for daemon lifecycle management and never falls through to publish.
-
-### Creating Trusted Publishing Events from CLI
-
-`pnpm-pub oidc` creates pending Trusted Publishing Events in the daemon. It does
-not mutate npm `/trust` directly; confirm the generated Event or EventGroup in
-the tray before any registry write happens.
-
-```bash
-pnpm-pub oidc
+pnpm-pub status
 pnpm-pub oidc --repo owner/repo --file publish.yml --env npm-release
-pnpm-pub oidc -r --repo owner/repo --file publish.yml
-pnpm-pub oidc @scope/a @scope/b --repo owner/repo --file publish.yml
-pnpm-pub oidc --remove @scope/pkg
+pnpm-pub stop
 ```
 
-Common options: `-C, --dir <path>`, `-r, --recursive`, `--profile <name>`,
-`--provider <github|gitlab|circleci>`, `--repo <owner/repo>`, `--file
-<workflow.yml>`, `--env <name>`, `--allow-publish` /
-`--no-allow-publish`, and `--allow-stage-publish` /
-`--no-allow-stage-publish`. GitLab uses `--project-path` and `--ci-file`.
-CircleCI uses `--circle-org-id`, `--circle-project-id`,
-`--circle-pipeline-definition-id`, optional repeated `--circle-context-id`, and
-`--vcs-origin`.
+## Documentation
 
-## Scripts
+- [CLI guide](docs/cli.md): lifecycle commands, publish interception, and Trusted Publishing actions.
+- [Architecture](docs/architecture.md): the CLI, local daemon, native tray window, and action lifecycle.
+- [Development](docs/development.md): source setup, local runtime, tests, and environment variables.
+- [Contributing](CONTRIBUTING.md): project conventions and the contributor verification path.
 
-The project uses two launch conventions:
+## Security Model
 
-### Development — run TypeScript source directly
+pnpm-pub is local-first. The CLI, daemon, and tray window communicate over a local authenticated channel; credentials are stored by the operating system's native credential store. The UI does not make an npm write merely by rendering an action: an explicit user confirmation is the source that authorizes the registry mutation.
 
-No `dist/` build step for the daemon, CLI, or WebUI. `pnpm dev` serves WebUI
-from Vite and runs the daemon source through `tsx` so Node HTTP/WebSocket
-upgrade semantics match the tested daemon server.
+## License
 
-| Command            | Description                                                        |
-| ------------------ | ------------------------------------------------------------------ |
-| `pnpm dev`         | Start live Vite WebUI + source daemon, both on random local ports. |
-| `pnpm dev:webui`   | Start only the live Vite WebUI on a random local port.             |
-| `pnpm dev:core`    | Boot only the daemon via `tsx src/daemon/dev.ts`.                  |
-| `pnpm dev:publish` | Run the CLI from source (`bun run src/cli/cli.ts publish …`).      |
-
-### Release — run the compiled `dist/` bundle via Node
-
-After `pnpm build`, the CLI/daemon live in `dist/` as compiled `.js`. These run
-them directly (no bun, no source transpilation).
-
-| Command                | Description                                                              |
-| ---------------------- | ------------------------------------------------------------------------ |
-| `pnpm build`           | Full production build → `dist/{cli.js,daemon.js,prebuilds/,webui/}`.     |
-| `pnpm release:start`   | Boot the daemon + tray from the built bundle (`node dist/cli.js start`). |
-| `pnpm release:status`  | Query the running daemon (`node dist/cli.js status`).                    |
-| `pnpm release:stop`    | Graceful shutdown that exits the daemon process.                         |
-| `pnpm release:publish` | Run the built CLI (`node dist/cli.js …`).                                |
-| `pnpm pub daemon stop` | Namespaced graceful shutdown that exits the daemon process.              |
-
-### Testing
-
-| Command                | Description                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `pnpm test`            | Unit tests (`vitest`).                                                            |
-| `pnpm test:e2e`        | E2E interception test (mock registry; set `PNPM_PUB_E2E_REGISTRY` for Verdaccio). |
-| `pnpm test:e2e:docker` | Boot a Dockerized Verdaccio, run E2E, tear down.                                  |
-| `pnpm typecheck`       | `tsc --noEmit`.                                                                   |
-
-## Environment variables
-
-| Var                     | Purpose                                                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `PNPM_PUB_HOME`         | Override the app home (`~/.pnpm-pub`). Used by `pnpm dev` so a spawned CLI agrees with the daemon on the IPC socket path. |
-| `PNPM_PUB_DEV_NO_TRAY`  | `1` to skip the opentray host (headless).                                                                                 |
-| `PNPM_PUB_DAEMON_ENTRY` | Daemon entry the CLI spawns (dev: `src/daemon/main.ts`).                                                                  |
-| `PNPM_PUB_E2E_REGISTRY` | Real registry URL for the E2E test (e.g. a local Verdaccio).                                                              |
+[MIT](LICENSE)
