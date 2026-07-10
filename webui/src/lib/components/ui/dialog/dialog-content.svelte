@@ -31,7 +31,7 @@
         bind:ref
         data-slot="dialog-content"
         class={cn(
-            "bg-popover/80 text-popover-foreground data-open:animate-in backdrop-blur-lg backdrop-brightness-200 backdrop-contrast-50  data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/10 grid max-w-[calc(100%-4rem)] max-h-[calc(100%-4rem)] gap-4 rounded-xl p-4 text-sm ring-1 duration-100 sm:max-w-[calc(100%-2rem)] fixed top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 outline-none",
+            "bg-background text-background-foreground data-open:animate-in backdrop-blur-lg backdrop-brightness-200 backdrop-contrast-80 dark:backdrop-brightness-80 dark:backdrop-contrast-120 data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/10 grid max-w-[calc(100%-4rem)] max-h-[calc(100%-4rem)] gap-4 rounded-xl p-4 text-sm ring-1 duration-100 sm:max-w-[calc(100%-2rem)] fixed top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 outline-none",
             className,
         )}
         {...restProps}

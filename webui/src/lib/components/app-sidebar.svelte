@@ -31,7 +31,7 @@
     import IconPackage from "@lucide/svelte/icons/package";
     import IconPanelClose from "@lucide/svelte/icons/panel-left-close";
     import IconPanelOpen from "@lucide/svelte/icons/panel-left-open";
-    import NpmMark from "$lib/components/npm-mark.svelte";
+    import AppMark from "$lib/components/app-mark.svelte";
     import { _ } from "svelte-i18n";
 
     let menuOpen = $state(false);
@@ -68,7 +68,7 @@
     )}
     data-collapsed={collapsed}
 >
-    <!-- Brand header (NPM logo mark — Chapter 1.3.2), unified with the tray icon. -->
+    <!-- Brand header (pnpm-pub product mark), unified with the About tab. -->
     <div
         class={cn(
             "no-drag flex h-12 items-center gap-2 px-3",
@@ -76,7 +76,8 @@
         )}
     >
         {#if !collapsed}
-            <NpmMark class="h-6 w-6 rounded-[5px]" />
+            <!-- AppMark has sharp corners by design — no rounded-*. -->
+            <AppMark class="h-6 w-6" />
             <span
                 class="min-w-0 flex-1 truncate text-sm font-semibold tracking-tight"
                 >pnpm-pub</span

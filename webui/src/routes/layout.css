@@ -292,22 +292,22 @@
 
 @layer base {
   * {
-    border-color: var(--border);
+    @apply border-border outline-ring/50;
     scrollbar-width: thin;
   }
   html,
   body {
-    height: 100%;
     /*
-		 * Transparent so the opentray native semantic-blur window material shows
-		 * through (Chapter 6.1.3 / skill "Frameless Glass Utility"). The window is
-		 * created with background { kind: "semantic", token: "blur" }; if the page
-		 * painted an opaque background it would cover that blur entirely. Each
-		 * surface (sidebar, cards) carries its own translucent fill instead.
-		 */
-    background-color: transparent;
-    color: var(--foreground);
-    font-family: var(--font-sans);
+     * Transparent so the opentray native semantic-blur window material shows
+     * through (Chapter 6.1.3 / skill "Frameless Glass Utility"). The window is
+     * created with background { kind: "semantic", token: "blur" }; if the page
+     * painted an opaque background it would cover that blur entirely. Each
+     * surface (sidebar, cards) carries its own translucent fill instead.
+     */
+    @apply h-full bg-transparent text-foreground;
+  }
+  html {
+    @apply font-sans;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }

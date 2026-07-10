@@ -155,7 +155,7 @@
         `--muted` read almost identical on top of it. We reinforce the active
         trigger with an accent fill + shadow so the selected tab is unambiguous.
     -->
-    <Tabs.List variant="line">
+    <Tabs.List variant="default">
         <Tabs.Trigger value="export"
             ><IconDownload class="size-4" /> {$_("backup.export")}</Tabs.Trigger
         >

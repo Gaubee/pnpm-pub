@@ -2,14 +2,15 @@
     /**
      * 通用 (General) settings tab — theme + language.
      *
-     * Theme is a 3-segment ButtonGroup (system/light/dark, icon + label); the
-     * active segment uses the `secondary` variant. Language is a Combobox
-     * (Popover + Command) so the 9 locales live in a searchable dropdown rather
-     * than a long Toggle row. Both re-flow on narrow widths via container
-     * queries (`@container settings-dialog` is set on the dialog body).
+     * Theme is a 3-segment ToggleGroup (system/light/dark, icon + label) using
+     * the `outline` variant so it reads as a connected segmented control; the
+     * active segment is highlighted automatically via the toggle's pressed
+     * state. Language is a Combobox (Popover + Command) so the 9 locales live
+     * in a searchable dropdown rather than a long Toggle row. Both re-flow on
+     * narrow widths via container queries (`@container settings-dialog` is set
+     * on the dialog body).
      */
-    import { Button } from "$lib/components/ui/button/index.js";
-    import { ButtonGroup } from "$lib/components/ui/button-group/index.js";
+    import * as ToggleGroup from "$lib/components/ui/toggle-group/index.js";
     import { Label } from "$lib/components/ui/label/index.js";
     import * as Popover from "$lib/components/ui/popover/index.js";
     import {
@@ -56,19 +57,22 @@
     <!-- Theme -->
     <div class="flex flex-col gap-3">
         <Label>{$_("settings.theme")}</Label>
-        <ButtonGroup class="w-full">
+        <ToggleGroup.Root
+            type="single"
+            value={currentMode}
+            onValueChange={(v) => v && setMode(v as ThemeMode)}
+            variant="outline"
+        >
             {#each themeOptions as opt (opt.id)}
-                <Button
-                    variant={currentMode === opt.id ? "secondary" : "outline"}
-                    class="flex-1 gap-1.5"
-                    onclick={() => setMode(opt.id)}
-                    aria-pressed={currentMode === opt.id}
+                <ToggleGroup.Item
+                    value={opt.id}
+                    class="gap-1.5"
                 >
-                    <opt.icon class="h-4 w-4" />
+                    <opt.icon class="size-4" />
                     {$_(opt.labelKey)}
-                </Button>
+                </ToggleGroup.Item>
             {/each}
-        </ButtonGroup>
+        </ToggleGroup.Root>
     </div>
 
     <!-- Language (Combobox = Popover + Command). The trigger is styled directly
@@ -80,7 +84,7 @@
         <Label>{$_("settings.language")}</Label>
         <Popover.Root bind:open={langOpen}>
             <Popover.Trigger
-                class="inline-flex h-9 w-fit items-center justify-between gap-3 rounded-md border border-input bg-background px-3 py-1 text-sm font-normal shadow-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                class="inline-flex w-fit items-center justify-between gap-3 rounded-md border border-input bg-background px-3 py-1 text-sm font-normal shadow-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
                 <span>{localeNames[currentLocale]}</span>
                 <IconChevronDown class="size-4 opacity-50" />

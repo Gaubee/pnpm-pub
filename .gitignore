@@ -17,3 +17,4 @@ assets/*.png
 .agents
 .factory
 .qoder
+.zcode
