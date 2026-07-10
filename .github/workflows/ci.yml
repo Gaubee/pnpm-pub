@@ -41,7 +41,7 @@ jobs:
       - name: i18n key-parity (webui)
         run: pnpm --filter ./webui i18n:check:strict
 
-      - name: Unit tests
+      - name: Unit and browser tests
         run: pnpm test
 
       - name: Full build

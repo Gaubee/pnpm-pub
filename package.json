@@ -44,7 +44,7 @@
     "release:publish": "node dist/cli.js",
     "release:verify": "tsx scripts/release/verify-release.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vp test run && pnpm test:browser",
+    "test": "vp test run --project unit && pnpm test:browser",
     "test:watch": "vp test",
     "test:browser": "vp test run --project browser",
     "test:e2e": "vp test run --project e2e",

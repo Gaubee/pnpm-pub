@@ -224,7 +224,7 @@ async function defaultErrorFor(pathname: string): Promise<string> {
 			};
 			setInput('#u', 'alice');
 			setInput('#p', 'password');
-			await new Promise((resolve) => requestAnimationFrame(resolve));
+			await new Promise((resolve) => setTimeout(resolve, 0));
 			const button = document.querySelector('button.bg-brand.w-full');
 			if (!(button instanceof HTMLButtonElement)) throw new Error('Missing submit button');
 			const enabledDeadline = Date.now() + 5000;

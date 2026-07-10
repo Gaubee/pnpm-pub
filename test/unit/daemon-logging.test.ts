@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
+import { tmpdir } from "node:os";
 import { bootDaemon } from "../../src/daemon/index.js";
 import { daemonLogPath, setHomeOverride } from "../../src/shared/paths.js";
 import { WINDOW_ENTER_SEED_OPACITY } from "../../src/shared/window-opacity.js";
@@ -88,11 +89,10 @@ function makeHappyMount() {
   };
 }
 
-const sandbox = path.join("/tmp", `ppdl-${process.pid}-${Date.now()}`);
+let sandbox = "";
 
 beforeEach(async () => {
-  await fsp.rm(sandbox, { recursive: true, force: true });
-  await fsp.mkdir(sandbox, { recursive: true });
+  sandbox = await fsp.mkdtemp(path.join(tmpdir(), "ppdl-"));
   setHomeOverride(sandbox);
   trayMocks.createTray.mockReset();
   trayMocks.placementWatch.mockReset();
@@ -102,7 +102,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setHomeOverride(null);
-  await fsp.rm(sandbox, { recursive: true, force: true });
+  await fsp.rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 describe("bootDaemon logging", () => {
