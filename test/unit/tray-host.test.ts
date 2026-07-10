@@ -231,6 +231,40 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await host.destroy();
   });
 
+  it("Scenario: Given the add-profile route, When the window blurs, Then route-owned onboarding blocks auto-close", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
+    host.show();
+    host.setRoute("/add-profile");
+
+    window.fireBlur();
+    expect(host.getPinState().exitRequested).toBe(false);
+
+    // A stale completion must still be rejected while the form route owns the window.
+    host.completeAutoClose();
+    expect(window.visible).toBe(true);
+    await host.destroy();
+  });
+
+  it("Scenario: Given a pending blur auto-close, When add-profile becomes active, Then the route cancels it", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const window = makeWindow();
+    const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
+    host.show();
+    window.fireBlur();
+    expect(host.getPinState().exitRequested).toBe(true);
+
+    host.setRoute("/add-profile");
+    expect(host.getPinState().exitRequested).toBe(false);
+
+    host.setRoute("/profiles/alice");
+    expect(host.getPinState().exitRequested).toBe(true);
+    await host.destroy();
+  });
+
   it("pin changes re-evaluate auto-close while the window is blurred", async () => {
     const store = new DaemonStore();
     await store.load();

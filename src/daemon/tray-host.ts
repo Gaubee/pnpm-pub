@@ -11,7 +11,7 @@
  * layering on top is purely the product behavior the skill leaves to the app:
  *   - tray primary click toggles show/hide (synced with out-of-band hides)
  *   - the window is ALWAYS kept on top (keepOnTop is permanent, not a toggle)
- *   - blur requests page-owned auto-close animation unless keep-open is active
+ *   - blur requests page-owned auto-close animation unless a visibility guard is active
  *   - the keep-open pin is persisted via the store + projected to the WebUI
  *
  * opentray 0.8 removed its broker daemon concept: the tray lifetime is now owned
@@ -99,6 +99,12 @@ export class TrayHost {
    */
   private pinned = false;
   /**
+   * Route reported by the current WebUI surface. Routes are UI facts, not
+   * preferences or pending events; only the named protected route blocks blur
+   * auto-close while it owns an in-progress form.
+   */
+  private routePathname = "/";
+  /**
    * True while the daemon has authorized a WebUI exit animation. The actual
    * opacity timeline and countdown are page projections; this flag is the
    * platform intent that lets the page start or abort that timeline.
@@ -140,7 +146,11 @@ export class TrayHost {
   }
 
   private get canAutoClose(): boolean {
-    return !this.pinned && !this.hasActiveEvents;
+    return !this.pinned && !this.hasActiveEvents && !this.isRouteVisibilityProtected;
+  }
+
+  private get isRouteVisibilityProtected(): boolean {
+    return this.routePathname === "/add-profile";
   }
 
   /**
@@ -376,6 +386,18 @@ export class TrayHost {
       return;
     }
     this.hide();
+  }
+
+  /**
+   * Update the current WebUI route. This is a route-owned visibility fact:
+   * entering a protected route cancels an in-flight auto-close, while leaving
+   * one re-evaluates eligibility if the native window is still blurred.
+   */
+  setRoute(pathname: string): void {
+    if (this.routePathname === pathname) return;
+    this.routePathname = pathname;
+    this.log(`route changed: ${pathname}`);
+    this.reevaluateAutoClose();
   }
 
   /**

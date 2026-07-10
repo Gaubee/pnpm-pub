@@ -336,6 +336,10 @@ export const webRpcContract = {
   tray: {
     completeAutoClose: oc.output(OkResponseSchema),
     windowHidden: oc.output(OkResponseSchema),
+    /** Reports the WebUI route that currently owns the tray window surface. */
+    routeChanged: oc
+      .input(z.object({ pathname: z.string().startsWith("/").max(2_048) }))
+      .output(OkResponseSchema),
   },
   /**
    * App-wide preferences (Chapter 6.4). Single read/write source for the

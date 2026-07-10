@@ -505,6 +505,10 @@ export const actions = {
   completeAutoClose(): void {
     void rpc?.tray.completeAutoClose();
   },
+  /** Reports the route that currently owns the tray window surface. */
+  setTrayRoute(pathname: string): void {
+    void rpc?.tray.routeChanged({ pathname });
+  },
   scanWorkspace(root: string): void {
     void rpc?.workspace.scan({ root }).then((res) => dispatchMessages(res.messages));
   },

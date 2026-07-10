@@ -3,7 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { onMount } from 'svelte';
 	import { ModeWatcher } from 'mode-watcher';
-	import { connect, daemon, activeProfile, pendingEvents } from '$lib/store.js';
+	import { actions, connect, daemon, activeProfile, pendingEvents } from '$lib/store.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { tick } from 'svelte';
@@ -263,6 +263,16 @@
 	const needsOnboarding = $derived($daemon.profilesLoaded && $daemon.profiles.length === 0);
 	const isAddProfileRoute = $derived(page.url.pathname === '/add-profile');
 	const isOnboarding = $derived(needsOnboarding && isAddProfileRoute);
+
+	// `/add-profile` owns an in-progress credential form, so tell the daemon to
+	// suppress blur-driven auto-hide while this route is active. The pathname is
+	// a route fact, distinct from persistent preferences and pending events.
+	$effect(() => {
+		const connected = $daemon.connected;
+		const pathname = page.url.pathname;
+		if (!connected) return;
+		actions.setTrayRoute(pathname);
+	});
 
 	$effect(() => {
 		if (!needsOnboarding || isAddProfileRoute) return;

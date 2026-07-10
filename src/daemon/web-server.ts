@@ -535,6 +535,10 @@ export class WebServer {
           this.trayHost?.markHidden();
           return { ok: true };
         }),
+        routeChanged: rpc.tray.routeChanged.handler(({ input }) => {
+          this.trayHost?.setRoute(input.pathname);
+          return { ok: true };
+        }),
       },
       preferences: {
         set: rpc.preferences.set.handler(async ({ input }) => {
