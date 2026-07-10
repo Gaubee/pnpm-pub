@@ -162,8 +162,10 @@
 					{#if confirming}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconCheck class="h-3.5 w-3.5" />{/if}
 					{#if confirming}
 						{$_('eventCard.confirming')}
+					{:else if eventKind === 'configure-trust' && configureTrustCtx?.action === 'remove'}
+						{$_('eventCard.confirm')}
 					{:else if eventKind === 'configure-trust'}
-						{configureTrustCtx?.action === 'remove' ? $_('eventCard.confirmRemoveTrustedPublishing') : $_('eventCard.confirmTrustedPublishing')}
+						{$_('eventCard.confirmTrustedPublishing')}
 					{:else if eventKind === 'recursive-publish'}
 						{$_('eventCard.confirmRecursivePublish')}
 					{:else if eventKind === 'refresh-token'}

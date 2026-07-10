@@ -22,6 +22,8 @@ import {
   type Preferences,
   type TrustedPublisherCreateConfig,
   type ConfigureTrustContext,
+  type RemovalDecisions,
+  type TrustedPublisherRegistryConfig,
   type TarballSummary,
 } from "../shared/index.js";
 import {
@@ -367,6 +369,12 @@ export class DaemonStore extends EventEmitter {
     return this.events.find((e) => e.id === id);
   }
 
+  /** Pending members of one batch. The scheduler uses this instead of the
+   * WebUI projection so authorization is independent of current rendering. */
+  getPendingGroupEvents(groupId: string): PubEvent[] {
+    return this.events.filter((event) => event.groupId === groupId && event.status === "pending");
+  }
+
   /** Paginated, filtered history query (backed by SQLite). */
   queryEvents(q: EventQuery): EventQueryResult {
     if (!this.eventDb) return { rows: [], total: 0, page: q.page, limit: q.limit };
@@ -394,7 +402,19 @@ export class DaemonStore extends EventEmitter {
     profileOverride?: string;
     payload?: EventPayload;
     groupId?: string;
+    /** Immutable npm registry facts captured before a removal Event exists. */
+    removalSnapshot?: TrustedPublisherRegistryConfig[];
   }): PubEvent {
+    const isRemoval =
+      opts.payload?.kind === "configure-trust" && opts.payload.data.action === "remove";
+    if (isRemoval && !opts.removalSnapshot) {
+      throw new Error("A configure-trust removal Event requires a registry snapshot.");
+    }
+    const removalSnapshot =
+      isRemoval && opts.removalSnapshot ? structuredClone(opts.removalSnapshot) : undefined;
+    const removalDecisions = removalSnapshot
+      ? Object.fromEntries(removalSnapshot.map((config) => [config.id, "remove" as const]))
+      : undefined;
     const evt: PubEvent = {
       id: randomUUID(),
       kind: opts.kind,
@@ -404,6 +424,8 @@ export class DaemonStore extends EventEmitter {
       createdAt: Date.now(),
       payload: opts.payload,
       groupId: opts.groupId,
+      removalSnapshot,
+      removalDecisions,
     };
     this.events.unshift(evt);
     if (this.eventDb) insertEvent(this.eventDb, evt);
@@ -541,6 +563,27 @@ export class DaemonStore extends EventEmitter {
       const set = this.groupInheritMembers.get(evt.groupId);
       if (set && set.delete(id)) this.emitGroupTrustDraft(evt.groupId);
     }
+    if (this.eventDb) updateEvent(this.eventDb, evt);
+    this.emit("event", { type: "event" as const, event: evt });
+    return evt;
+  }
+
+  /** Merge decisions only for config ids present in the immutable snapshot. */
+  setRemovalDecisions(id: string, decisions: RemovalDecisions): PubEvent | undefined {
+    const evt = this.events.find((event) => event.id === id);
+    if (
+      !evt ||
+      evt.status !== "pending" ||
+      evt.payload?.kind !== "configure-trust" ||
+      evt.payload.data.action !== "remove" ||
+      !evt.removalSnapshot ||
+      Object.keys(decisions).length === 0
+    ) {
+      return undefined;
+    }
+    const snapshotIds = new Set(evt.removalSnapshot.map((config) => config.id));
+    if (Object.keys(decisions).some((configId) => !snapshotIds.has(configId))) return undefined;
+    evt.removalDecisions = { ...evt.removalDecisions, ...decisions };
     if (this.eventDb) updateEvent(this.eventDb, evt);
     this.emit("event", { type: "event" as const, event: evt });
     return evt;

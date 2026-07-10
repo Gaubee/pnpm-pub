@@ -458,6 +458,11 @@ export const actions = {
       if (!res.ok && res.error) pushToast("error", res.error);
     });
   },
+  confirmGroup(groupId: string): void {
+    void rpc?.events.confirmGroup({ groupId }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
+  },
   reject(id: string): void {
     void rpc?.events.reject({ id }).then((res) => {
       if (!res.ok && res.error) pushToast("error", res.error);
@@ -485,6 +490,11 @@ export const actions = {
    *  inheritance flag is the single source of truth (daemon-side). */
   setMemberInherit(eventId: string, inherit: boolean): void {
     void rpc?.events.setMemberInherit({ eventId, inherit }).then((res) => {
+      if (!res.ok && res.error) pushToast("error", res.error);
+    });
+  },
+  setRemovalDecisions(eventId: string, decisions: Record<string, "remove" | "keep">): void {
+    void rpc?.events.setRemovalDecisions({ eventId, decisions }).then((res) => {
       if (!res.ok && res.error) pushToast("error", res.error);
     });
   },

@@ -365,6 +365,14 @@ export const TrustedPublisherConfigSchema = z.discriminatedUnion("type", [
 ]);
 export type TrustedPublisherConfig = z.infer<typeof TrustedPublisherConfigSchema>;
 
+/** Registry read form. npm DELETE authority requires this stable config id. */
+export const TrustedPublisherRegistryConfigSchema = z.discriminatedUnion("type", [
+  GithubActionsPublisherSchema.extend({ id: z.string().min(1) }),
+  CircleCiPublisherSchema.extend({ id: z.string().min(1) }),
+  GitlabCiPublisherSchema.extend({ id: z.string().min(1) }),
+]);
+export type TrustedPublisherRegistryConfig = z.infer<typeof TrustedPublisherRegistryConfigSchema>;
+
 export const TrustedPublisherCreateConfigSchema = z.discriminatedUnion("type", [
   GithubActionsPublisherSchema.omit({ id: true }),
   CircleCiPublisherSchema.omit({ id: true }),
@@ -374,6 +382,14 @@ export type TrustedPublisherCreateConfig = z.infer<typeof TrustedPublisherCreate
 
 export const TrustedPublishingOperationSchema = z.enum(["add", "update", "remove"]);
 export type TrustedPublishingOperation = z.infer<typeof TrustedPublishingOperationSchema>;
+
+/** Explicit human review of a grouped trusted-publisher removal. This is an
+ * authorization fact, not a display preference: an unreviewed member cannot
+ * enter the destructive batch confirmation path. */
+export const RemovalDecisionSchema = z.enum(["remove", "keep"]);
+export type RemovalDecision = z.infer<typeof RemovalDecisionSchema>;
+export const RemovalDecisionsSchema = z.record(z.string().min(1), RemovalDecisionSchema);
+export type RemovalDecisions = z.infer<typeof RemovalDecisionsSchema>;
 
 export const TrustedPublishingTargetSchema = z.object({
   name: z.string().min(1),
@@ -387,6 +403,11 @@ export const ConfigureTrustContextSchema = z.object({
   action: TrustedPublishingOperationSchema,
   target: TrustedPublishingTargetSchema,
   config: TrustedPublisherCreateConfigSchema.optional(),
+  /** The workspace root the OIDC action was initiated from (recursive /
+   *  workspace-detail batch). Used by the WebUI group card's "open folder"
+   *  action to open the project root rather than a single package dir.
+   *  Optional — single-package actions may carry only `target.path`. */
+  root: z.string().optional(),
 });
 export type ConfigureTrustContext = z.infer<typeof ConfigureTrustContextSchema>;
 
@@ -415,6 +436,10 @@ export const PubEventSchema = z.object({
   clockDriftRecovered: z.boolean().optional(),
   /** Batch correlation id — events sharing a groupId were created together. */
   groupId: z.string().optional(),
+  /** Registry configs captured when a removal Event is created. */
+  removalSnapshot: z.array(TrustedPublisherRegistryConfigSchema).optional(),
+  /** Explicit human decisions keyed by registry trusted-publisher config id. */
+  removalDecisions: RemovalDecisionsSchema.optional(),
   /** Packed-tarball file list, cached when the publish runs (dry or real). */
   tarballSummary: TarballSummarySchema.optional(),
   /** Per-target tarball summaries for a recursive publish (one per target). */

@@ -28,7 +28,7 @@
 	import { actions } from '$lib/store.js';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
-	import IconShield from '@lucide/svelte/icons/shield-check';
+	import IconShieldCog from '@lucide/svelte/icons/shield-cog-corner';
 	import IconHistory from '@lucide/svelte/icons/history';
 	import IconArrowRight from '@lucide/svelte/icons/arrow-right';
 	import { _ } from 'svelte-i18n';
@@ -231,7 +231,7 @@
 						<Button variant="outline" size="sm" class="w-full" onclick={createPlaceholder}>{$_('events.createPlaceholder')}</Button>
 					</div>
 					<div class="space-y-1.5 border-t border-border pt-3">
-						<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShield class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>
+							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShieldCog class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>
 						<Label class="sr-only" for="trusted-publishing-name">{$_('events.packageName')}</Label>
 						<Input id="trusted-publishing-name" bind:value={trustedPublishingName} placeholder={$_('events.packageScopePlaceholder')} onkeydown={(e) => e.key === 'Enter' && openTrustedPublishingDialog()} />
 						<Button variant="brand" size="sm" class="w-full" disabled={!trustedPublishingName.trim()} onclick={openTrustedPublishingDialog}>{$_('events.configureTrustedPublish')}</Button>

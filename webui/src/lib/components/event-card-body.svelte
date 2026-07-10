@@ -18,7 +18,10 @@
 		EventStatus,
 		PubEvent,
 		RecursivePublishContext,
+		RemovalDecision,
+		RemovalDecisions,
 		TarballSummary,
+		TrustedPublisherRegistryConfig,
 		TrustedPublisherCreateConfig,
 		UnpublishContext,
 	} from '$lib/types.js';
@@ -31,8 +34,10 @@
 	import TarballTree from '$lib/components/tarball-tree.svelte';
 	import RecursiveTargetList from '$lib/components/recursive-target-list.svelte';
 	import TrustFormCard from '$lib/components/trust-form-card.svelte';
+	import TrustedPublishingRemovalReview from '$lib/components/trusted-publishing-removal-review.svelte';
 	import TrustedPublishingReadonly from '$lib/components/trusted-publishing-readonly.svelte';
-	import { resolveTrustedPublishingConfig, trustedPublisherSummary } from '$lib/trusted-publishing.js';
+	import type { TrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
+	import { resolveTrustedPublishingConfig } from '$lib/trusted-publishing.js';
 	import { daemon } from '$lib/store.js';
 	import IconTrustedPublishing from '@lucide/svelte/icons/shield-check';
 	import IconChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -62,6 +67,11 @@
 		overrideActive: boolean;
 		description: string | null;
 		configureTrustCtx: ConfigureTrustContext | null;
+		removalConfigs: readonly TrustedPublisherRegistryConfig[];
+		removalDecisions: RemovalDecisions;
+		removalStatus: TrustedPublishingStatus;
+		onRemovalDecision: (configId: string, decision: RemovalDecision) => void;
+		onRemovalRetry?: () => void;
 		unpublishCtx: UnpublishContext | null;
 		recursiveCtx: RecursivePublishContext | null;
 		tarballSummary: TarballSummary | null;
@@ -103,6 +113,11 @@
 		overrideActive,
 		description,
 		configureTrustCtx,
+		removalConfigs,
+		removalDecisions,
+		removalStatus,
+		onRemovalDecision,
+		onRemovalRetry,
 		unpublishCtx,
 		recursiveCtx,
 		tarballSummary,
@@ -186,9 +201,14 @@
 
 	{#if configureTrustCtx}
 		{#if configureTrustCtx.action === 'remove'}
-			<div class="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-				{$_('eventCard.removeTrustedPublishing')} <span class="font-mono">{trustedPublisherSummary(configureTrustCtx.target.currentConfig)}</span>
-			</div>
+			<TrustedPublishingRemovalReview
+				configs={removalConfigs}
+				decisions={removalDecisions}
+				status={removalStatus}
+				disabled={!isPending || confirming}
+				onDecision={onRemovalDecision}
+				onRetry={onRemovalRetry}
+			/>
 		{:else if isPending && readOnly && effectiveTrustConfig}
 			<!-- Read-only view: detailed Trusted Publishing config (renders inside
 			     the EventDetailDialog, where the user may flip to Custom/edit next,

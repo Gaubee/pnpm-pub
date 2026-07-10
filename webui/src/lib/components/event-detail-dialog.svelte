@@ -36,19 +36,29 @@
 	 * `group-trust-draft` frame — so the badge + collapsed summary
 	 * stay correct across refresh.
 	 */
-	import type { PubEvent, TrustedPublisherCreateConfig } from '$lib/types.js';
+	import type {
+		PubEvent,
+		RemovalDecision,
+		RemovalDecisions,
+		TrustedPublisherCreateConfig,
+	} from '$lib/types.js';
+	import type { RepoInfo } from '$lib/components/repo-info-types.js';
 	import {
 		Dialog,
 		DialogContent,
+		DialogDescription,
 		DialogHeader,
 		DialogTitle,
 	} from '$lib/components/ui/dialog/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
 	import EventCard from '$lib/components/event-card.svelte';
+	import EventCardOpenActions from '$lib/components/event-card-open-actions.svelte';
+	import TrustedPublishingRemovalReview from '$lib/components/trusted-publishing-removal-review.svelte';
 	import { actions } from '$lib/store.js';
 	import IconX from '@lucide/svelte/icons/x';
 	import IconReset from '@lucide/svelte/icons/refresh-ccw';
+	import IconShieldMinus from '@lucide/svelte/icons/shield-minus';
 	import { _ } from 'svelte-i18n';
 	import { untrack } from 'svelte';
 
@@ -90,6 +100,88 @@
 			!!event.groupId,
 	);
 
+	/** A grouped configure-trust/remove member: single-event confirm is rejected
+	 *  by the daemon (only confirmGroup can run grouped removals), so the dialog
+	 *  footer surfaces Keep/Remove DECISION controls instead of Confirm/Reject.
+	 *  The decision is written to daemon truth (survives refresh) and gates the
+	 *  group's Confirm All. */
+	const isGroupedRemoval = $derived(
+		!!event &&
+			event.status === "pending" &&
+			event.payload?.kind === "configure-trust" &&
+			event.payload.data.action === "remove" &&
+			!!event.groupId,
+	);
+
+	/** The package name for a grouped-removal member. */
+	const removalPackageName = $derived.by(() => {
+		const e = event;
+		if (e?.payload?.kind === "configure-trust") return e.payload.data.target.name;
+		return "";
+	});
+	const removalConfigs = $derived(event?.removalSnapshot ?? []);
+	const removalStatus = $derived(event?.removalSnapshot ? 'ready' : 'error');
+
+	// Open-actions data for the removal footer (npm link, repo, folder) —
+	// mirrors EventCard's derivation but reads directly from the removal
+	// member's target. The right-side links cluster matches the standard
+	// EventCardFooter layout.
+	const removalTarget = $derived(
+		event?.payload?.kind === "configure-trust" ? event.payload.data.target : null,
+	);
+	const removalSourcePath = $derived(removalTarget?.path ?? "");
+	const removalNpmUrl = $derived(
+		removalPackageName
+			? `https://www.npmjs.com/package/${removalPackageName}`
+			: "",
+	);
+	let removalRepoInfo = $state<RepoInfo | null>(null);
+	const removalRepoRaw = $derived(removalTarget?.repository ?? "");
+	$effect(() => {
+		if (!removalRepoRaw) {
+			removalRepoInfo = null;
+			return;
+		}
+		void actions.repoInfo(removalRepoRaw).then((info) => {
+			removalRepoInfo = info;
+		});
+	});
+	const removalHasOpenActions = $derived(
+		!!removalRepoInfo || !!removalSourcePath || !!removalNpmUrl,
+	);
+	function removalOpenUrl(url: string): void {
+		actions.openUrl(url);
+	}
+	function removalOpenPath(path: string): void {
+		actions.openPath(path);
+	}
+
+	let removalDraft = $state<RemovalDecisions>({});
+	let removalInitial = $state<RemovalDecisions>({});
+	$effect(() => {
+		void event?.id; // re-seed when a different member opens
+		const decisions = event?.removalDecisions ?? {};
+		removalDraft = { ...decisions };
+		removalInitial = { ...decisions };
+	});
+	function removalDecisionsEqual(a: RemovalDecisions, b: RemovalDecisions): boolean {
+		const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+		for (const key of keys) if (a[key] !== b[key]) return false;
+		return true;
+	}
+	const removalDirty = $derived(!removalDecisionsEqual(removalDraft, removalInitial));
+	function setRemovalDraft(configId: string, decision: RemovalDecision): void {
+		removalDraft = { ...removalDraft, [configId]: decision };
+	}
+	/** Commit the local removal decision to the daemon, then close. */
+	function saveRemovalDecision(): void {
+		const e = event;
+		if (!e) return;
+		if (removalDirty) {
+			actions.setRemovalDecisions(e.id, removalDraft);
+		}
+		open = false;
+	}
 	// Local readOnly state mirrors inheritMode AT OPEN TIME. Unlike the old
 	// edit-live design, mode toggles here are LOCAL: setMode does NOT fire the
 	// daemon RPC. The chosen mode (and any form edits) are committed only when
@@ -144,7 +236,81 @@
 		class="grid max-h-[min(100dvh,40rem)] w-[min(100%,44rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0"
 		aria-describedby={undefined}
 	>
-		{#if event}
+		{#if event && isGroupedRemoval}
+			<!-- Dedicated single-package removal view projected from the immutable
+			     registry snapshot captured when the Event was created. -->
+			<DialogHeader class="flex-row items-center gap-2.5 border-b px-4 py-3">
+				<span
+					class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-warning/38 bg-warning/10 text-warning"
+				>
+					<IconShieldMinus class="h-4 w-4" />
+				</span>
+				<div class="min-w-0 flex-1">
+					<DialogTitle class="truncate text-base">
+						{$_('removeTrustedPublishingGroup.title')}
+					</DialogTitle>
+					<DialogDescription class="truncate font-mono">
+						{removalPackageName}
+					</DialogDescription>
+				</div>
+			</DialogHeader>
+			<!-- Scrollable body: independent decisions for every current config. -->
+			<div class="min-h-0 overflow-y-auto p-4">
+				<TrustedPublishingRemovalReview
+					configs={removalConfigs}
+					decisions={removalDraft}
+					status={removalStatus}
+					onDecision={setRemovalDraft}
+				/>
+			</div>
+			<!-- Pinned footer: LEFT cluster = Discard/Save Changes (local-staged
+			     decision), RIGHT cluster = open-actions (npm/repo/folder). Same
+			     justify-between two-ButtonGroup layout as the standard EventCardFooter. -->
+			<div class="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
+				<ButtonGroup>
+					{#if removalDirty}
+						<Button
+							variant="outline"
+							size="sm"
+							onclick={() => {
+								// Roll back the LOCAL decision to its open-time state.
+								removalDraft = { ...removalInitial };
+							}}
+						>
+							<IconReset class="h-3.5 w-3.5" />
+							{$_('eventCard.discard')}
+						</Button>
+						<Button
+							variant="brand"
+							size="sm"
+							onclick={saveRemovalDecision}
+						>
+							{$_('common.saveChanges')}
+						</Button>
+					{:else}
+						<Button
+							variant="outline"
+							size="sm"
+							onclick={() => (open = false)}
+						>
+							<IconX class="h-3.5 w-3.5" />
+							{$_('common.close')}
+						</Button>
+					{/if}
+				</ButtonGroup>
+				{#if removalHasOpenActions}
+					<ButtonGroup>
+						<EventCardOpenActions
+							repoInfo={removalRepoInfo}
+							sourcePath={removalSourcePath}
+							npmUrl={removalNpmUrl}
+							onOpenUrl={removalOpenUrl}
+							onOpenPath={removalOpenPath}
+						/>
+					</ButtonGroup>
+				{/if}
+			</div>
+		{:else if event}
 			<EventCard
 				{event}
 				variant="full"
@@ -152,7 +318,7 @@
 				{readOnly}
 				trustGroupId={readOnly ? event.groupId : undefined}
 				headerClass="pr-9"
-				useFooterLeftCluster={useDiscardFooter}
+				useFooterLeftCluster={useDiscardFooter || isGroupedRemoval}
 				deferSubmit={useDiscardFooter}
 			>
 				{#snippet titleLabel({ child: titleNode })}
@@ -216,9 +382,9 @@
 									if (initialMode === 'custom' && draftDirty) resetDraft();
 								}}
 							>
-							<IconReset class="h-3.5 w-3.5" />
-							{$_('eventCard.discard')}
-						</Button>
+								<IconReset class="h-3.5 w-3.5" />
+								{$_('eventCard.discard')}
+							</Button>
 							<Button variant="brand" size="sm" onclick={() => saveMember(stagedConfig)}>
 								{$_('common.saveChanges')}
 							</Button>

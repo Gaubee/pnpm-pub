@@ -11,14 +11,17 @@
  * Must live in a `.svelte.ts` module — it relies on Svelte 5 runes (`$state`).
  */
 import { getRpcClient } from "../store.js";
-import type { TrustedPublisherConfig } from "../types.js";
+import type { TrustedPublisherRegistryConfig } from "../types.js";
 
 const TRUSTED_PUBLISHING_TTL = 30_000;
 
 interface TrustedPublishingEntry {
-  configs: TrustedPublisherConfig[];
+  configs: TrustedPublisherRegistryConfig[];
   fetchedAt: number;
+  error: boolean;
 }
+
+export type TrustedPublishingStatus = "idle" | "loading" | "ready" | "error";
 
 /** Build a fresh per-page Trusted Publishing status store. */
 export function createTrustedPublishingStatus() {
@@ -29,12 +32,19 @@ export function createTrustedPublishingStatus() {
     return inFlight.has(name) && !state[name];
   }
 
-  function configs(name: string): TrustedPublisherConfig[] {
+  function configs(name: string): TrustedPublisherRegistryConfig[] {
     return state[name]?.configs ?? [];
   }
 
   function isConfigured(name: string): boolean {
     return (state[name]?.configs.length ?? 0) > 0;
+  }
+
+  function status(name: string): TrustedPublishingStatus {
+    if (inFlight.has(name) && !state[name]) return "loading";
+    const entry = state[name];
+    if (!entry) return "idle";
+    return entry.error ? "error" : "ready";
   }
 
   /** Fetch + cache unless fresh or already in flight. No-op on cache hit. */
@@ -45,7 +55,7 @@ export function createTrustedPublishingStatus() {
     inFlight = new Set(inFlight).add(name);
     const client = getRpcClient();
     if (!client) {
-      state = { ...state, [name]: { configs: [], fetchedAt: Date.now() } };
+      state = { ...state, [name]: { configs: [], fetchedAt: Date.now(), error: true } };
       const next = new Set(inFlight);
       next.delete(name);
       inFlight = next;
@@ -56,13 +66,17 @@ export function createTrustedPublishingStatus() {
       .then((json) => {
         state = {
           ...state,
-          [name]: { configs: json?.ok && json.configs ? json.configs : [], fetchedAt: Date.now() },
+          [name]: {
+            configs: json?.ok && json.configs ? json.configs : [],
+            fetchedAt: Date.now(),
+            error: !json?.ok,
+          },
         };
       })
       .catch(() => {
         // Cache the failure as "no configs" for the TTL window so a flaky
         // registry doesn't trigger a retry storm on every render.
-        state = { ...state, [name]: { configs: [], fetchedAt: Date.now() } };
+        state = { ...state, [name]: { configs: [], fetchedAt: Date.now(), error: true } };
       })
       .finally(() => {
         const next = new Set(inFlight);
@@ -79,6 +93,11 @@ export function createTrustedPublishingStatus() {
     state = next;
   }
 
+  function retry(name: string): void {
+    invalidate(name);
+    fetch(name);
+  }
+
   return {
     get isLoading() {
       return isLoading;
@@ -89,7 +108,11 @@ export function createTrustedPublishingStatus() {
     get configs() {
       return configs;
     },
+    get status() {
+      return status;
+    },
     fetch,
     invalidate,
+    retry,
   };
 }

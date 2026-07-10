@@ -14,7 +14,7 @@ import { promisify } from "node:util";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
-import type { TrustedPublisherConfig } from "../../src/shared/index.js";
+import type { TrustedPublisherRegistryConfig } from "../../src/shared/index.js";
 import { publishPackage } from "../../src/daemon/npm-api.js";
 import {
   addTrustedPublisher,
@@ -294,7 +294,7 @@ describe("Feature: WebUI-created proactive events", () => {
     };
     // Pre-flight: the registry reports the OLD (differing) config — so the
     // daemon must DELETE it before POSTing the new one (delete-then-put).
-    const oldConfig: TrustedPublisherConfig = {
+    const oldConfig: TrustedPublisherRegistryConfig = {
       id: "old-id",
       type: "github",
       permissions: ["createPackage"],
@@ -331,28 +331,61 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(event?.status).toBe("success");
   });
 
-  it("Scenario: Given a remove configure-trust event, When confirmed, Then the trusted publisher id is deleted", async () => {
+  it("Scenario: Given a standalone removal with mixed per-config decisions, When confirmed, Then only explicit removes reach the registry", async () => {
     const store = new DaemonStore();
     await store.load();
     await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
-      action: "remove",
-      target: {
-        name: "@scope/pkg",
-        currentConfig: {
+    listTrustedPublishersMock.mockResolvedValue({
+      ok: true,
+      configs: [
+        {
           id: "remove-id",
           type: "github",
           permissions: ["createPackage"],
           claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
         },
-      },
+        {
+          id: "keep-id",
+          type: "gitlab",
+          permissions: ["createPackage"],
+          claims: { project_path: "owner/repo" },
+        },
+      ],
+    });
+    const created = await scheduler.createProactiveEvent("configure-trust", "alice", {
+      action: "remove",
+      target: { name: "@scope/pkg" },
     });
 
     expect(created.ok).toBe(true);
     if (!created.ok) return;
+
+    expect(created.event.removalSnapshot).toHaveLength(2);
+    expect(created.event.removalDecisions).toEqual({
+      "remove-id": "remove",
+      "keep-id": "remove",
+    });
+    listTrustedPublishersMock.mockRejectedValue(
+      new Error("confirmation must execute from the persisted snapshot"),
+    );
+    expect(
+      store.setRemovalDecisions(created.event.id, {
+        "remove-id": "keep",
+        "keep-id": "keep",
+      })?.removalDecisions,
+    ).toEqual({ "remove-id": "keep", "keep-id": "keep" });
+    await expect(scheduler.confirm(created.event.id)).resolves.toBe(false);
+    expect(removeTrustedPublisherMock).not.toHaveBeenCalled();
+
+    expect(
+      store.setRemovalDecisions(created.event.id, {
+        "remove-id": "remove",
+        "keep-id": "keep",
+      })?.removalDecisions,
+    ).toEqual({ "remove-id": "remove", "keep-id": "keep" });
 
     await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
     expect(addTrustedPublisherMock).not.toHaveBeenCalled();
@@ -363,6 +396,27 @@ describe("Feature: WebUI-created proactive events", () => {
     );
     const event = store.getEvent(created.event.id);
     expect(event?.status).toBe("success");
+    expect(event?.result).toContain("removed 1 trusted publisher config");
+    expect(event?.result).toContain("kept 1");
+    expect(listTrustedPublishersMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Scenario: Given removal credentials are unavailable, When creating the Event, Then no unsnapshotted Event is mounted", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    const scheduler = new PublishScheduler(store);
+
+    await expect(
+      scheduler.createProactiveEvent("configure-trust", "alice", {
+        action: "remove",
+        target: { name: "@scope/pkg" },
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: "Credentials for alice are missing. Re-apply them in the tray.",
+    });
+    expect(store.getEvents()).toHaveLength(0);
   });
 
   it("Scenario: Given the delete-then-put delete fails, When confirmed, Then the new config is NOT added and the event fails", async () => {
@@ -377,7 +431,7 @@ describe("Feature: WebUI-created proactive events", () => {
     store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
 
     const scheduler = new PublishScheduler(store);
-    const oldConfig: TrustedPublisherConfig = {
+    const oldConfig: TrustedPublisherRegistryConfig = {
       id: "old-id",
       type: "github",
       permissions: ["createPackage"],
@@ -456,7 +510,7 @@ describe("Feature: WebUI-created proactive events", () => {
     const groupId = "trust-group-1";
     // Pre-flight: @scope/a has no existing config (add path); @scope/b has the
     // differing old-b config (delete-then-put path).
-    const oldB: TrustedPublisherConfig = {
+    const oldB: TrustedPublisherRegistryConfig = {
       id: "old-b",
       type: "github",
       permissions: ["createPackage"],
@@ -519,6 +573,99 @@ describe("Feature: WebUI-created proactive events", () => {
     );
     expect(store.getEvent(first.event.id)?.status).toBe("success");
     expect(store.getEvent(second.event.id)?.status).toBe("success");
+  });
+
+  it("Scenario: Given grouped trusted-publisher removals, When every member is reviewed, Then only explicit removes reach the registry", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+    const scheduler = new PublishScheduler(store);
+    const groupId = "reviewed-removal-group";
+    listTrustedPublishersMock.mockImplementation((_auth, name) =>
+      Promise.resolve({
+        ok: true,
+        configs:
+          name === "@scope/remove"
+            ? [
+                {
+                  id: "remove-id",
+                  type: "github",
+                  permissions: ["createPackage"],
+                  claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+                },
+                {
+                  id: "keep-beside-remove",
+                  type: "gitlab",
+                  permissions: ["createPackage"],
+                  claims: { project_path: "owner/repo" },
+                },
+              ]
+            : [
+                {
+                  id: "keep-only",
+                  type: "circleci",
+                  permissions: ["createPackage"],
+                  claims: {
+                    "oidc.circleci.com/org-id": "org",
+                    "oidc.circleci.com/project-id": "project",
+                    "oidc.circleci.com/pipeline-definition-id": "pipeline",
+                    "oidc.circleci.com/vcs-origin": "github.com/owner/repo",
+                  },
+                },
+              ],
+      }),
+    );
+    const remove = await scheduler.createProactiveEvent(
+      "configure-trust",
+      "alice",
+      {
+        action: "remove",
+        target: { name: "@scope/remove" },
+      },
+      groupId,
+    );
+    const keep = await scheduler.createProactiveEvent(
+      "configure-trust",
+      "alice",
+      {
+        action: "remove",
+        target: { name: "@scope/keep" },
+      },
+      groupId,
+    );
+
+    expect(remove.ok).toBe(true);
+    expect(keep.ok).toBe(true);
+    if (!remove.ok || !keep.ok) return;
+
+    await expect(scheduler.confirm(remove.event.id)).resolves.toBe(false);
+    expect(remove.event.removalDecisions).toEqual({
+      "remove-id": "remove",
+      "keep-beside-remove": "remove",
+    });
+    expect(keep.event.removalDecisions).toEqual({ "keep-only": "remove" });
+
+    expect(
+      store.setRemovalDecisions(remove.event.id, {
+        "remove-id": "remove",
+        "keep-beside-remove": "keep",
+      })?.removalDecisions,
+    ).toEqual({ "remove-id": "remove", "keep-beside-remove": "keep" });
+    expect(
+      store.setRemovalDecisions(keep.event.id, { "keep-only": "keep" })?.removalDecisions,
+    ).toEqual({ "keep-only": "keep" });
+
+    await expect(scheduler.confirmGroup(groupId)).resolves.toEqual({ ok: true });
+    expect(removeTrustedPublisherMock).toHaveBeenCalledTimes(1);
+    expect(removeTrustedPublisherMock).toHaveBeenCalledWith(
+      { registry: "http://registry.test/", token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" },
+      "@scope/remove",
+      "remove-id",
+    );
+    expect(store.getEvent(remove.event.id)?.status).toBe("success");
+    expect(store.getEvent(keep.event.id)?.status).toBe("rejected");
+    expect(store.getEvent(keep.event.id)?.result).toBe("Trusted publisher configs kept by user.");
   });
 
   it("Scenario: Given oidc for the current package, When mounted from CLI, Then a configure-trust Event is created with the derived GitHub config", async () => {
@@ -675,6 +822,9 @@ describe("Feature: WebUI-created proactive events", () => {
     await store.load();
     await store.upsertProfile({ username: "alice" });
     const scheduler = new PublishScheduler(store);
+    // OIDC setup must mount the local workspace intent immediately. A registry
+    // read here would make every recursive target wait behind npm latency.
+    listTrustedPublishersMock.mockRejectedValue(new Error("OIDC creation must not read npm trust"));
 
     await scheduler.createOidcEvents(
       {
@@ -692,6 +842,7 @@ describe("Feature: WebUI-created proactive events", () => {
     const groupId = events[0]?.groupId;
     expect(groupId).toBeTruthy();
     expect(events.every((event) => event.groupId === groupId)).toBe(true);
+    expect(listTrustedPublishersMock).not.toHaveBeenCalled();
     expect(store.getGroupTrustDraft(groupId!).defaultConfig).toMatchObject({
       type: "github",
       claims: {
@@ -702,7 +853,78 @@ describe("Feature: WebUI-created proactive events", () => {
     for (const event of events) {
       expect(event.payload?.kind).toBe("configure-trust");
       if (event.payload?.kind === "configure-trust") {
+        expect(event.payload.data.action).toBe("add");
+        expect(event.payload.data.target.currentConfig).toBeUndefined();
         expect(event.payload.data.config).toBeUndefined();
+      }
+    }
+  });
+
+  it("Scenario: Given recursive OIDC removal, When mounted, Then every Event persists a remove-all registry snapshot", async () => {
+    const workspaceRoot = path.join(sandbox, "oidc-recursive-remove");
+    const packageA = path.join(workspaceRoot, "packages/a");
+    const packageB = path.join(workspaceRoot, "packages/b");
+    await fsp.mkdir(packageA, { recursive: true });
+    await fsp.mkdir(packageB, { recursive: true });
+    await fsp.writeFile(
+      path.join(workspaceRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - packages/*\n",
+    );
+    await fsp.writeFile(
+      path.join(packageA, "package.json"),
+      JSON.stringify({ name: "@scope/a", version: "1.0.0" }),
+      "utf8",
+    );
+    await fsp.writeFile(
+      path.join(packageB, "package.json"),
+      JSON.stringify({ name: "@scope/b", version: "1.0.0" }),
+      "utf8",
+    );
+
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+    const scheduler = new PublishScheduler(store);
+    listTrustedPublishersMock.mockImplementation((_auth, name) =>
+      Promise.resolve({
+        ok: true,
+        configs: [
+          {
+            id: `${name}-config`,
+            type: "github",
+            permissions: ["createPackage"],
+            claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+          },
+        ],
+      }),
+    );
+
+    await scheduler.createOidcEvents(
+      {
+        command: "oidc",
+        cwd: workspaceRoot,
+        packageNames: [],
+        recursive: true,
+        remove: true,
+      },
+      { log: vi.fn(), exit: vi.fn() },
+    );
+
+    const events = store.getEvents();
+    expect(events).toHaveLength(2);
+    expect(events.every((event) => event.groupId === events[0]?.groupId)).toBe(true);
+    expect(listTrustedPublishersMock).toHaveBeenCalledTimes(2);
+    for (const event of events) {
+      expect(event.payload?.kind).toBe("configure-trust");
+      if (event.payload?.kind === "configure-trust") {
+        expect(event.payload.data.action).toBe("remove");
+        expect(event.payload.data.target.currentConfig).toBeUndefined();
+        expect(event.payload.data.root).toBe(workspaceRoot);
+        expect(event.removalSnapshot).toHaveLength(1);
+        const configId = event.removalSnapshot?.[0]?.id;
+        expect(configId).toBe(`${event.payload.data.target.name}-config`);
+        expect(event.removalDecisions).toEqual({ [configId!]: "remove" });
       }
     }
   });

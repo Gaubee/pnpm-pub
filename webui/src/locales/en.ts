@@ -140,10 +140,10 @@ export const en = {
     configureTrustedPublishing: "Configure Trusted Publishing for {name}",
     trustedPublishingAction: "{action} trusted publishing for {name}",
     batchTrustedPublishing: "Trusted Publishing · {count} packages",
-    removeTrustedPublishing: "Remove trusted publisher",
     confirmTrustedPublishing: "Confirm Trusted Publishing",
     confirmBatchTrustedPublishing: "Confirm Batch Trusted Publishing",
     confirmRemoveTrustedPublishing: "Remove Trusted Publisher",
+    confirm: "Confirm",
     confirmTokenRefresh: "Confirm Token Refresh",
     confirmPublish: "Confirm Publish",
     confirmRecursivePublish: "Confirm Recursive Publish",
@@ -421,7 +421,18 @@ export const en = {
   },
   trustedPublishing: {
     title: "Trusted Publishing",
+    oidcTitle: "OIDC",
+    recursiveTitle: "Recursive OIDC",
+    // Subtitle for the single-package dialog: package name + path.
+    singleSubtitle: "{name} · {path}",
+    // Subtitle for the batch/recursive dialog: root path · N packages · M selected.
+    batchSubtitle:
+      "{path} · {count, plural, one {# package} other {# packages}} · {selected} selected",
     currentConfig: "Current",
+    currentConfigs: "Current Trusted Publishing Configs",
+    // Short labels for the ButtonGroup footer actions.
+    configAction: "Config",
+    removeTrustedPublishing: "Remove Trusted Publishing",
     inheritValues: "Inherited values",
     providerGithub: "GitHub Actions",
     providerCircleci: "CircleCI",
@@ -464,7 +475,7 @@ export const en = {
     remove: "Remove",
     createEvent: "Create event",
     createEventPending: "Creating Trusted Publishing event…",
-    workflowTab: "OIDC",
+    workflowTab: "Workflow",
     workflowLoading: "Loading workflow preview…",
     workflowPathRequired: "Package path is required to preview the local workflow path.",
     workflowPreviewFailed: "Unable to preview workflow.",
@@ -480,12 +491,14 @@ export const en = {
     formModeFull: "Full",
     formIncomplete: "Complete the trusted publisher config before confirming.",
     loading: "Checking trusted publishing…",
+    loadFailed: "Unable to load trusted publishing configs.",
     notConfigured: "No trusted publishing configured",
     batchTitle: "Trusted Publishing · {n} packages",
     batchProgress: "Configuring {i}/{n}…",
   },
   groupEvent: {
     kindTrustedPublishing: "Trusted Publishing · {count}",
+    kindRemoveTrustedPublishing: "Remove Trusted Publishing · {count}",
     kindPublish: "Publish · {count}",
     kindMixed: "Batch · {count}",
     packageCount: "{count, plural, one {# package} other {# packages}}",
@@ -496,7 +509,6 @@ export const en = {
     progress: "{done}/{total} resolved",
     defaultForm: "Default form",
     defaultFormHint: "Edits fan out to every inheriting member.",
-    noDefaultForm: "No unified form for this group; edit each member individually.",
     inheritDefault: "Inherit default",
     customize: "Customize",
     modeSummary: "{inherit} inherit · {custom} custom",
@@ -511,6 +523,13 @@ export const en = {
     // and the member lands as success/failed. These are just row chips.
     precheckSkip: "skip",
     precheckConflict: "conflict",
+    keep: "Keep",
+    remove: "Remove",
+    review: "Review",
+    removalDecidedHint: "{remove} to remove · {keep} kept",
+  },
+  removeTrustedPublishingGroup: {
+    title: "Remove Trusted Publishing",
   },
   trustFormCard: {
     notConfigured: "Not configured yet",

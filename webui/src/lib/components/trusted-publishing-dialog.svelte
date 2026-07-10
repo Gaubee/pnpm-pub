@@ -9,16 +9,19 @@
         DialogTitle,
     } from "$lib/components/ui/dialog/index.js";
     import { Button } from "$lib/components/ui/button/index.js";
+    import { ButtonGroup } from "$lib/components/ui/button-group/index.js";
     import { actions, getRpcClient, pushToast } from "$lib/store.js";
     import TrustedPublishingReadonly from "$lib/components/trusted-publishing-readonly.svelte";
+    import BrandIcon from "$lib/components/brand-icon.svelte";
     import type {
         TrustedPublisherConfig,
         TrustedPublishingTarget,
     } from "$lib/types.js";
+    import { providerLabelKey, providerBrandId } from "$lib/trusted-publishing.js";
     import { _ } from "svelte-i18n";
     import IconShield from "@lucide/svelte/icons/shield-check";
-    import IconTrash from "@lucide/svelte/icons/trash-2";
-    import IconPencil from "@lucide/svelte/icons/pencil";
+    import IconShieldCog from "@lucide/svelte/icons/shield-cog-corner";
+    import IconShieldMinus from "@lucide/svelte/icons/shield-minus";
     import IconCopy from "@lucide/svelte/icons/copy";
     import IconFileCode from "@lucide/svelte/icons/file-code-2";
     import IconSave from "@lucide/svelte/icons/save";
@@ -30,6 +33,7 @@
         packageNames = undefined,
         packageTargets = undefined,
         config = undefined,
+        configs = undefined,
         configLoading = false,
         onChanged = () => {},
         repositoryHint = "",
@@ -41,6 +45,11 @@
         packageNames?: string[];
         packageTargets?: TrustedPublishingTarget[];
         config?: TrustedPublisherConfig | null;
+        /** The FULL array of current registry configs (may contain more than
+         *  one). When provided, the content renders one card per config so each
+         *  provider config (GitHub/CircleCI/GitLab) is distinguishable. Falls
+         *  back to the singular `config` prop for backward compatibility. */
+        configs?: TrustedPublisherConfig[] | null;
         /** True while the caller is still resolving `config` from the registry.
          *  Prevents the single-package "no current config" branch from firing
          *  before the lookup completes (otherwise a slow registry would turn an
@@ -54,12 +63,23 @@
     const isBatch = $derived(
         (packageTargets?.length ?? packageNames?.length ?? 0) > 0,
     );
-    const canPreviewWorkflow = $derived(!!config && !!packagePath.trim());
+    /** The current registry configs as an array. Prefers the explicit `configs`
+     *  prop (full array); falls back to the singular `config` for backward
+     *  compatibility. Empty when nothing is configured yet. */
+    const effectiveConfigs = $derived(
+        configs && configs.length > 0
+            ? configs
+            : config
+              ? [config]
+              : [],
+    );
+    const hasCurrentConfig = $derived(effectiveConfigs.length > 0);
+    const canPreviewWorkflow = $derived(hasCurrentConfig && !!packagePath.trim());
     const singleTarget = $derived.by((): TrustedPublishingTarget => ({
         name: packageName.trim(),
         ...(packagePath.trim() ? { path: packagePath.trim() } : {}),
         ...(repositoryHint.trim() ? { repository: repositoryHint.trim() } : {}),
-        ...(config ? { currentConfig: config } : {}),
+        ...(effectiveConfigs[0] ? { currentConfig: effectiveConfigs[0] } : {}),
     }));
     const batchTargets = $derived.by((): TrustedPublishingTarget[] => {
         if (packageTargets && packageTargets.length > 0) return packageTargets;
@@ -107,12 +127,12 @@
     // settles, and only after a tick so it never runs during render.
     $effect(() => {
         if (!open) return;
-        if (isBatch || config || configLoading) return;
+        if (isBatch || hasCurrentConfig || configLoading) return;
         if (!singleTarget.name) return;
         const target = singleTarget;
         // Defer the side effect out of the reactive update phase.
         queueMicrotask(() => {
-            if (!open || config || configLoading) return;
+            if (!open || hasCurrentConfig || configLoading) return;
             actions.createEvent("configure-trust", { action: "add", target });
             finish();
         });
@@ -147,13 +167,33 @@
         const targets = selectedTargets();
         if (targets.length === 0) return;
         const groupId = crypto.randomUUID();
+        const root = packagePath.trim() || undefined;
         for (const target of targets) {
             actions.createEvent(
                 "configure-trust",
                 {
                     action: target.currentConfig ? "update" : "add",
                     target,
+                    ...(root ? { root } : {}),
                 },
+                groupId,
+            );
+        }
+        finish();
+    }
+
+    /** Batch REMOVE: create a `configure-trust/remove` event for every selected
+     *  package, sharing one groupId so they form a single Remove Trusted
+     *  Publishing group in the Events Hub. */
+    function createBatchRemove(): void {
+        const targets = selectedTargets();
+        if (targets.length === 0) return;
+        const groupId = crypto.randomUUID();
+        const root = packagePath.trim() || undefined;
+        for (const target of targets) {
+            actions.createEvent(
+                "configure-trust",
+                { action: "remove", target, ...(root ? { root } : {}) },
                 groupId,
             );
         }
@@ -166,7 +206,8 @@
     });
 
     async function loadWorkflowPreview(): Promise<void> {
-        if (!config || !packagePath.trim()) {
+        const firstConfig = effectiveConfigs[0];
+        if (!firstConfig || !packagePath.trim()) {
             workflowContent = "";
             workflowPath = "";
             workflowExists = false;
@@ -181,7 +222,7 @@
         try {
             const result = await client.setupOidc.previewWorkflow({
                 packagePath: packagePath.trim(),
-                config,
+                config: firstConfig,
             });
             if (result.ok && result.content && result.path) {
                 workflowContent = result.content;
@@ -207,14 +248,15 @@
     }
 
     async function writeWorkflow(force = false): Promise<void> {
-        if (!config || !packagePath.trim()) return;
+        const firstConfig = effectiveConfigs[0];
+        if (!firstConfig || !packagePath.trim()) return;
         const client = getRpcClient();
         if (!client) return;
         writingWorkflow = true;
         try {
             const result = await client.setupOidc.writeWorkflow({
                 packagePath: packagePath.trim(),
-                config,
+                config: firstConfig,
                 force,
             });
             if (result.ok && result.content && result.path) {
@@ -242,13 +284,28 @@
     >
         <!-- HEADER — fixed, never scrolls or compresses -->
         <DialogHeader class="border-b px-4 py-3">
-            <DialogTitle class="text-base"
-                >{$_("trustedPublishing.title")}</DialogTitle
-            >
+            <DialogTitle class="flex items-center gap-2 text-base">
+                <span
+                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-brand/38 bg-brand/10 text-brand"
+                >
+                    <IconShieldCog class="h-3.5 w-3.5" />
+                </span>
+                {$_(isBatch
+                    ? "trustedPublishing.recursiveTitle"
+                    : "trustedPublishing.oidcTitle")}
+            </DialogTitle>
             <DialogDescription>
                 {#if isBatch}
-                    {$_("trustedPublishing.batchTitle", {
-                        values: { n: selected.length },
+                    {$_("trustedPublishing.batchSubtitle", {
+                        values: {
+                            path: packagePath || repositoryHint || "—",
+                            count: batchTargets.length,
+                            selected: selected.length,
+                        },
+                    })}
+                {:else if packagePath}
+                    {$_("trustedPublishing.singleSubtitle", {
+                        values: { name: packageName, path: packagePath },
                     })}
                 {:else}
                     {packageName}
@@ -260,6 +317,36 @@
              row actually shrink so overflow kicks in instead of growing the
              dialog past its max-height. -->
         <div class="min-h-0 overflow-y-auto px-4 py-3">
+            {#if !isBatch && hasCurrentConfig}
+                <!-- "Current Trusted Publishing Configs" header row. The
+                     [Current|Code] tab switcher sits at the inline-end, only
+                     when a workflow preview is available (needs a package
+                     path). Above the content branch so it stays visible in
+                     both views. -->
+                <div class="mb-2 flex items-center gap-2 text-xs font-medium">
+                    <IconShieldCog class="h-4 w-4 text-brand" />
+                    {$_("trustedPublishing.currentConfigs")}
+                    {#if canPreviewWorkflow}
+                        <div class="ml-auto flex shrink-0 gap-0.5 rounded-md bg-muted/40 p-0.5">
+                            <button
+                                type="button"
+                                class="rounded px-2 py-0.5 text-[11px] font-medium transition-colors {activeTab === 'current' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+                                onclick={() => (activeTab = "current")}
+                            >
+                                {$_("trustedPublishing.currentConfig")}
+                            </button>
+                            <button
+                                type="button"
+                                class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors {activeTab === 'workflow' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}"
+                                onclick={() => (activeTab = "workflow")}
+                            >
+                                <IconFileCode class="h-3 w-3" />
+                                {$_("trustedPublishing.workflowTab")}
+                            </button>
+                        </div>
+                    {/if}
+                </div>
+            {/if}
             {#if isBatch}
                 <div class="flex flex-col gap-2">
                     {#each batchTargets as target (target.name)}
@@ -287,7 +374,7 @@
                         </label>
                     {/each}
                 </div>
-            {:else if config && activeTab === "workflow"}
+            {:else if hasCurrentConfig && activeTab === "workflow"}
                 {#if workflowLoading}
                     <div
                         class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
@@ -330,15 +417,25 @@
                     <pre
                         class="overflow-auto rounded-md border border-border bg-background p-3 text-[11px] leading-relaxed whitespace-pre-wrap">{workflowContent}</pre>
                 {/if}
-            {:else if config}
+            {:else if hasCurrentConfig}
                 <!-- Current-config block (also reused when no workflow tab).
-                     Multi-line: this dialog is reached to review an existing
-                     config, and there's room, so one row per field reads best. -->
-                <div class="mb-2 flex items-center gap-2 text-xs font-medium">
-                    <IconShield class="h-4 w-4 text-brand" />
-                    {$_("trustedPublishing.currentConfig")}
+                     Renders EVERY configured trusted publisher (the registry
+                     returns an array) — one card per config so each provider
+                     (GitHub Actions / CircleCI / GitLab CI) is distinguishable.
+                     The [Current|Code] tab switcher is rendered above this
+                     block (shared with the workflow view) when preview is
+                     available. -->
+                <div class="flex flex-col gap-2">
+                    {#each effectiveConfigs as cfg, i (i)}
+                        <div class="rounded-md border border-border bg-muted/10 p-2.5">
+                            <div class="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-foreground">
+                                <BrandIcon id={providerBrandId(cfg.type)} class="h-3 w-3" />
+                                {$_(providerLabelKey(cfg.type))}
+                            </div>
+                            <TrustedPublishingReadonly config={cfg} mode="multiline" />
+                        </div>
+                    {/each}
                 </div>
-                <TrustedPublishingReadonly {config} mode="multiline" />
             {:else if configLoading}
                 <div
                     class="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground"
@@ -358,60 +455,56 @@
              actions (batch / current-config / workflow). Transient states
              (loading / pending → auto-creates event) intentionally have no
              footer, so the grid simply drops its last row. -->
-        {#if isBatch || config}
+        {#if isBatch || hasCurrentConfig}
         <DialogFooter class="mx-0 mb-0 flex-col items-stretch gap-3 rounded-b-xl sm:flex-row sm:items-center">
             {#if isBatch}
                 <Button variant="outline" onclick={() => (open = false)}
                     >{$_("common.cancel")}</Button
                 >
-                <Button
-                    variant="brand"
-                    disabled={selected.length === 0}
-                    onclick={createBatch}
-                >
-                    <IconShield class="h-4 w-4" />
-                    {$_("trustedPublishing.createEvent")}
-                </Button>
-            {:else if config}
-                {#if canPreviewWorkflow}
-                    <!-- Segmented tab switcher lives in the footer so it stays
-                         pinned; switching tabs only reflows the content area. -->
-                    <div class="flex w-full gap-1 rounded-md bg-muted/40 p-1 sm:w-auto">
-                        <Button
-                            variant={activeTab === "current" ? "brand" : "ghost"}
-                            size="sm"
-                            class="flex-1"
-                            onclick={() => (activeTab = "current")}
-                        >
-                            <IconShield class="h-4 w-4" />
-                            {$_("trustedPublishing.currentConfig")}
-                        </Button>
-                        <Button
-                            variant={activeTab === "workflow" ? "brand" : "ghost"}
-                            size="sm"
-                            class="flex-1"
-                            onclick={() => (activeTab = "workflow")}
-                        >
-                            <IconFileCode class="h-4 w-4" />
-                            {$_("trustedPublishing.workflowTab")}
-                        </Button>
-                    </div>
-                {/if}
-                {#if activeTab === "current"}
+                <!-- Batch actions as a compact ButtonGroup: Config (add/update)
+                     on the left, Remove on the right. -->
+                <ButtonGroup>
                     <Button
-                        variant="outline"
-                        onclick={() => createSingle("update")}
+                        variant="brand"
+                        size="sm"
+                        disabled={selected.length === 0}
+                        onclick={createBatch}
                     >
-                        <IconPencil class="h-4 w-4" />
-                        {$_("trustedPublishing.update")}
+                        <IconShield class="h-4 w-4" />
+                        {$_("trustedPublishing.configAction")}
                     </Button>
                     <Button
                         variant="destructive"
-                        onclick={() => createSingle("remove")}
+                        size="sm"
+                        disabled={selected.length === 0}
+                        onclick={createBatchRemove}
                     >
-                        <IconTrash class="h-4 w-4" />
-                        {$_("trustedPublishing.remove")}
+                        <IconShieldMinus class="h-4 w-4" />
+                        {$_("trustedPublishing.removeTrustedPublishing")}
                     </Button>
+                </ButtonGroup>
+            {:else if hasCurrentConfig}
+                {#if activeTab === "current"}
+                    <!-- Single-package actions as a compact ButtonGroup:
+                         Config (update) on the left, Remove on the right. -->
+                    <ButtonGroup>
+                        <Button
+                            variant="brand"
+                            size="sm"
+                            onclick={() => createSingle("update")}
+                        >
+                            <IconShield class="h-4 w-4" />
+                            {$_("trustedPublishing.configAction")}
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            size="sm"
+                            onclick={() => createSingle("remove")}
+                        >
+                            <IconShieldMinus class="h-4 w-4" />
+                            {$_("trustedPublishing.removeTrustedPublishing")}
+                        </Button>
+                    </ButtonGroup>
                 {:else}
                     <Button
                         variant="outline"

@@ -31,6 +31,7 @@
     import type {
         EventStatus,
         PubEvent,
+        RemovalDecision,
         TrustedPublisherCreateConfig,
     } from "$lib/types.js";
     import {
@@ -50,12 +51,17 @@
         rebuildPublishAdvancedArgs,
         type PublishAdvancedArgsOverrides,
     } from "$lib/publish-advanced-args.js";
-    import { isMemberInheriting } from "$lib/trusted-publishing.js";
+    import {
+        deriveRemovalReviewState,
+        isMemberInheriting,
+    } from "$lib/trusted-publishing.js";
     import EventCardHeader from "$lib/components/event-card-header.svelte";
     import EventCardBody from "$lib/components/event-card-body.svelte";
     import EventCardFooter from "$lib/components/event-card-footer.svelte";
     import IconPublish from "@lucide/svelte/icons/upload";
     import IconTrustedPublishing from "@lucide/svelte/icons/shield-check";
+    import IconShieldCog from "@lucide/svelte/icons/shield-cog-corner";
+    import IconShieldMinus from "@lucide/svelte/icons/shield-minus";
     import IconLayers from "@lucide/svelte/icons/layers";
     import IconPlaceholder from "@lucide/svelte/icons/package";
     import IconRefresh from "@lucide/svelte/icons/refresh-cw";
@@ -158,10 +164,27 @@
         skipped: "success",
     } satisfies Record<EventStatus, NonNullable<BadgeVariant>>;
 
+    // Whether this event is a configure-trust REMOVE. Removal carries its own
+    // visual identity (shield-minus + warning tint) distinct from add/update
+    // (shield-check + success), mirroring the GroupEventCard's removal kind.
+    // Read directly from the payload (not configureTrustCtx) so this can sit
+    // above that derivation without a use-before-declaration error.
+    const isRemoval = $derived(
+        event.payload?.kind === "configure-trust" &&
+            event.payload.data.action === "remove",
+    );
+
     const iconFor = (kind: PubEvent["kind"]) =>
         ({
             publish: IconPublish,
-            "configure-trust": IconTrustedPublishing,
+            // configure-trust removal → shield-minus; add/update → shield-check
+            // in the list, but shield-cog-corner in the DIALOG surface (there it
+            // is an OIDC configuration affordance, not a passive event).
+            "configure-trust": isRemoval
+                ? IconShieldMinus
+                : surface === "dialog"
+                  ? IconShieldCog
+                  : IconTrustedPublishing,
             "recursive-publish": IconLayers,
             "create-placeholder": IconPlaceholder,
             "refresh-token": IconRefresh,
@@ -171,8 +194,9 @@
         })[kind] ?? IconPublish;
 
     // Action-type accent color — drives ONLY the top-left icon tint, derived
-    // from the event KIND. publish → brand (blue), unpublish → destructive
-    // (red), configure-trust → success (green), everything else → neutral.
+    // from the event KIND (+action for configure-trust). publish → brand
+    // (blue), unpublish → destructive (red), configure-trust add/update →
+    // success (green), configure-trust remove → warning (orange), else neutral.
     // The card border uses the STATUS color (see below), so the two signals
     // stay independent.
     const kindAccent = $derived.by(() => {
@@ -183,7 +207,7 @@
             case "unpublish":
                 return "destructive";
             case "configure-trust":
-                return "success";
+                return isRemoval ? "warning" : "success";
             default:
                 return "";
         }
@@ -195,7 +219,9 @@
               ? "bg-success/10 text-success border-success/38"
               : kindAccent === "destructive"
                 ? "bg-destructive/10 text-destructive border-destructive/38"
-                : "bg-accent text-muted-foreground  border-muted/38",
+                : kindAccent === "warning"
+                  ? "bg-warning/10 text-warning border-warning/38"
+                  : "bg-accent text-muted-foreground  border-muted/38",
     );
     /** CSS color matching the icon tint — drives the pending ripple color. */
     const kindIconColor = $derived(
@@ -205,7 +231,9 @@
               ? "var(--success)"
               : kindAccent === "destructive"
                 ? "var(--destructive)"
-                : "var(--muted-foreground)",
+                : kindAccent === "warning"
+                  ? "var(--warning)"
+                  : "var(--muted-foreground)",
     );
     // Card border / ring tint — driven by the event STATUS (not the kind).
     // pending → brand, success → green, failed → red, rejected/canceled → muted,
@@ -287,6 +315,11 @@
     );
     const configureTrustCtx = $derived(
         event.payload?.kind === "configure-trust" ? event.payload.data : null,
+    );
+    const removalStatus = $derived(event.removalSnapshot ? "ready" : "error");
+    const removalConfigs = $derived(event.removalSnapshot ?? []);
+    const removalReview = $derived(
+        deriveRemovalReviewState(removalConfigs, event.removalDecisions),
     );
     const unpublishCtx = $derived(
         event.payload?.kind === "unpublish" ? event.payload.data : null,
@@ -447,6 +480,10 @@
         actions.reject(event.id);
     }
 
+    function setRemovalDecision(configId: string, decision: RemovalDecision): void {
+        actions.setRemovalDecisions(event.id, { [configId]: decision });
+    }
+
     function retry(): void {
         // Re-create the event with the SAME payload. If the original was part
         // of a group, mint a FRESH groupId for the retry — reusing the original
@@ -553,8 +590,13 @@
                 ? groupDefaultPresent
                 : !!configureTrustCtx.config || trustedPublishingDraftValid),
     );
+    const removalReady = $derived(
+        !configureTrustCtx ||
+            configureTrustCtx.action !== "remove" ||
+            (removalStatus === "ready" && removalReview.reviewed && removalReview.hasRemove),
+    );
     const canConfirm = $derived(
-        isPending && !branchMismatch && trustedPublishingReady,
+        isPending && !branchMismatch && trustedPublishingReady && removalReady,
     );
 
     /** Whether the advanced-options panel should render at all. */
@@ -641,6 +683,10 @@
                 {overrideActive}
                 {description}
                 {configureTrustCtx}
+                {removalConfigs}
+                removalDecisions={event.removalDecisions ?? {}}
+                {removalStatus}
+                onRemovalDecision={setRemovalDecision}
                 {unpublishCtx}
                 {recursiveCtx}
                 {tarballSummary}
@@ -736,6 +782,10 @@
             {overrideActive}
             {description}
             {configureTrustCtx}
+            {removalConfigs}
+            removalDecisions={event.removalDecisions ?? {}}
+            {removalStatus}
+            onRemovalDecision={setRemovalDecision}
             {unpublishCtx}
             {recursiveCtx}
             {tarballSummary}

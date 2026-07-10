@@ -9,8 +9,12 @@
  */
 import type { EventStatus, PubEvent } from "./types.js";
 
-/** Coarse category of a group, derived from its members' payload kinds. */
-export type GroupKind = "trusted-publishing" | "publish" | "mixed";
+/** Coarse category of a group, derived from its members' payload kinds.
+ *  `trusted-publishing` = add/update; `trusted-publishing-remove` = remove —
+ *  split so the card header can use a distinct destructive (orange) identity
+ *  and route the group to the removal review Dialog instead of the default
+ *  trust form. */
+export type GroupKind = "trusted-publishing" | "trusted-publishing-remove" | "publish" | "mixed";
 
 export interface EventGroup {
   /** `groupId`, or the event id when standalone. */
@@ -23,6 +27,8 @@ export interface EventGroup {
   latest: PubEvent;
   /** `true` only when more than one member shares this groupId. */
   isGroup: boolean;
+  /** Shared workspace root when every rooted member agrees. */
+  root?: string;
 }
 
 export interface EventGroupSlice {
@@ -42,18 +48,29 @@ export function eventGroupKey(event: Pick<PubEvent, "id" | "groupId">): string {
   return event.groupId ?? event.id;
 }
 
-/** Map a single event's payload kind onto the coarse `GroupKind` domain. */
+/** Map a single event's payload kind onto the coarse `GroupKind` domain. A
+ *  `configure-trust` event with `action === "remove"` maps to its own variant
+ *  so removal batches get a distinct header + review surface. */
 function eventGroupKind(event: PubEvent): GroupKind {
-  const kind = event.payload?.kind ?? event.kind;
-  switch (kind) {
+  const payload = event.payload;
+  switch (payload?.kind) {
     case "configure-trust":
-      return "trusted-publishing";
+      // `payload` is narrowed to the configure-trust variant here.
+      return payload.data.action === "remove" ? "trusted-publishing-remove" : "trusted-publishing";
     case "publish":
     case "recursive-publish":
     case "create-placeholder":
       return "publish";
     default:
-      return "mixed";
+      // Fall back to the event-level kind for ungrouped/legacy events.
+      switch (event.kind) {
+        case "publish":
+        case "recursive-publish":
+        case "create-placeholder":
+          return "publish";
+        default:
+          return "mixed";
+      }
   }
 }
 
@@ -112,6 +129,17 @@ export function groupEvents(events: PubEvent[]): EventGroup[] {
   return order.map((id) => materializeEventGroup({ id, events: byGroup.get(id)! }));
 }
 
+/** Project one unambiguous workspace root from the member source facts. */
+export function deriveGroupRoot(events: PubEvent[]): string | undefined {
+  const roots = new Set<string>();
+  for (const event of events) {
+    if (event.payload?.kind !== "configure-trust") continue;
+    const root = event.payload.data.root?.trim();
+    if (root) roots.add(root);
+  }
+  return roots.size === 1 ? roots.values().next().value : undefined;
+}
+
 /** Build a render-ready `EventGroup` from a server/grouped slice. */
 export function materializeEventGroup(group: EventGroupSlice): EventGroup {
   return {
@@ -120,5 +148,6 @@ export function materializeEventGroup(group: EventGroupSlice): EventGroup {
     events: group.events,
     latest: group.events[0]!,
     isGroup: group.events.length > 1,
+    root: deriveGroupRoot(group.events),
   };
 }

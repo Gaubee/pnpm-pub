@@ -22,7 +22,7 @@ import type {
   BackupBundle,
   PubEvent,
   WsServerMessage,
-  TrustedPublisherConfig,
+  TrustedPublisherRegistryConfig,
 } from "../shared/index.js";
 import { z } from "zod";
 import { WsServerMessageSchema } from "../shared/schemas.js";
@@ -124,7 +124,7 @@ export class WebServer {
    */
   private trustCache = new Map<
     string,
-    { promise: Promise<TrustedPublisherConfig[]>; expiresAt: number }
+    { promise: Promise<TrustedPublisherRegistryConfig[]>; expiresAt: number }
   >();
   private static readonly TRUST_CACHE_TTL_MS = 30_000;
 
@@ -427,6 +427,10 @@ export class WebServer {
           const ok = await this.deps.scheduler.confirm(input.id);
           return ok ? { ok: true } : { ok: false, error: "No such pending event." };
         }),
+        confirmGroup: rpc.events.confirmGroup.handler(async ({ input }) => {
+          const result = await this.deps.scheduler.confirmGroup(input.groupId);
+          return result.ok ? { ok: true } : { ok: false, error: result.error };
+        }),
         reject: rpc.events.reject.handler(({ input }) => {
           const ok = this.deps.scheduler.reject(input.id);
           return ok ? { ok: true } : { ok: false, error: "No such pending event." };
@@ -468,6 +472,12 @@ export class WebServer {
           return groupId
             ? { ok: true }
             : { ok: false, error: "No pending configure-trust group member found." };
+        }),
+        setRemovalDecisions: rpc.events.setRemovalDecisions.handler(({ input }) => {
+          const updated = this.deps.store.setRemovalDecisions(input.eventId, input.decisions);
+          return updated
+            ? { ok: true }
+            : { ok: false, error: "No pending trusted-publisher removal found." };
         }),
         create: rpc.events.create.handler(async ({ input }) => ({
           messages: await this.collectMessages((send) =>
@@ -1031,7 +1041,7 @@ export class WebServer {
   private async listTrustCached(
     name: string,
   ): Promise<
-    | { ok: true; configs: TrustedPublisherConfig[] }
+    | { ok: true; configs: TrustedPublisherRegistryConfig[] }
     | { ok: false; status: number; error: string; needsReauth?: boolean }
   > {
     const cached = this.trustCache.get(name);

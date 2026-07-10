@@ -29,6 +29,7 @@
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconScan from '@lucide/svelte/icons/scan-search';
 	import IconShield from '@lucide/svelte/icons/shield-check';
+	import IconShieldCog from '@lucide/svelte/icons/shield-cog-corner';
 	import IconCheckSquare from '@lucide/svelte/icons/check-square';
 	import IconSquare from '@lucide/svelte/icons/square';
 	import IconLayers from '@lucide/svelte/icons/layers';
@@ -105,9 +106,6 @@
 	let trustedPublishingDialogPath = $state('');
 	let trustedPublishingDialogRepoHint = $state('');
 	let trustedPublishingDialogInitialTab = $state<'current' | 'workflow'>('current');
-	// Reactive: reads from the shared cache so a config that arrives AFTER the
-	// dialog opens (opened while still loading) flows in and syncs the form.
-	let trustedPublishingDialogConfig = $derived(trustedPublishing.configs(trustedPublishingDialogPkg)[0] ?? null);
 
 	function openTrustedPublishingDialog(pkg: PublishTarget, initialTab: 'current' | 'workflow' = 'current'): void {
 		trustedPublishingDialogPkg = pkg.name;
@@ -296,7 +294,7 @@
 							</DropdownMenu.Item>
 						{/if}
 						<DropdownMenu.Item onclick={doRecursiveOidc} disabled={scanned.length === 0} title={$_('workspaces.recursiveOidcTitle')}>
-							<IconShield class="h-3.5 w-3.5" />
+							<IconShieldCog class="h-3.5 w-3.5" />
 							{$_('workspaces.recursiveOidc')}
 						</DropdownMenu.Item>
 						<DropdownMenu.Separator />
@@ -386,7 +384,7 @@
 									onclick={openBatchTrustedPublishing}
 									title={$_('workspaces.batchOidc')}
 								>
-									<IconShield class="h-3.5 w-3.5" /> {$_('workspaces.batchOidc')}
+									<IconShieldCog class="h-3.5 w-3.5" /> {$_('workspaces.batchOidc')}
 								</Button>
 							</ButtonGroup>
 						{/if}
@@ -477,7 +475,7 @@
 									onpointerenter={() => trustedPublishing.fetch(pkg.name)}
 									onclick={() => openTrustedPublishingDialog(pkg)}
 								>
-									<IconShield class="h-3.5 w-3.5" /> OIDC
+									<IconShieldCog class="h-3.5 w-3.5" /> OIDC
 								</Button>
 							</ButtonGroup>
 						{/if}
@@ -493,7 +491,7 @@
 	bind:open={trustedPublishingDialogOpen}
 	packageName={trustedPublishingDialogPkg}
 	packagePath={trustedPublishingDialogPath}
-	config={trustedPublishingDialogConfig}
+	configs={trustedPublishing.configs(trustedPublishingDialogPkg)}
 	configLoading={trustedPublishing.isLoading(trustedPublishingDialogPkg)}
 	repositoryHint={trustedPublishingDialogRepoHint}
 	initialTab={trustedPublishingDialogInitialTab}
@@ -505,6 +503,7 @@
 	bind:open={batchTrustedPublishingOpen}
 	packageNames={[...selected]}
 	packageTargets={batchTrustedPublishingTargets}
+	packagePath={decodedRoot}
 	config={null}
 	repositoryHint={batchRepoHint}
 	onChanged={() => {

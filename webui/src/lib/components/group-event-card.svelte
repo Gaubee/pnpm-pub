@@ -16,6 +16,7 @@
      * accordion states are local and reset on reload.
      */
     import type { EventStatus, PubEvent } from "$lib/types.js";
+    import type { RepoInfo } from "$lib/components/repo-info-types.js";
     import type { EventGroup, GroupKind } from "$lib/group-event.js";
     import { aggregateGroupStatus } from "$lib/group-event.js";
     import {
@@ -33,6 +34,7 @@
         CardHeader,
     } from "$lib/components/ui/card/index.js";
     import {
+        deriveRemovalReviewState,
         isMemberInheriting,
         resolveTrustedPublishingConfig,
         trustedPublisherConfigsEqual,
@@ -41,10 +43,12 @@
     import { createTrustedPublishingStatus } from "$lib/hooks/use-trusted-publishing.svelte.js";
     import EventDetailDialog from "$lib/components/event-detail-dialog.svelte";
     import EventIconBadge from "$lib/components/event-icon-badge.svelte";
+    import EventCardOpenActions from "$lib/components/event-card-open-actions.svelte";
     import TrustFormCard from "$lib/components/trust-form-card.svelte";
     import { actions, daemon } from "$lib/store.js";
     import AutoCloseBar from "$lib/components/auto-close-bar.svelte";
     import IconShield from "@lucide/svelte/icons/shield-check";
+    import IconShieldMinus from "@lucide/svelte/icons/shield-minus";
     import IconPublish from "@lucide/svelte/icons/upload";
     import IconLayers from "@lucide/svelte/icons/layers";
     import IconCheck from "@lucide/svelte/icons/check";
@@ -89,19 +93,25 @@
 
     const KIND_ICON: Record<GroupKind, typeof IconLayers> = {
         "trusted-publishing": IconShield,
+        "trusted-publishing-remove": IconShieldMinus,
         publish: IconPublish,
         mixed: IconLayers,
     };
-    /** Icon-tile tint per kind: trusted-publishing → success (green), publish →
-     *  brand (blue), mixed → neutral. Mirrors EventCard's kindAccent signal. */
+    /** Icon-tile tint per kind: trusted-publishing → success (green),
+     *  trusted-publishing-remove → warning (orange, destructive removal
+     *  identity), publish → brand (blue), mixed → neutral. Mirrors
+     *  EventCard's kindAccent signal. */
     const KIND_ICON_CLASS: Record<GroupKind, string> = {
         "trusted-publishing": "bg-success/10 text-success border-success/38",
+        "trusted-publishing-remove":
+            "bg-warning/10 text-warning border-warning/38",
         publish: "bg-brand/10 text-brand border-brand/38",
         mixed: "bg-accent text-muted-foreground  border-muted/38",
     };
     /** CSS color matching the icon tint — drives the pending ripple color. */
     const KIND_ICON_COLOR: Record<GroupKind, string> = {
         "trusted-publishing": "var(--success)",
+        "trusted-publishing-remove": "var(--warning)",
         publish: "var(--brand)",
         mixed: "var(--muted-foreground)",
     };
@@ -130,7 +140,22 @@
      */
     const trustedPublishing = createTrustedPublishingStatus();
 
-    const members = $derived(group.events);
+    // Members in a STABLE order: the daemon's event list can reorder when
+    // sibling events resolve (newest-first by createdAt, which ties-break on
+    // array order and shuffles on every broadcast). Sort by package name so the
+    // list never reflows as members change state — critical for removal groups
+    // where the user is scanning a fixed package list.
+    const members = $derived.by(() => {
+        const arr = [...group.events];
+        arr.sort((a, b) => {
+            const an = memberName(a);
+            const bn = memberName(b);
+            if (an < bn) return -1;
+            if (an > bn) return 1;
+            return 0;
+        });
+        return arr;
+    });
     const memberCount = $derived(members.length);
     const aggregatedStatus = $derived(aggregateGroupStatus(members));
     const hasPending = $derived(members.some((e) => e.status === "pending"));
@@ -143,11 +168,6 @@
     );
     const resolvedCount = $derived(
         members.filter((e) => e.status !== "pending").length,
-    );
-    const hasDefaultForm = $derived(
-        surface === "pending" &&
-            hasPending &&
-            group.kind === "trusted-publishing",
     );
     /** The group's shared default trusted-publishing config (single source of
      *  truth lives in the daemon; editing the default form updates ONLY this —
@@ -169,6 +189,60 @@
                 m.payload?.kind === "configure-trust" &&
                 m.payload.data.action !== "remove",
         ),
+    );
+    /** Deletion decisions are persisted per registry config id on each Event. */
+    const pendingRemovalMembers = $derived(
+        members.filter(
+            (member) =>
+                member.status === "pending" &&
+                member.payload?.kind === "configure-trust" &&
+                member.payload.data.action === "remove",
+        ),
+    );
+    function removalState(member: PubEvent) {
+        return deriveRemovalReviewState(
+            member.removalSnapshot ?? [],
+            member.removalDecisions,
+        );
+    }
+    function removalStatus(member: PubEvent): "ready" | "error" {
+        return member.removalSnapshot ? "ready" : "error";
+    }
+    const removalsReviewed = $derived(
+        pendingRemovalMembers.every(
+            (member) =>
+                removalStatus(member) === "ready" &&
+                removalState(member).reviewed,
+        ),
+    );
+    const removalHasAnyRemove = $derived(
+        pendingRemovalMembers.some((member) => removalState(member).hasRemove),
+    );
+    /** A removal group: every pending member is a configure-trust/remove. Drives
+     *  the distinct header identity + the review-dialog entry (no default form,
+     *  no inherit/customize chips). */
+    const groupIsRemoval = $derived(group.kind === "trusted-publishing-remove");
+    /** Collapsed summary of how many removal members are marked remove vs keep.
+     *  Shown as a hint chip so the user sees the current decision split at a
+     *  glance without opening the review dialog. */
+    const removalDecisionTally = $derived.by(() => {
+        let remove = 0;
+        let keep = 0;
+        let unreviewed = 0;
+        for (const member of pendingRemovalMembers) {
+            const state = removalState(member);
+            remove += state.remove;
+            keep += state.keep;
+            unreviewed += state.unreviewed;
+        }
+        return { remove, keep, unreviewed };
+    });
+
+    const hasDefaultForm = $derived(
+        surface === "pending" &&
+            hasPending &&
+            group.kind === "trusted-publishing" &&
+            precheckableMembers.length > 0,
     );
     $effect(() => {
         // Re-run when the pending member set or group identity changes.
@@ -278,13 +352,13 @@
     function confirmAll(): void {
         if (batchRunning) return;
         const targets = members.filter((e) => e.status === "pending");
-        if (targets.length === 0) return;
+        if (targets.length === 0 || !removalsReviewed) return;
         // Track these ids so the loading state + progress (done/total) stay
         // accurate while the daemon resolves them asynchronously.
         batchTargetIds = targets.map((e) => e.id);
         batchAction = "confirm";
         batchRunning = true;
-        for (const e of targets) actions.confirm(e.id);
+        actions.confirmGroup(group.id);
     }
     function rejectAll(): void {
         if (batchRunning) return;
@@ -341,6 +415,10 @@
                 return $_("groupEvent.kindTrustedPublishing", {
                     values: { count },
                 });
+            case "trusted-publishing-remove":
+                return $_("groupEvent.kindRemoveTrustedPublishing", {
+                    values: { count },
+                });
             case "publish":
                 return $_("groupEvent.kindPublish", { values: { count } });
             default:
@@ -357,6 +435,12 @@
         if (payload?.kind === "create-placeholder") return payload.data.name;
         if (payload?.kind === "unpublish") return payload.data.name;
         return member.kind;
+    }
+
+    /** True while a member's current registry config is still being fetched
+     *  (the TTL cache's in-flight state). Drives per-member loading spinners. */
+    function memberLoading(name: string): boolean {
+        return trustedPublishing.isLoading(name);
     }
 
     /** Secondary metadata for a member row (version, repo, or trust summary).
@@ -383,8 +467,17 @@
     /** Collapsed summary for the Packages accordion. For trusted-publishing
      *  groups with pending members, shows "N inherit · N custom" (the modes
      *  that actually matter when deciding whether to edit the default form vs
-     *  per-member overrides). For other groups, falls back to a plain count. */
+     *  per-member overrides). For removal groups, shows the remove/keep decision
+     *  split. For other groups, falls back to a plain count. */
     const eventsSummary = $derived.by(() => {
+        if (groupIsRemoval && surface === "pending" && hasPending) {
+            return $_("groupEvent.removalDecidedHint", {
+                values: {
+                    remove: removalDecisionTally.remove,
+                    keep: removalDecisionTally.keep,
+                },
+            });
+        }
         const showModes =
             group.kind === "trusted-publishing" &&
             surface === "pending" &&
@@ -403,6 +496,49 @@
     const timeLabel = $derived(
         new Date(group.latest.createdAt).toLocaleTimeString(),
     );
+
+    // Open-actions data (npm link / repo / folder) for the group footer's
+    // right-side cluster. Uses `group.latest` as the representative member —
+    // the npm package link is always meaningful for a Trusted Publishing /
+    // publish group. Mirrors EventCard's open-actions derivation.
+    const openTarget = $derived(
+        group.latest.payload?.kind === "configure-trust"
+            ? group.latest.payload.data.target
+            : group.latest.payload?.kind === "publish"
+              ? group.latest.payload.data.target
+              : null,
+    );
+    // Removal groups may open only their explicit group root. Other group kinds
+    // retain their existing representative source-path behavior.
+    const openSourcePath = $derived(
+        groupIsRemoval
+            ? group.root ?? ""
+            : group.root ??
+              (group.latest.payload?.kind === "publish"
+                  ? group.latest.payload.data.source.path
+                  : openTarget?.path ?? ""),
+    );
+    let openRepoInfo = $state<RepoInfo | null>(null);
+    const openRepoRaw = $derived(openTarget?.repository ?? "");
+    $effect(() => {
+        if (!openRepoRaw) {
+            openRepoInfo = null;
+            return;
+        }
+        void actions.repoInfo(openRepoRaw).then((info) => {
+            openRepoInfo = info;
+        });
+    });
+    const hasOpenActions = $derived(
+        !!openRepoInfo || !!openSourcePath,
+    );
+    function onOpenUrl(url: string): void {
+        actions.openUrl(url);
+    }
+    function onOpenPath(path: string): void {
+        actions.openPath(path);
+    }
+
     /** Resolved = no pending members (drives autoClose countdown visibility). */
     const isResolved = $derived(!hasPending);
 
@@ -524,12 +660,6 @@
                     : ""}
                 bind:valid={groupDraftValid}
             />
-        {:else if surface === "pending" && hasPending && group.kind !== "trusted-publishing"}
-            <div
-                class="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground"
-            >
-                {$_("groupEvent.noDefaultForm")}
-            </div>
         {/if}
 
         <!-- Packages: collapsible accordion of one-line member rows. Each row
@@ -569,6 +699,46 @@
                             in:fade|global={enterParams(i)}
                             out:fade={leaveParams}
                         >
+                            {#if member.status === "pending" && member.payload?.kind === "configure-trust" && member.payload.data.action === "remove"}
+                                {@const reviewState = removalState(member)}
+                                {@const reviewStatus = removalStatus(member)}
+                                <!-- Removal member row: same restrained pattern as the
+                                     add/update rows — a status dot (colored by the keep/remove
+                                     decision), the package name, and a small decision chip.
+                                     Clicking opens the single-member EventDetailDialog, which
+                                     shows that package's current configs + Keep/Remove controls. -->
+                                <button
+                                    type="button"
+                                    class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/40"
+                                    onclick={() => (detailEvent = member)}
+                                >
+                                    <span
+                                        class="h-1.5 w-1.5 shrink-0 rounded-full {reviewState.hasRemove
+                                            ? 'bg-destructive'
+                                            : 'bg-muted-foreground/40'}"
+                                    ></span>
+                                    <span
+                                        class="min-w-0 flex-1 truncate font-mono text-foreground"
+                                        >{memberName(member)}</span
+                                    >
+                                    {#if reviewStatus === "error" || !reviewState.reviewed}
+                                        <span
+                                            class="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+                                            >{$_("groupEvent.review")}</span
+                                        >
+                                    {:else}
+                                        <span
+                                            class="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                                            >{$_("groupEvent.removalDecidedHint", {
+                                                values: { remove: reviewState.remove, keep: reviewState.keep },
+                                            })}</span
+                                        >
+                                    {/if}
+                                    <IconChevronRight
+                                        class="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5"
+                                    />
+                                </button>
+                            {:else}
                             <button
                                 type="button"
                                 class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent/40"
@@ -576,16 +746,21 @@
                             >
                                 {#if member.status === "pending"}
                                     {@const precheck = memberPrecheck(member)}
-                                    <span
-                                        class="h-1.5 w-1.5 shrink-0 rounded-full {precheck === 'skip'
-                                            ? 'bg-success/50'
-                                            : precheck === 'conflict'
-                                              ? 'bg-warning'
-                                              : MEMBER_STATUS_DOT[member.status]}"
-                                    ></span>
+                                    {@const mName = memberName(member)}
+                                    {#if precheck === "unknown" && memberLoading(mName)}
+                                        <IconLoader class="h-3 w-3 shrink-0 animate-spin text-muted-foreground/60" />
+                                    {:else}
+                                        <span
+                                            class="h-1.5 w-1.5 shrink-0 rounded-full {precheck === 'skip'
+                                                ? 'bg-success/50'
+                                                : precheck === 'conflict'
+                                                  ? 'bg-warning'
+                                                  : MEMBER_STATUS_DOT[member.status]}"
+                                        ></span>
+                                    {/if}
                                     <span
                                         class="min-w-0 flex-1 truncate font-mono text-foreground"
-                                        >{memberName(member)}</span
+                                        >{mName}</span
                                     >
                                     {#if memberMeta(member)}
                                         <span
@@ -655,6 +830,7 @@
                                     class="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition-transform group-hover:translate-x-0.5"
                                 />
                             </button>
+                            {/if}
                         </li>
                     {/each}
                 </ul>
@@ -755,24 +931,30 @@
         {/if}
 
         <!-- Actions: confirm/reject (pending surface) + retry/reset (resolved).
-		     Each row only renders when it has at least one eligible member. -->
-        {#if (surface === "pending" && hasPending) || canRetry || canReset || (isResolved && autoClose)}
-            <div class="pt-1">
+             LEFT cluster = batch actions, RIGHT cluster = open-actions (npm/repo),
+             same justify-between two-ButtonGroup layout as EventCardFooter. -->
+        {#if (surface === "pending" && hasPending) || canRetry || canReset || (isResolved && autoClose) || hasOpenActions}
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <ButtonGroup>
                     {#if surface === "pending" && hasPending}
                         {@const confirming = batchRunning && batchAction === "confirm"}
                         <Button
-                            variant="brand"
+                            variant={groupIsRemoval ? "destructive" : "brand"}
                             size="sm"
                             class="flex-1"
                             disabled={batchRunning ||
                                 (group.kind === "trusted-publishing" &&
-                                    !groupDraftValid)}
+                                    precheckableMembers.length > 0 &&
+                                    !groupDraftValid) ||
+                                (groupIsRemoval && (!removalsReviewed || !removalHasAnyRemove))}
                             onclick={confirmAll}
                         >
                             {#if confirming}
                                 <IconLoader class="h-3.5 w-3.5 animate-spin" />
                                 {$_("groupEvent.progress", { values: { done: batchDone, total: batchTotal } })}
+                            {:else if groupIsRemoval}
+                                <IconShieldMinus class="h-3.5 w-3.5" />
+                                {$_("groupEvent.confirmAll")}
                             {:else}
                                 <IconCheck class="h-3.5 w-3.5" />
                                 {$_("groupEvent.confirmAll")}
@@ -832,6 +1014,17 @@
                         />
                     {/if}
                 </ButtonGroup>
+                {#if hasOpenActions}
+                    <ButtonGroup>
+                        <EventCardOpenActions
+                            repoInfo={openRepoInfo}
+                            sourcePath={openSourcePath}
+                            npmUrl=""
+                            {onOpenUrl}
+                            {onOpenPath}
+                        />
+                    </ButtonGroup>
+                {/if}
             </div>
         {/if}
     </CardContent>

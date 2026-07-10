@@ -166,11 +166,15 @@ export interface GitlabCiPublisher extends TrustedPublisherBase {
   claims: { project_path: string; ci_config_ref_uri?: string; environment?: string };
 }
 export type TrustedPublisherConfig = GithubActionsPublisher | CircleCiPublisher | GitlabCiPublisher;
+export type TrustedPublisherRegistryConfig = TrustedPublisherConfig & { id: string };
 export type TrustedPublisherCreateConfig =
   | Omit<GithubActionsPublisher, "id">
   | Omit<CircleCiPublisher, "id">
   | Omit<GitlabCiPublisher, "id">;
 export type TrustedPublishingOperation = "add" | "update" | "remove";
+/** Explicit human review of one trusted-publisher config. */
+export type RemovalDecision = "remove" | "keep";
+export type RemovalDecisions = Record<string, RemovalDecision>;
 export interface TrustedPublishingTarget {
   name: string;
   path?: string;
@@ -181,6 +185,9 @@ export interface ConfigureTrustContext {
   action: TrustedPublishingOperation;
   target: TrustedPublishingTarget;
   config?: TrustedPublisherCreateConfig;
+  /** The workspace root the OIDC action was initiated from (recursive /
+   *  workspace-detail batch). Used for the group card's "open folder" action. */
+  root?: string;
 }
 
 export interface CreatePlaceholderContext {
@@ -243,6 +250,10 @@ export interface PubEvent {
   clockDriftRecovered?: boolean;
   /** Batch correlation id — events sharing a groupId were created together. */
   groupId?: string;
+  /** Registry configs captured when a removal Event is created. */
+  removalSnapshot?: TrustedPublisherRegistryConfig[];
+  /** Explicit human decisions keyed by registry trusted-publisher config id. */
+  removalDecisions?: RemovalDecisions;
   /** Packed-tarball file list, cached when the publish runs (dry or real). */
   tarballSummary?: TarballSummary;
   /** Per-target tarball summaries for a recursive publish (one per target). */

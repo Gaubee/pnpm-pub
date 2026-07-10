@@ -17,7 +17,13 @@ import type { Database as DatabaseType } from "./db.js";
 import { openDatabase } from "./db.js";
 import type { EventKind, EventStatus, PubEvent } from "../shared/index.js";
 import { z } from "zod";
-import { EventPayloadSchema, PubEventSchema, TarballSummarySchema } from "../shared/schemas.js";
+import {
+  EventPayloadSchema,
+  PubEventSchema,
+  RemovalDecisionsSchema,
+  TarballSummarySchema,
+  TrustedPublisherRegistryConfigSchema,
+} from "../shared/schemas.js";
 
 /** Query dimensions for the paginated history endpoint. */
 export interface EventQuery {
@@ -95,6 +101,8 @@ const COLUMNS = [
   "result",
   "clock_drift_recovered",
   "group_id",
+  "removal_snapshot",
+  "removal_decisions",
   "tarball_summary",
   "tarball_summaries",
 ] as const;
@@ -118,6 +126,8 @@ export function openEventDb(dbPath: string): DatabaseType {
       result TEXT,
       clock_drift_recovered INTEGER,
       group_id TEXT,
+      removal_snapshot TEXT,
+      removal_decisions TEXT,
       tarball_summary TEXT,
       tarball_summaries TEXT
     );
@@ -140,6 +150,18 @@ export function openEventDb(dbPath: string): DatabaseType {
   // adding a column that already exists throws, so swallow that one error.
   try {
     db.exec(`ALTER TABLE events ADD COLUMN tarball_summaries TEXT`);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/duplicate column/i.test(msg)) throw error;
+  }
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN removal_snapshot TEXT`);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!/duplicate column/i.test(msg)) throw error;
+  }
+  try {
+    db.exec(`ALTER TABLE events ADD COLUMN removal_decisions TEXT`);
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     if (!/duplicate column/i.test(msg)) throw error;
@@ -325,6 +347,8 @@ interface RawRow {
   result: string | null;
   clock_drift_recovered: number | null;
   group_id: string | null;
+  removal_snapshot: string | null;
+  removal_decisions: string | null;
   tarball_summary: string | null;
   tarball_summaries: string | null;
 }
@@ -350,6 +374,8 @@ function serializeRow(evt: PubEvent): unknown[] {
     evt.result ?? null,
     evt.clockDriftRecovered === undefined ? null : evt.clockDriftRecovered ? 1 : 0,
     evt.groupId ?? null,
+    evt.removalSnapshot ? JSON.stringify(evt.removalSnapshot) : null,
+    evt.removalDecisions ? JSON.stringify(evt.removalDecisions) : null,
     evt.tarballSummary ? JSON.stringify(evt.tarballSummary) : null,
     evt.tarballSummaries ? JSON.stringify(evt.tarballSummaries) : null,
   ];
@@ -369,6 +395,18 @@ function deserializeRow(r: RawRow): PubEvent | null {
     r.id,
     "tarballSummaries",
   );
+  const removalDecisions = parseJsonField(
+    r.removal_decisions,
+    RemovalDecisionsSchema,
+    r.id,
+    "removalDecisions",
+  );
+  const removalSnapshot = parseJsonField(
+    r.removal_snapshot,
+    z.array(TrustedPublisherRegistryConfigSchema),
+    r.id,
+    "removalSnapshot",
+  );
   const parsed = PubEventSchema.safeParse({
     id: r.id,
     kind: r.kind as EventKind,
@@ -382,6 +420,8 @@ function deserializeRow(r: RawRow): PubEvent | null {
     clockDriftRecovered:
       r.clock_drift_recovered === null ? undefined : r.clock_drift_recovered === 1,
     groupId: r.group_id ?? undefined,
+    removalSnapshot,
+    removalDecisions,
     tarballSummary,
     tarballSummaries,
   });

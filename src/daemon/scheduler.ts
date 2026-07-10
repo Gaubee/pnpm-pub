@@ -29,10 +29,12 @@ import type {
   PublishTarget,
   PubEvent,
   RecursivePublishContext,
+  RemovalDecisions,
   RefreshTokenContext,
   TrustedPublisherConfig,
   TrustedPublisherCreateConfig,
   TrustedPublisherPermission,
+  TrustedPublisherRegistryConfig,
   TrustedPublishingTarget,
   UnpublishContext,
 } from "../shared/index.js";
@@ -156,6 +158,23 @@ async function listTrustLookup(
   } catch {
     return { ok: false };
   }
+}
+
+function removalSnapshotReview(event: PubEvent): {
+  complete: boolean;
+  hasRemove: boolean;
+  allKeep: boolean;
+} {
+  const snapshot = event.removalSnapshot;
+  if (!snapshot) return { complete: false, hasRemove: false, allKeep: false };
+  const decisions = event.removalDecisions ?? {};
+  return {
+    complete: snapshot.every(
+      (config) => decisions[config.id] === "remove" || decisions[config.id] === "keep",
+    ),
+    hasRemove: snapshot.some((config) => decisions[config.id] === "remove"),
+    allKeep: snapshot.length > 0 && snapshot.every((config) => decisions[config.id] === "keep"),
+  };
 }
 
 /**
@@ -1687,20 +1706,22 @@ export class PublishScheduler {
       this.exitOidcRequest(req, client, 1, config.error);
       return undefined;
     }
-    const hydrated = await this.attachCurrentTrustConfigs(req, profile, targets.targets);
-    if (!hydrated.ok) {
-      this.exitOidcRequest(req, client, 1, hydrated.error);
+    const removalSnapshots = req.remove
+      ? await this.captureRemovalSnapshots(profile, targets.targets)
+      : { ok: true as const, snapshots: [] };
+    if (!removalSnapshots.ok) {
+      this.exitOidcRequest(req, client, 1, removalSnapshots.error);
       return undefined;
     }
-
-    const groupId = hydrated.targets.length > 1 ? randomUUID() : undefined;
+    const groupId = targets.targets.length > 1 ? randomUUID() : undefined;
     const events: PubEvent[] = [];
-    for (const target of hydrated.targets) {
-      const action = req.remove ? "remove" : target.currentConfig ? "update" : "add";
+    for (const [index, target] of targets.targets.entries()) {
+      const action = req.remove ? "remove" : "add";
       const data: ConfigureTrustContext = {
         action,
         target,
         ...(!groupId && config.config && !req.remove ? { config: config.config } : {}),
+        ...(targets.root ? { root: targets.root } : {}),
       };
       const event = this.store.createEvent({
         kind: "configure-trust",
@@ -1708,6 +1729,7 @@ export class PublishScheduler {
         profileOverride: req.profileOverride,
         payload: { kind: "configure-trust", data },
         ...(groupId ? { groupId } : {}),
+        ...(req.remove ? { removalSnapshot: removalSnapshots.snapshots[index] ?? [] } : {}),
       });
       events.push(event);
     }
@@ -1724,9 +1746,6 @@ export class PublishScheduler {
     }
 
     if (!req.json) {
-      for (const skipped of hydrated.skipped) {
-        client.log("stdout", `[oidc] skipped ${skipped}: no trusted publisher is configured.\n`);
-      }
       client.log(
         "stdout",
         `[oidc] created ${events.length} Trusted Publishing Event${events.length === 1 ? "" : "s"}. Confirm in the tray.\n`,
@@ -1825,7 +1844,9 @@ export class PublishScheduler {
 
   private async resolveOidcTargets(
     req: IpcOidcRequest,
-  ): Promise<{ ok: true; targets: TrustedPublishingTarget[] } | { ok: false; error: string }> {
+  ): Promise<
+    { ok: true; targets: TrustedPublishingTarget[]; root?: string } | { ok: false; error: string }
+  > {
     const names = [...new Set(req.packageNames.map((name) => name.trim()).filter(Boolean))];
     const cwd = path.resolve(req.cwd);
     if (req.recursive) {
@@ -1842,6 +1863,7 @@ export class PublishScheduler {
       }
       return {
         ok: true,
+        root,
         targets: selected.map((pkg) => ({
           name: pkg.name,
           path: pkg.path,
@@ -1877,6 +1899,49 @@ export class PublishScheduler {
     };
   }
 
+  /** Capture every removal target before creating any Event, so groups are atomic. */
+  private async captureRemovalSnapshots(
+    profile: string,
+    targets: readonly TrustedPublishingTarget[],
+  ): Promise<
+    { ok: true; snapshots: TrustedPublisherRegistryConfig[][] } | { ok: false; error: string }
+  > {
+    const creds = this.store.getCredentials(profile);
+    if (!creds) {
+      return {
+        ok: false,
+        error: `Credentials for ${profile} are missing. Re-apply them in the tray.`,
+      };
+    }
+    const registry = this.store.getProfile(profile)?.registry ?? "https://registry.npmjs.org/";
+    const results = await Promise.all(
+      targets.map(async (target) => {
+        try {
+          const result = await listTrustedPublishers(
+            { registry, token: creds.token, totpSecret: creds.totpSecret },
+            target.name,
+          );
+          return result.ok
+            ? { ok: true as const, configs: result.configs }
+            : { ok: false as const, error: result.error, name: target.name };
+        } catch (error: unknown) {
+          return { ok: false as const, error: errorToMessage(error), name: target.name };
+        }
+      }),
+    );
+    const failed = results.find((result) => !result.ok);
+    if (failed && !failed.ok) {
+      return {
+        ok: false,
+        error: `Failed to snapshot trusted publishers for ${failed.name}: ${failed.error}`,
+      };
+    }
+    return {
+      ok: true,
+      snapshots: results.map((result) => (result.ok ? result.configs : [])),
+    };
+  }
+
   private async scanOidcNamedTargets(cwd: string): Promise<Map<string, TrustedPublishingTarget>> {
     try {
       const found = await findProjectRoot(cwd, realFs);
@@ -1898,57 +1963,6 @@ export class PublishScheduler {
     } catch {
       return new Map();
     }
-  }
-
-  private async attachCurrentTrustConfigs(
-    req: IpcOidcRequest,
-    profile: string,
-    targets: TrustedPublishingTarget[],
-  ): Promise<
-    | { ok: true; targets: TrustedPublishingTarget[]; skipped: string[] }
-    | { ok: false; error: string }
-  > {
-    const profileConfig = this.store.getProfile(profile);
-    const registry = profileConfig?.registry ?? "https://registry.npmjs.org/";
-    const creds = this.store.getCredentials(profile);
-    if (!creds) {
-      return req.remove
-        ? { ok: false, error: `Credentials for ${profile} are missing. Re-apply them in the tray.` }
-        : { ok: true, targets, skipped: [] };
-    }
-    const resolved: TrustedPublishingTarget[] = [];
-    const skipped: string[] = [];
-    for (const target of targets) {
-      const lookup = await listTrustedPublishers(
-        { registry, token: creds.token, totpSecret: creds.totpSecret },
-        target.name,
-      ).catch((error: unknown) => ({
-        ok: false as const,
-        status: 0,
-        error: errorToMessage(error),
-      }));
-      if (!lookup.ok) {
-        if (req.remove) {
-          return { ok: false, error: lookup.error };
-        }
-        resolved.push(target);
-        continue;
-      }
-      const currentConfig = lookup.configs[0];
-      if (!currentConfig) {
-        if (req.remove) {
-          skipped.push(target.name);
-          continue;
-        }
-        resolved.push(target);
-        continue;
-      }
-      resolved.push({ ...target, currentConfig });
-    }
-    if (req.remove && resolved.length === 0) {
-      return { ok: false, error: "No selected package has a trusted publisher to remove." };
-    }
-    return { ok: true, targets: resolved, skipped };
   }
 
   /**
@@ -2062,7 +2076,18 @@ export class PublishScheduler {
       // now via `pnpm list -r` so the card shows what will be published.
       await this.refreshRecursiveTargets(parsed);
     }
-    const event = this.store.createEvent({ kind, profile, payload: parsed, groupId });
+    const removalSnapshot =
+      parsed.kind === "configure-trust" && parsed.data.action === "remove"
+        ? await this.captureRemovalSnapshots(profile, [parsed.data.target])
+        : null;
+    if (removalSnapshot && !removalSnapshot.ok) return removalSnapshot;
+    const event = this.store.createEvent({
+      kind,
+      profile,
+      payload: parsed,
+      groupId,
+      ...(removalSnapshot ? { removalSnapshot: removalSnapshot.snapshots[0] ?? [] } : {}),
+    });
     this.pending.set(event.id, { event, client: DETACHED_CLIENT, phase: "awaiting-decision" });
     // Prefetch the tarball preview (best-effort, non-blocking) so the confirm
     // card shows the file tree during the pending phase. Mirrors the CLI
@@ -2125,8 +2150,74 @@ export class PublishScheduler {
 
   /** Step 2 (Chapter 3.3.3 / 8.3.8): WebUI confirmed. Execute the write. */
   async confirm(taskId: string): Promise<boolean> {
+    return this.confirmInternal(taskId, false);
+  }
+
+  /**
+   * Confirm the pending members of one batch as a single source action.
+   * Grouped removals are intentionally stricter: every member has to carry a
+   * persisted human decision before any registry DELETE is permitted. A Keep
+   * resolves as a user rejection; it is never conflated with the no-op
+   * `skipped` status used by config equality preflight.
+   */
+  async confirmGroup(groupId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const members = this.store.getPendingGroupEvents(groupId);
+    if (members.length === 0) return { ok: false, error: "No pending events in this group." };
+
+    const removals = members.filter(
+      (event) =>
+        event.payload?.kind === "configure-trust" && event.payload.data.action === "remove",
+    );
+    const removalReviews = removals.map((event) => ({
+      event,
+      review: removalSnapshotReview(event),
+    }));
+    if (removalReviews.some(({ review }) => !review.complete)) {
+      return {
+        ok: false,
+        error: "A trusted-publisher removal snapshot or decision set is incomplete.",
+      };
+    }
+    const hasAnyRemove = removalReviews.some(({ review }) => review.hasRemove);
+    if (removals.length > 0 && !hasAnyRemove) {
+      return {
+        ok: false,
+        error: "No trusted-publisher configs are marked for removal.",
+      };
+    }
+
+    // A package whose reviewed configs are all kept has no registry effect.
+    // Resolve that explicit choice before executing sibling removals.
+    for (const { event, review } of removalReviews) {
+      if (review.allKeep) {
+        this.reject(event.id, "Trusted publisher configs kept by user.");
+      }
+    }
+    for (const event of members) {
+      const current = this.store.getEvent(event.id);
+      if (!current || current.status !== "pending") continue;
+      await this.confirmInternal(event.id, true);
+    }
+    return { ok: true };
+  }
+
+  /** Executes a confirmed event after the caller has established its authority. */
+  private async confirmInternal(taskId: string, allowGroupedRemoval: boolean): Promise<boolean> {
     const entry = this.pending.get(taskId);
     if (!entry) return false;
+    const isGroupedRemoval =
+      !!entry.event.groupId &&
+      entry.event.payload?.kind === "configure-trust" &&
+      entry.event.payload.data.action === "remove";
+    if (isGroupedRemoval && !allowGroupedRemoval) return false;
+    const isStandaloneRemoval =
+      !entry.event.groupId &&
+      entry.event.payload?.kind === "configure-trust" &&
+      entry.event.payload.data.action === "remove";
+    if (isStandaloneRemoval) {
+      const review = removalSnapshotReview(entry.event);
+      if (!review.complete || !review.hasRemove) return false;
+    }
     entry.phase = "executing";
     const { event, client } = entry;
     if (event.payload?.kind === "refresh-token") {
@@ -2244,17 +2335,24 @@ export class PublishScheduler {
   }
 
   /** Step 2-alt: WebUI rejected. Relay SIGINT-equivalent to the CLI (Chapter 6.2.2). */
-  reject(taskId: string): boolean {
+  reject(taskId: string, message?: string): boolean {
     const entry = this.pending.get(taskId);
     if (!entry || entry.phase !== "awaiting-decision") return false;
     const { client } = entry;
-    const message =
-      entry.event.payload?.kind === "configure-trust"
-        ? "Trusted Publishing Event rejected by user."
-        : "Publish canceled by user.";
-    this.store.resolveEvent(taskId, "rejected", message);
-    client.log("stderr", message + "\n");
-    client.exit(1, message);
+    const keptRemoval =
+      entry.event.payload?.kind === "configure-trust" &&
+      entry.event.payload.data.action === "remove" &&
+      removalSnapshotReview(entry.event).allKeep;
+    const rejectionMessage =
+      message ??
+      (keptRemoval
+        ? "Trusted publisher configs kept by user."
+        : entry.event.payload?.kind === "configure-trust"
+          ? "Trusted Publishing Event rejected by user."
+          : "Publish canceled by user.");
+    this.store.resolveEvent(taskId, "rejected", rejectionMessage);
+    client.log("stderr", rejectionMessage + "\n");
+    client.exit(1, rejectionMessage);
     this.pending.delete(taskId);
     return true;
   }
@@ -2756,6 +2854,8 @@ export class PublishScheduler {
 
   private async applyConfigureTrust(
     ctx: ConfigureTrustContext,
+    removalSnapshot: readonly TrustedPublisherRegistryConfig[],
+    removalDecisions: RemovalDecisions,
     token: string,
     totpSecret: string,
     registry: string,
@@ -2765,25 +2865,43 @@ export class PublishScheduler {
     | { kind: "skipped"; message: string }
   > {
     if (ctx.action === "remove") {
-      const id = ctx.target.currentConfig?.id;
-      if (!id)
+      const selected = removalSnapshot.filter((config) => removalDecisions[config.id] === "remove");
+      const kept = removalSnapshot.filter(
+        (config) => removalDecisions[config.id] === "keep",
+      ).length;
+      const unreviewed = removalSnapshot.length - selected.length - kept;
+      if (selected.length === 0)
         return {
-          kind: "fail",
-          message: "Trusted publisher id is required for removal.",
-          mutated: false,
+          kind: "skipped",
+          message: `[configure-trust] no selected trusted publisher config remains for ${ctx.target.name}; skipped.`,
         };
-      const result = await removeTrustedPublisher(
-        { registry, token, totpSecret },
-        ctx.target.name,
-        id,
-      );
-      return result.ok
-        ? { kind: "ok", message: `[configure-trust] removed ${ctx.target.name}`, mutated: true }
-        : {
+      let removed = 0;
+      for (const config of selected) {
+        const result = await removeTrustedPublisher(
+          { registry, token, totpSecret },
+          ctx.target.name,
+          config.id,
+        );
+        if (!result.ok) {
+          return {
             kind: "fail",
-            message: result.error ?? `Failed to remove trusted publisher for ${ctx.target.name}.`,
-            mutated: false,
+            message:
+              `${result.error ?? `Failed to remove trusted publisher config ${config.id} for ${ctx.target.name}.`}` +
+              (removed > 0 ? ` ${removed} config(s) were already removed.` : ""),
+            mutated: removed > 0,
           };
+        }
+        removed++;
+      }
+      const unchanged = [
+        kept > 0 ? `kept ${kept}` : "",
+        unreviewed > 0 ? `left ${unreviewed} unreviewed unchanged` : "",
+      ].filter(Boolean);
+      return {
+        kind: "ok",
+        message: `[configure-trust] removed ${removed} trusted publisher config${removed === 1 ? "" : "s"} from ${ctx.target.name}${unchanged.length > 0 ? `; ${unchanged.join("; ")}` : ""}.`,
+        mutated: true,
+      };
     }
 
     if (!ctx.config) {
@@ -2871,7 +2989,14 @@ export class PublishScheduler {
     const ctx = this.store.resolveConfigureTrustConfig(event);
     client.log("stdout", `configuring trusted publishing for ${ctx.target.name}...\n`);
     try {
-      const result = await this.applyConfigureTrust(ctx, token, totpSecret, registry);
+      const result = await this.applyConfigureTrust(
+        ctx,
+        event.removalSnapshot ?? [],
+        event.removalDecisions ?? {},
+        token,
+        totpSecret,
+        registry,
+      );
       if (result.kind === "ok" || result.kind === "fail") {
         if (result.mutated) this.store.invalidateTrustedPublishing([ctx.target.name]);
       }

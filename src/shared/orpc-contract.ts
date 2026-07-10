@@ -15,6 +15,7 @@ import {
   PubEventSchema,
   TrustedPublisherCreateConfigSchema,
   TrustedPublisherConfigSchema,
+  TrustedPublisherRegistryConfigSchema,
   WsServerMessageSchema,
 } from "./schemas.js";
 
@@ -177,7 +178,7 @@ const RepoInfoResponseSchema = z.object({
 
 const TrustListResponseSchema = z.object({
   ok: z.boolean(),
-  configs: z.array(TrustedPublisherConfigSchema).optional(),
+  configs: z.array(TrustedPublisherRegistryConfigSchema).optional(),
   needsReauth: z.boolean().optional(),
   error: z.string().optional(),
 });
@@ -249,6 +250,9 @@ export const webRpcContract = {
     query: oc.input(EventsQuerySchema).output(EventsQueryResponseSchema),
     queryHistoryGroups: oc.input(HistoryEventGroupQuerySchema).output(HistoryEventGroupPageSchema),
     confirm: oc.input(z.object({ id: z.string().min(1) })).output(OkResponseSchema),
+    /** Confirm every pending member of a group after its destructive reviews
+     *  have been recorded. */
+    confirmGroup: oc.input(z.object({ groupId: z.string().min(1) })).output(OkResponseSchema),
     reject: oc.input(z.object({ id: z.string().min(1) })).output(OkResponseSchema),
     update: oc
       .input(z.object({ id: z.string().min(1), args: z.array(z.string()) }))
@@ -277,6 +281,15 @@ export const webRpcContract = {
         z.object({
           eventId: z.string().min(1),
           inherit: z.boolean(),
+        }),
+      )
+      .output(OkResponseSchema),
+    /** Record explicit decisions for trusted-publisher config ids. */
+    setRemovalDecisions: oc
+      .input(
+        z.object({
+          eventId: z.string().min(1),
+          decisions: z.record(z.string().min(1), z.enum(["remove", "keep"])),
         }),
       )
       .output(OkResponseSchema),

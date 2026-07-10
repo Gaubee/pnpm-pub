@@ -20,7 +20,8 @@ export const intentionallyUntranslated = new Set([
   "trustedPublishing.providerGithub", // "GitHub Actions"
   "trustedPublishing.providerCircleci", // "CircleCI"
   "trustedPublishing.providerGitlab", // "GitLab CI"
-  "trustedPublishing.workflowTab", // "OIDC"
+  "trustedPublishing.workflowTab", // "Workflow"
+  "eventCard.confirm", // "Confirm"
   // Literal placeholders / examples (kept verbatim in every locale).
   "events.packageScopePlaceholder", // "@scope/pkg"
   "events.repositoryPlaceholder", // "owner/repo"
@@ -37,6 +38,14 @@ export const intentionallyUntranslated = new Set([
   "workspaces.trustedPublishing", // "Trusted Publishing"
   "trustedPublishing.title", // "Trusted Publishing"
   "groupEvent.kindTrustedPublishing", // "Trusted Publishing · {count}"
+  "groupEvent.kindRemoveTrustedPublishing", // "Remove Trusted Publishing · {count}"
+  "removeTrustedPublishingGroup.title", // "Remove Trusted Publishing"
+  "trustedPublishing.oidcTitle", // "OIDC"
+  "trustedPublishing.recursiveTitle", // "Recursive OIDC"
+  "trustedPublishing.removeTrustedPublishing", // "Remove Trusted Publishing"
+  // Structured interpolation templates (no translatable prose — just
+  // placeholders + separators, identical and correct in every locale).
+  "trustedPublishing.singleSubtitle", // "{name} · {path}"
   // "2FA" — universal abbreviation, kept verbatim.
   "profile.twoFactor", // "2FA"
   // Universally-borrowed technical UI labels (kept verbatim — these are common

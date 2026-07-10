@@ -1,12 +1,16 @@
 import type {
   PubEvent,
+  RemovalDecisions,
   TrustedPublisherConfig,
   TrustedPublisherCreateConfig,
+  TrustedPublisherRegistryConfig,
   TrustedPublisherPermission,
   TrustedPublisherType,
 } from "./types.js";
 
-export function trustedPublisherSummary(config: TrustedPublisherConfig | null | undefined): string {
+export function trustedPublisherSummary(
+  config: TrustedPublisherConfig | TrustedPublisherCreateConfig | null | undefined,
+): string {
   if (!config) return "No trusted publishing configured";
   if (config.type === "github") {
     return [
@@ -35,6 +39,39 @@ export function trustedPublisherSummary(config: TrustedPublisherConfig | null | 
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+export interface RemovalReviewState {
+  reviewed: boolean;
+  hasRemove: boolean;
+  remove: number;
+  keep: number;
+  unreviewed: number;
+}
+
+/** Derive confirmation authority from the current registry configs and the
+ * persisted config-id decisions. Empty config lists are fully reviewed but do
+ * not authorize a destructive action. */
+export function deriveRemovalReviewState(
+  configs: readonly TrustedPublisherRegistryConfig[],
+  decisions: RemovalDecisions | undefined,
+): RemovalReviewState {
+  let remove = 0;
+  let keep = 0;
+  let unreviewed = 0;
+  for (const config of configs) {
+    const decision = decisions?.[config.id];
+    if (decision === "remove") remove++;
+    else if (decision === "keep") keep++;
+    else unreviewed++;
+  }
+  return {
+    reviewed: unreviewed === 0,
+    hasRemove: remove > 0,
+    remove,
+    keep,
+    unreviewed,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +196,20 @@ export function providerLabelKey(type: TrustedPublisherType): string {
       return "trustedPublishing.providerCircleci";
     case "gitlab":
       return "trustedPublishing.providerGitlab";
+  }
+}
+
+/** The `BrandId` (for `BrandIcon`) matching a trusted-publisher provider type.
+ *  Used wherever a config is shown so the provider reads as a brand mark, not
+ *  a generic shield glyph. */
+export function providerBrandId(type: TrustedPublisherType): "github" | "gitlab" | "circleci" {
+  switch (type) {
+    case "github":
+      return "github";
+    case "circleci":
+      return "circleci";
+    case "gitlab":
+      return "gitlab";
   }
 }
 

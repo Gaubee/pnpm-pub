@@ -28,7 +28,7 @@
 	 * Field metadata is shared with the edit form via
 	 * $lib/trusted-publishing.ts so the two never drift.
 	 */
-	import type { TrustedPublisherConfig } from '$lib/types.js';
+	import type { TrustedPublisherConfig, TrustedPublisherCreateConfig } from '$lib/types.js';
 	import { cn } from '$lib/utils.js';
 	import {
 		extractTrustedPublishingValues,
@@ -46,7 +46,7 @@
 		mode = 'compact',
 		class: className,
 	}: {
-		config: TrustedPublisherConfig | null | undefined;
+		config: TrustedPublisherConfig | TrustedPublisherCreateConfig | null | undefined;
 		mode?: Mode;
 		class?: string;
 	} = $props();

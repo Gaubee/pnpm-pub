@@ -172,6 +172,18 @@ describe("event-db persistence", () => {
       result: "Published",
       clockDriftRecovered: true,
       groupId: "grp-1",
+      removalSnapshot: [
+        {
+          id: "publisher-remove",
+          type: "github",
+          permissions: ["createPackage"],
+          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+        },
+      ],
+      removalDecisions: {
+        "publisher-keep": "keep",
+        "publisher-remove": "remove",
+      },
       tarballSummary: {
         files: [{ path: "package/index.js", size: 42, mode: 420 }],
         unpackedSize: 42,
@@ -192,6 +204,11 @@ describe("event-db persistence", () => {
     expect(got[0]!.tarballSummary).toEqual(evt.tarballSummary);
     expect(got[0]!.clockDriftRecovered).toBe(true);
     expect(got[0]!.groupId).toBe("grp-1");
+    expect(got[0]!.removalSnapshot).toEqual(evt.removalSnapshot);
+    expect(got[0]!.removalDecisions).toEqual({
+      "publisher-keep": "keep",
+      "publisher-remove": "remove",
+    });
     expect(got[0]!.result).toBe("Published");
   });
 
@@ -212,12 +229,16 @@ describe("event-db persistence", () => {
       profileOverride: undefined,
       resolvedAt: undefined,
       clockDriftRecovered: undefined,
+      removalSnapshot: undefined,
+      removalDecisions: undefined,
     });
     insertEvent(db, evt);
     const got = recentEvents(db, 1)[0]!;
     expect(got.profileOverride).toBeUndefined();
     expect(got.resolvedAt).toBeUndefined();
     expect(got.clockDriftRecovered).toBeUndefined();
+    expect(got.removalSnapshot).toBeUndefined();
+    expect(got.removalDecisions).toBeUndefined();
   });
 
   it("queryEvents paginates and reports total", () => {

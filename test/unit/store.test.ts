@@ -320,6 +320,90 @@ describe("DaemonStore events (Chapter 6.2)", () => {
     expect(store.resolveConfigureTrustConfig(second).config).toEqual(config);
   });
 
+  it("Scenario: Given a standalone trusted-publisher removal, When per-config decisions are recorded, Then they survive event-store reload", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    const event = store.createEvent({
+      kind: "configure-trust",
+      profile: "alice",
+      payload: {
+        kind: "configure-trust",
+        data: {
+          action: "remove",
+          target: {
+            name: "@scope/pkg",
+            currentConfig: {
+              id: "publisher-id",
+              type: "github",
+              permissions: ["createPackage"],
+              claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+            },
+          },
+        },
+      },
+      removalSnapshot: [
+        {
+          id: "publisher-id",
+          type: "github",
+          permissions: ["createPackage"],
+          claims: { repository: "owner/repo", workflow_ref: { file: "publish.yml" } },
+        },
+        {
+          id: "publisher-second",
+          type: "gitlab",
+          permissions: ["createPackage"],
+          claims: { project_path: "owner/repo" },
+        },
+      ],
+    });
+
+    expect(event.removalDecisions).toEqual({
+      "publisher-id": "remove",
+      "publisher-second": "remove",
+    });
+    expect(store.setRemovalDecisions(event.id, { "not-in-snapshot": "keep" })).toBeUndefined();
+
+    expect(
+      store.setRemovalDecisions(event.id, {
+        "publisher-id": "keep",
+        "publisher-second": "remove",
+      })?.removalDecisions,
+    ).toEqual({
+      "publisher-id": "keep",
+      "publisher-second": "remove",
+    });
+    expect(
+      store.setRemovalDecisions(event.id, { "publisher-id": "remove" })?.removalDecisions,
+    ).toEqual({
+      "publisher-id": "remove",
+      "publisher-second": "remove",
+    });
+
+    const reloaded = new DaemonStore();
+    await reloaded.load();
+    expect(reloaded.getEvent(event.id)?.removalSnapshot).toEqual(event.removalSnapshot);
+    expect(reloaded.getEvent(event.id)?.removalDecisions).toEqual({
+      "publisher-id": "remove",
+      "publisher-second": "remove",
+    });
+  });
+
+  it("Scenario: Given a removal without registry facts, When creating the Event, Then the store rejects it", async () => {
+    const store = new DaemonStore();
+    await store.load();
+
+    expect(() =>
+      store.createEvent({
+        kind: "configure-trust",
+        profile: "alice",
+        payload: {
+          kind: "configure-trust",
+          data: { action: "remove", target: { name: "@scope/pkg" } },
+        },
+      }),
+    ).toThrow("requires a registry snapshot");
+  });
+
   it("Scenario: Given a resolved publish event, When updating args, Then it is rejected (not pending)", async () => {
     const store = new DaemonStore();
     await store.load();

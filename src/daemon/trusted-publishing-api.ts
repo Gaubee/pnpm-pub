@@ -15,8 +15,11 @@ import {
   TrustedPublisherConfigCreateSchema,
 } from "safe-npm-sdk";
 import { generateTotp } from "./totp.js";
-import { TrustedPublisherConfigSchema } from "../shared/schemas.js";
-import type { TrustedPublisherConfig } from "../shared/index.js";
+import {
+  TrustedPublisherConfigSchema,
+  TrustedPublisherRegistryConfigSchema,
+} from "../shared/schemas.js";
+import type { TrustedPublisherConfig, TrustedPublisherRegistryConfig } from "../shared/index.js";
 import type { TrustedPublisherCreateConfig } from "../shared/orpc-contract.js";
 
 /** Credentials needed to construct a one-shot SDK client + OTP. */
@@ -53,16 +56,18 @@ export async function listTrustedPublishers(
   auth: TrustAuth,
   name: string,
 ): Promise<
-  { ok: true; configs: TrustedPublisherConfig[] } | { ok: false; status: number; error: string }
+  | { ok: true; configs: TrustedPublisherRegistryConfig[] }
+  | { ok: false; status: number; error: string }
 > {
   const client = makeClient(auth);
   const result = await getTrustedPublishers(name, { otp: otp(auth) }, client);
   if (result.ok) {
     // The SDK returns TrustedPublisherConfigs (the parsed array/object shape).
     // Map to our shared type — shapes are structurally compatible.
-    const configs = (result.data as unknown[]).filter(
-      (c): c is TrustedPublisherConfig => c !== null,
-    );
+    const configs = result.data.flatMap((config) => {
+      const parsed = TrustedPublisherRegistryConfigSchema.safeParse(config);
+      return parsed.success ? [parsed.data] : [];
+    });
     return { ok: true, configs };
   }
   return { ok: false, status: result.error.status, error: result.error.message };

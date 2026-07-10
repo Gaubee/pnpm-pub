@@ -27,6 +27,7 @@
 	import IconArrowRight from '@lucide/svelte/icons/arrow-right';
 	import IconPublish from '@lucide/svelte/icons/upload';
 	import IconShield from '@lucide/svelte/icons/shield-check';
+	import IconShieldMinus from '@lucide/svelte/icons/shield-minus';
 	import IconPackage from '@lucide/svelte/icons/package';
 
 	let { children } = $props();
@@ -60,6 +61,7 @@
 	 */
 	const groupKindIcon = (kind: EventGroup['kind']): typeof IconPublish => {
 		if (kind === 'trusted-publishing') return IconShield;
+		if (kind === 'trusted-publishing-remove') return IconShieldMinus;
 		if (kind === 'publish') return IconPublish;
 		return IconPackage;
 	};
@@ -105,6 +107,7 @@
 	const groupSummary = (g: EventGroup): string => {
 		const key =
 			g.kind === 'trusted-publishing' ? 'groupEvent.kindTrustedPublishing'
+			: g.kind === 'trusted-publishing-remove' ? 'groupEvent.kindRemoveTrustedPublishing'
 			: g.kind === 'publish' ? 'groupEvent.kindPublish'
 			: 'groupEvent.kindMixed';
 		return $_(key, { values: { count: g.events.length } });
@@ -140,8 +143,13 @@
 			// already showing) and returns a fresh id we track.
 			pendingActivityId = showActivity({
 				icon: groupKindIcon(topGroup.kind),
-				// trusted-publishing → success (green), mirroring the card accent.
-				tone: topGroup.kind === 'trusted-publishing' ? 'success' : 'info',
+				// trusted-publishing → success (green), removal → warning
+				// (orange), mirroring the card accent.
+				tone: topGroup.kind === 'trusted-publishing'
+					? 'success'
+					: topGroup.kind === 'trusted-publishing-remove'
+						? 'warning'
+						: 'info',
 				summary,
 				detail,
 				primaryAction: {
