@@ -42,6 +42,7 @@
     "release:status": "node dist/cli.js status",
     "release:stop": "node dist/cli.js stop",
     "release:publish": "node dist/cli.js",
+    "release:verify": "tsx scripts/release/verify-release.ts",
     "typecheck": "tsc --noEmit",
     "test": "vp test run && pnpm test:browser",
     "test:watch": "vp test",
