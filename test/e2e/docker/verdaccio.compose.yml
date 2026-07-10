@@ -18,7 +18,13 @@ services:
       - ./verdaccio.config.yaml:/verdaccio/conf/config.yaml:ro
       - verdaccio-storage:/verdaccio/storage
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4873/-/ping"]
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require("node:http").get("http://127.0.0.1:4873/-/ping", (response) =>
+          process.exit(response.statusCode === 200 ? 0 : 1)).on("error", () => process.exit(1))
       interval: 2s
       timeout: 3s
       retries: 30

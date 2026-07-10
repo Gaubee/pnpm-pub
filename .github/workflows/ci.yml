@@ -55,7 +55,14 @@ jobs:
       # E2E: boot a Dockerized Verdaccio (Chapter 10.3), then run the
       # publish-interception + clock-drift-recovery suite against it.
       - name: Start Verdaccio (Docker)
-        run: docker compose -f test/e2e/docker/verdaccio.compose.yml up -d --wait
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! docker compose -f test/e2e/docker/verdaccio.compose.yml up -d --wait; then
+            docker compose -f test/e2e/docker/verdaccio.compose.yml ps
+            docker compose -f test/e2e/docker/verdaccio.compose.yml logs
+            exit 1
+          fi
 
       - name: E2E (real Verdaccio registry)
         env:
