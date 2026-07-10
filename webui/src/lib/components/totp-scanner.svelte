@@ -16,6 +16,7 @@
 	 * 关闭/销毁必停流释放硬件。
 	 */
 	import { onDestroy } from 'svelte';
+	import { QR_DECODER_CONFIG, createQrScannerConfig, type CameraFacingMode } from '$lib/qr-scanner-policy.js';
 	import { parseTotpSecret } from '$lib/totp.js';
 	import type { Html5Qrcode } from 'html5-qrcode';
 	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
@@ -38,16 +39,14 @@
 	type Mode = 'live' | 'preview';
 	let mode = $state<Mode>('live');
 
-	let videoEl = $state<HTMLVideoElement | null>(null);
+	let scannerHostEl = $state<HTMLDivElement | null>(null);
 	let canvasEl = $state<HTMLCanvasElement | null>(null);
 	let fileInputEl = $state<HTMLInputElement | null>(null);
 
 	// --- 摄像头 / 识别运行时 ---
-	let facingMode: 'environment' | 'user' = 'environment';
-	let stream: MediaStream | null = null;
+	const scannerHostId = 'totp-scan-video';
+	let facingMode: CameraFacingMode = 'environment';
 	let html5: Html5Qrcode | null = null;
-	let rafId = 0;
-	let detector: BarcodeDetector | null = null;
 	let busy = $state(false);
 	let cameraDenied = $state(false);
 
@@ -58,8 +57,6 @@
 
 	// OS 控件右侧占位宽度（与 WindowDragRegion 同源读法），关闭按钮据此避让。
 	let controlInset = $state(70);
-
-	const hasNativeDetector = typeof BarcodeDetector !== 'undefined';
 
 	const ot = (): Navigator['opentrayWindow'] | NonNullable<Navigator['opentray']>['window'] | undefined =>
 		navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
@@ -78,124 +75,82 @@
 
 	// --- 摄像头生命周期 ---
 	async function startCamera(): Promise<void> {
-		stopCamera();
+		await stopCamera();
 		cameraDenied = false;
 		pendingRaw = null;
 		try {
-			stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false });
-			if (videoEl) {
-				videoEl.srcObject = stream;
-				await videoEl.play().catch(() => {});
-			}
-			if (hasNativeDetector) startNativeDetect();
-			else await startHtml5Live();
+			await startHtml5Live();
 		} catch {
+			await stopCamera();
 			cameraDenied = true;
 		}
 	}
 
-	function startNativeDetect(): void {
-		try {
-			detector = new BarcodeDetector({ formats: ['qr_code'] });
-		} catch {
-			void startHtml5Live();
-			return;
-		}
-		const tick = async () => {
-			if (!detector || !videoEl || videoEl.readyState < 2) {
-				rafId = requestAnimationFrame(tick);
-				return;
-			}
-			try {
-				const codes = await detector.detect(videoEl);
-				const value = codes[0]?.rawValue;
-				if (value) {
-					// 实时命中：截当前帧进 canvas，切 preview 态。
-					await captureToPreview(() => value);
-				} else {
-					rafId = requestAnimationFrame(tick);
-				}
-			} catch {
-				rafId = requestAnimationFrame(tick);
-			}
-		};
-		rafId = requestAnimationFrame(tick);
-	}
-
 	async function startHtml5Live(): Promise<void> {
-		if (!videoEl) return;
+		if (!scannerHostEl) return;
 		const { Html5Qrcode } = await import('html5-qrcode');
-		const id = 'totp-scan-video';
-		videoEl.id = id;
-		html5 = new Html5Qrcode(id, { verbose: false });
-		await html5.start(
+		const scanner = new Html5Qrcode(scannerHostId, QR_DECODER_CONFIG);
+		html5 = scanner;
+		await scanner.start(
 			{ facingMode },
-			{ fps: 10, qrbox: { width: 240, height: 240 } },
-			(text: string) => void captureToPreview(() => text),
+			createQrScannerConfig(facingMode),
+			(text: string) => void captureLiveResult(text),
 			() => {},
 		);
 	}
 
-	function stopCamera(): void {
-		if (rafId) {
-			cancelAnimationFrame(rafId);
-			rafId = 0;
+	async function stopCamera(): Promise<void> {
+		const scanner = html5;
+		html5 = null;
+		if (!scanner) return;
+		try {
+			await scanner.stop();
+		} catch {
+			// A start failure may leave no active track to stop.
 		}
-		detector = null;
-		if (html5) {
-			html5
-				.stop()
-				.then(() => html5?.clear())
-				.catch(() => {})
-				.finally(() => {
-					html5 = null;
-				});
+		try {
+			scanner.clear();
+		} catch {
+			// The scanner can already have cleared its host after a failed start.
 		}
-		if (stream) {
-			stream.getTracks().forEach((t) => t.stop());
-			stream = null;
-		}
-		if (videoEl) videoEl.srcObject = null;
 	}
 
 	/**
-	 * 把当前 video 帧（或指定图像源）画进 canvas 并切到 preview 态。
-	 * `getDecoded` 在画完帧后返回要解析的二维码原文（实时命中时已拿到）。
+	 * 把当前解码器的完整视频帧画进 canvas 并切到 preview 态。
+	 * 视觉上的扫描框只是定位提示，不参与裁剪。
 	 */
-	async function captureToPreview(getDecoded?: () => string): Promise<void> {
-		if (!videoEl || videoEl.readyState < 2 || !canvasEl) return;
+	function captureToPreview(): boolean {
+		const videoEl = scannerHostEl?.querySelector('video') ?? null;
+		if (!videoEl || videoEl.readyState < 2 || !canvasEl) return false;
 		const ctx = canvasEl.getContext('2d');
-		if (!ctx) return;
+		if (!ctx) return false;
 		canvasEl.width = videoEl.videoWidth;
 		canvasEl.height = videoEl.videoHeight;
 		ctx.drawImage(videoEl, 0, 0);
 		mode = 'preview';
-		const decoded = getDecoded ? getDecoded() : '';
-		if (decoded) {
-			applyDecoded(decoded);
-		} else {
-			// 拍摄按钮：截帧后用高精度静态识别再判定。
-			await decodeFrameFile();
+		return true;
+	}
+
+	/** 走与实时扫描相同的 QR-only ZXing 解码器解析静态图。 */
+	async function decodeImageFile(file: File): Promise<void> {
+		const { Html5Qrcode } = await import('html5-qrcode');
+		const inst = new Html5Qrcode('totp-scan-file-tmp', QR_DECODER_CONFIG);
+		try {
+			const result = await inst.scanFileV2(file, false);
+			applyDecoded(result.decodedText);
+		} catch {
+			pendingRaw = null;
+		} finally {
+			inst.clear();
 		}
 	}
 
-	/** 把 canvas 当前帧转 png 走 html5-qrcode scanFileV2 做高精度识别。 */
-	async function decodeFrameFile(): Promise<void> {
-		if (!canvasEl) return;
-		const canvas = canvasEl;
+	async function captureLiveResult(decoded: string): Promise<void> {
+		if (busy || mode !== 'live') return;
 		busy = true;
 		try {
-			const { Html5Qrcode } = await import('html5-qrcode');
-			const blob: Blob = await new Promise((resolve) =>
-				canvas.toBlob((b) => resolve(b!), 'image/png'),
-			);
-			const file = new File([blob], 'frame.png', { type: 'image/png' });
-			const inst = new Html5Qrcode('totp-scan-file-tmp', { verbose: false });
-			const result = await inst.scanFileV2(file, false);
-			await inst.clear();
-			applyDecoded(result.decodedText);
-		} catch {
-			pendingRaw = null; // 拍摄帧未命中：保留预览，✓ disabled
+			if (captureToPreview()) applyDecoded(decoded);
+			await stopCamera();
 		} finally {
 			busy = false;
 		}
@@ -211,8 +166,17 @@
 
 	// --- 底部操作（live 态 3 按钮） ---
 	async function onCapture(): Promise<void> {
-		// 手动拍摄：截帧进 preview，再静态高精度识别。
-		await captureToPreview();
+		if (busy || !captureToPreview() || !canvasEl) return;
+		busy = true;
+		try {
+			await stopCamera();
+			const blob = await new Promise<Blob>((resolve, reject) => {
+				canvasEl?.toBlob((value) => (value ? resolve(value) : reject(new Error('frame encode failed'))), 'image/png');
+			});
+			await decodeImageFile(new File([blob], 'frame.png', { type: 'image/png' }));
+		} finally {
+			busy = false;
+		}
 	}
 
 	async function onPickImage(e: Event): Promise<void> {
@@ -228,11 +192,8 @@
 			canvasEl.height = img.naturalHeight;
 			canvasEl.getContext('2d')?.drawImage(img, 0, 0);
 			mode = 'preview';
-			const { Html5Qrcode } = await import('html5-qrcode');
-			const inst = new Html5Qrcode('totp-scan-file-tmp', { verbose: false });
-			const result = await inst.scanFileV2(file, false);
-			await inst.clear();
-			applyDecoded(result.decodedText);
+			await stopCamera();
+			await decodeImageFile(file);
 		} catch {
 			pendingRaw = null; // 图片无二维码：保留预览，✓ disabled
 		} finally {
@@ -288,7 +249,7 @@
 	$effect(() => {
 		if (!open) stopCamera();
 	});
-	onDestroy(stopCamera);
+	onDestroy(() => void stopCamera());
 
 	const previewHit = $derived(pendingRaw !== null);
 </script>
@@ -300,23 +261,18 @@
 		right 避让 controlInset，且 top 落在 titlebar(2rem) 之下。
 	-->
 	<div
-		class="scanner fixed inset-0 z-50 bg-black"
+		class="scanner fixed inset-0 z-50 grid grid-cols-1 grid-rows-1 bg-black"
 		role="dialog"
 		aria-modal="true"
 		aria-label="扫描 TOTP 二维码"
 		tabindex="-1"
 	>
-		<!-- 摄像头实时流（live 态） -->
-		<video
-			bind:this={videoEl}
-			class="absolute inset-0 h-full w-full object-cover"
-			playsinline
-			muted
-		></video>
+		<!-- html5-qrcode 独占摄像头生命周期；其 video 子节点填满预览。 -->
+		<div bind:this={scannerHostEl} id={scannerHostId} class="scanner-video col-start-1 row-start-1 h-full min-h-0 w-full min-w-0"></div>
 		<!-- 命中/选中帧（preview 态） -->
 		<canvas
 			bind:this={canvasEl}
-			class="absolute inset-0 h-full w-full object-cover {mode === 'preview' ? '' : 'hidden'}"
+			class="col-start-1 row-start-1 h-full min-h-0 w-full min-w-0 object-cover {mode === 'preview' ? '' : 'hidden'}"
 		></canvas>
 
 		{#if mode === 'live'}
@@ -429,6 +385,24 @@
 		height: 6rem;
 		background: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
 		z-index: 1;
+	}
+
+	/* html5-qrcode creates the camera video and decode canvas under this host. */
+	.scanner-video {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr);
+		overflow: hidden;
+	}
+
+	.scanner-video :global(video),
+	.scanner-video :global(canvas) {
+		grid-area: 1 / 1;
+		height: 100%;
+		min-height: 0;
+		min-width: 0;
+		width: 100% !important;
+		object-fit: cover;
 	}
 
 	/* 底部控制栏：从透明到黑，托住操作按钮可读。 */
