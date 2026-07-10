@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button/index.js';
-	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { LabelInput } from '$lib/components/spell/label-input/index.js';
@@ -274,19 +273,19 @@
 </script>
 
 <div class="@container flex flex-col gap-3 rounded-md border border-border bg-muted/20 p-3">
-	<ButtonGroup>
+	<ToggleGroup.Root
+		type="single"
+		value={provider}
+		onValueChange={(v) => v && (provider = v as TrustedPublisherType)}
+		variant="brand"
+		size="sm"
+	>
 		{#each providers as item (item.value)}
-			<Button
-				type="button"
-				size="sm"
-				variant={provider === item.value ? 'brand' : 'outline'}
-				disabled={disabled}
-				onclick={() => (provider = item.value)}
-			>
+			<ToggleGroup.Item value={item.value} disabled={disabled}>
 				{$_(item.labelKey)}
-			</Button>
+			</ToggleGroup.Item>
 		{/each}
-	</ButtonGroup>
+	</ToggleGroup.Root>
 
 	<!--
 		Field grid — container-query responsive (NOT viewport). The form lives

@@ -26,8 +26,7 @@
 		UnpublishContext,
 	} from '$lib/types.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
-	import { Button } from '$lib/components/ui/button/index.js';
-	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Switch } from '$lib/components/ui/switch/index.js';
@@ -342,14 +341,16 @@
 						<div class="space-y-1">
 							<Label class="text-[11px] text-muted-foreground">{$_('eventCard.access')}</Label>
 							{#if isScopedPkg}
-								<ButtonGroup>
-									<Button variant={accessArg === 'public' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => onRebuildArgs({ access: 'public' })}>
-										{$_('eventCard.accessPublic')}
-									</Button>
-									<Button variant={accessArg === 'restricted' ? 'brand' : 'outline'} size="sm" class="px-2 text-[11px]" onclick={() => onRebuildArgs({ access: 'restricted' })}>
-										{$_('eventCard.accessRestricted')}
-									</Button>
-								</ButtonGroup>
+								<ToggleGroup.Root
+									type="single"
+									value={accessArg}
+									onValueChange={(v) => v && onRebuildArgs({ access: v as 'public' | 'restricted' })}
+									variant="brand"
+									size="sm"
+								>
+									<ToggleGroup.Item value="public" class="px-2 text-[11px]">{$_('eventCard.accessPublic')}</ToggleGroup.Item>
+									<ToggleGroup.Item value="restricted" class="px-2 text-[11px]">{$_('eventCard.accessRestricted')}</ToggleGroup.Item>
+								</ToggleGroup.Root>
 							{:else}
 								<p class="text-[11px] text-muted-foreground/70">{$_('eventCard.accessNonScopedHint')}</p>
 							{/if}

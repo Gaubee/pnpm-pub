@@ -7,7 +7,7 @@
 	} from '$lib/types.js';
 	import type { TrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js';
 	import BrandIcon from '$lib/components/brand-icon.svelte';
 	import TrustedPublishingReadonly from '$lib/components/trusted-publishing-readonly.svelte';
 	import { providerBrandId, providerLabelKey } from '$lib/trusted-publishing.js';
@@ -67,30 +67,32 @@
 					<div class="flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-foreground">
 						<BrandIcon id={providerBrandId(config.type)} class="h-3 w-3" />
 						<span class="min-w-0 flex-1 truncate">{$_(providerLabelKey(config.type))}</span>
-						<ButtonGroup>
-							<Button
-								variant={decision === 'keep' ? 'brand' : 'outline'}
-								size="sm"
+						<ToggleGroup.Root
+							type="single"
+							value={decision}
+							onValueChange={(v) => v && onDecision(config.id, v as RemovalDecision)}
+							size="sm"
+							class="items-center"
+						>
+							<ToggleGroup.Item
+								value="keep"
+								variant="brand"
 								class="h-6 px-2 text-[11px]"
-								aria-pressed={decision === 'keep'}
 								{disabled}
-								onclick={() => onDecision(config.id, 'keep')}
 							>
 								<IconShieldCheck class="h-3 w-3" />
 								{$_('groupEvent.keep')}
-							</Button>
-							<Button
-								variant={decision === 'remove' ? 'destructive' : 'outline'}
-								size="sm"
+							</ToggleGroup.Item>
+							<ToggleGroup.Item
+								value="remove"
+								variant="destructive"
 								class="h-6 px-2 text-[11px]"
-								aria-pressed={decision === 'remove'}
 								{disabled}
-								onclick={() => onDecision(config.id, 'remove')}
 							>
 								<IconShieldMinus class="h-3 w-3" />
 								{$_('groupEvent.remove')}
-							</Button>
-						</ButtonGroup>
+							</ToggleGroup.Item>
+						</ToggleGroup.Root>
 					</div>
 					<TrustedPublishingReadonly {config} mode="multiline" />
 				</div>

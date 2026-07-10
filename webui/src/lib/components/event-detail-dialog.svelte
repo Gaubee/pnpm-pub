@@ -52,6 +52,7 @@
 	} from '$lib/components/ui/dialog/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { ButtonGroup } from '$lib/components/ui/button-group/index.js';
+	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import EventCard from '$lib/components/event-card.svelte';
 	import EventCardOpenActions from '$lib/components/event-card-open-actions.svelte';
 	import TrustedPublishingRemovalReview from '$lib/components/trusted-publishing-removal-review.svelte';
@@ -333,24 +334,20 @@
 				{/snippet}
 				{#snippet headerTrailing()}
 					{#if isGroupTrustMember}
-						<ButtonGroup>
-							<Button
-								variant={readOnly ? 'brand' : 'outline'}
-								size="sm"
-								class="px-2 text-[11px]"
-								onclick={() => setMode('inherit')}
-							>
-								{$_('groupEvent.inheritDefault')}
-							</Button>
-							<Button
-								variant={!readOnly ? 'brand' : 'outline'}
-								size="sm"
-								class="px-2 text-[11px]"
-								onclick={() => setMode('custom')}
-							>
-								{$_('groupEvent.customize')}
-							</Button>
-						</ButtonGroup>
+						<Tabs.Root
+							value={readOnly ? 'inherit' : 'custom'}
+							onValueChange={(v) => v && setMode(v as 'inherit' | 'custom')}
+							class="flex-row"
+						>
+							<Tabs.List class="h-7">
+								<Tabs.Trigger value="inherit" class="px-2 text-[11px]">
+									{$_('groupEvent.inheritDefault')}
+								</Tabs.Trigger>
+								<Tabs.Trigger value="custom" class="px-2 text-[11px]">
+									{$_('groupEvent.customize')}
+								</Tabs.Trigger>
+							</Tabs.List>
+						</Tabs.Root>
 					{/if}
 				{/snippet}
 				<!-- Named-snippet child: auto-binds to the `footerLeftCluster`

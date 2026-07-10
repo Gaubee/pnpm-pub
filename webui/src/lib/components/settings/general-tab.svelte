@@ -61,7 +61,7 @@
             type="single"
             value={currentMode}
             onValueChange={(v) => v && setMode(v as ThemeMode)}
-            variant="outline"
+            variant="brand"
         >
             {#each themeOptions as opt (opt.id)}
                 <ToggleGroup.Item
