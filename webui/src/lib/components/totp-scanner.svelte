@@ -40,6 +40,7 @@
 	let mode = $state<Mode>('live');
 
 	let scannerHostEl = $state<HTMLDivElement | null>(null);
+	let previewVideoEl = $state<HTMLVideoElement | null>(null);
 	let canvasEl = $state<HTMLCanvasElement | null>(null);
 	let fileInputEl = $state<HTMLInputElement | null>(null);
 
@@ -97,6 +98,19 @@
 			(text: string) => void captureLiveResult(text),
 			() => {},
 		);
+		await connectPreviewToScannerStream();
+	}
+
+	/**
+	 * The scanner's video is a measurement surface for html5-qrcode. Mirror its
+	 * stream into a separate cover projection so presentation never distorts the
+	 * frame the decoder maps back to source pixels.
+	 */
+	async function connectPreviewToScannerStream(): Promise<void> {
+		const scannerVideo = scannerHostEl?.querySelector('video') ?? null;
+		if (!scannerVideo?.srcObject || !previewVideoEl) return;
+		previewVideoEl.srcObject = scannerVideo.srcObject;
+		await previewVideoEl.play().catch(() => {});
 	}
 
 	async function stopCamera(): Promise<void> {
@@ -113,6 +127,7 @@
 		} catch {
 			// The scanner can already have cleared its host after a failed start.
 		}
+		if (previewVideoEl) previewVideoEl.srcObject = null;
 	}
 
 	/**
@@ -268,7 +283,14 @@
 		tabindex="-1"
 	>
 		<!-- html5-qrcode 独占摄像头生命周期；其 video 子节点填满预览。 -->
-		<div bind:this={scannerHostEl} id={scannerHostId} class="scanner-video col-start-1 row-start-1 h-full min-h-0 w-full min-w-0"></div>
+		<div bind:this={scannerHostEl} id={scannerHostId} class="scanner-decoder" aria-hidden="true"></div>
+		<!-- 视觉投影与解码器的测量 video 分离，cover 不改变解码几何。 -->
+		<video
+			bind:this={previewVideoEl}
+			class="absolute inset-0 h-full w-full object-cover"
+			playsinline
+			muted
+		></video>
 		<!-- 命中/选中帧（preview 态） -->
 		<canvas
 			bind:this={canvasEl}
@@ -387,22 +409,15 @@
 		z-index: 1;
 	}
 
-	/* html5-qrcode creates the camera video and decode canvas under this host. */
-	.scanner-video {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr);
-		grid-template-rows: minmax(0, 1fr);
-		overflow: hidden;
+	/* html5-qrcode owns this hidden, proportional measurement surface. */
+	.scanner-decoder {
+		inset: 0;
+		pointer-events: none;
+		position: absolute;
+		visibility: hidden;
 	}
-
-	.scanner-video :global(video),
-	.scanner-video :global(canvas) {
-		grid-area: 1 / 1;
-		height: 100%;
-		min-height: 0;
-		min-width: 0;
-		width: 100% !important;
-		object-fit: cover;
+	.scanner-decoder :global(canvas) {
+		display: none;
 	}
 
 	/* 底部控制栏：从透明到黑，托住操作按钮可读。 */

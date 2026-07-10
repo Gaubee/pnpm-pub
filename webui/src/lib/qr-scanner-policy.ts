@@ -12,7 +12,6 @@ export const QR_VIDEO_CONSTRAINTS = {
   facingMode: { ideal: "environment" },
   width: { ideal: 1920 },
   height: { ideal: 1080 },
-  aspectRatio: { ideal: 4 / 3 },
 } satisfies MediaTrackConstraints;
 
 export const QR_SCANNER_CONFIG = {
@@ -23,8 +22,8 @@ export const QR_SCANNER_CONFIG = {
 
 export const QR_DECODER_CONFIG = {
   formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-  // html5-qrcode's ZXing path is shared by live and still-image imports.
-  useBarCodeDetectorIfSupported: false,
+  // Prefer the browser's detector, with html5-qrcode's ZXing fallback intact.
+  useBarCodeDetectorIfSupported: true,
   verbose: false,
 };
 
