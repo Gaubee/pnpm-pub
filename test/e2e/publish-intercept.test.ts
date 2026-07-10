@@ -23,6 +23,7 @@ import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
+import { WebSocket } from "ws";
 import { bootDaemon } from "../../src/daemon/index.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
 import { encodeFrame, FrameReader } from "../../src/shared/frame.js";

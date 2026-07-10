@@ -1,6 +1,7 @@
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/websocket";
 import type { ContractRouterClient } from "@orpc/contract";
+import { WebSocket } from "ws";
 import type { WebRpcContract } from "../../src/shared/orpc-contract.js";
 
 export type WebRpcTestClient = ContractRouterClient<WebRpcContract>;

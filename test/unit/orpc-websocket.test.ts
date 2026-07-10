@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket } from "ws";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { WebServer } from "../../src/daemon/web-server.js";
