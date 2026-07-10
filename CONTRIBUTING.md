@@ -31,3 +31,7 @@ For changes across daemon, protocol, or native-window boundaries, run the releva
 ## Commit Scope
 
 Keep commits atomic and reversible. Do not combine specification work, implementation, and archive/cleanup material in one commit. Describe the user or system behavior changed, not just the files edited.
+
+## Releases
+
+Maintainers publish through GitHub Actions and npm Trusted Publishing. Do not run `npm publish` locally. See the [release guide](docs/releasing.md) for the version, tag, verification, and recovery contract.

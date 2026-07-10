@@ -4,7 +4,7 @@
 
 `pnpm-pub` turns a terminal publish command into a local, reviewable action: inspect the package, approve or reject it from the tray window, and let the waiting terminal continue only after that decision. It also gives npm package authors one place to manage identities, packages, workspaces, TOTP, and npm Trusted Publishing.
 
-![pnpm-pub 1.0.0: publish and trusted-publishing activity in the desktop tray window](docs/images/pnpm-pub-1.0.0.png)
+![pnpm-pub publish and trusted-publishing activity in the desktop tray window](docs/images/pnpm-pub-1.0.0.png)
 
 ## Why pnpm-pub
 
@@ -37,7 +37,7 @@ The daemon starts on demand, so the normal workflow does not require a separate 
 
 ## Install
 
-pnpm-pub 1.0.0 supports macOS and Windows. Install it globally with Node.js 20+ and npm or pnpm:
+pnpm-pub supports macOS and Windows. Install it globally with Node.js 20+ and npm or pnpm:
 
 ```bash
 npm install --global pnpm-pub
