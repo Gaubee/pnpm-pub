@@ -39,6 +39,8 @@ pnpm test
 pnpm test:e2e
 ```
 
+`pnpm test` runs the unit project first and the browser project second. The lanes are intentionally sequential so daemon sandboxes and browser automation do not compete for process-global resources. Registry E2E remains a separate command.
+
 `pnpm test:e2e:docker` launches a local Verdaccio registry for an end-to-end publish path when Docker is available.
 
 ## Environment Variables
