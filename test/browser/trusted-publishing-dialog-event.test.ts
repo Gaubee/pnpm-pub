@@ -2,7 +2,7 @@
  * Feature: Trusted Publishing current-config dialog
  *
  * Regression: existing configs stay projection-only for npm `/trust` writes:
- * show the current trusted publisher, offer Update / Remove Event creation,
+ * show the current trusted publisher, offer Config / Remove Event creation,
  * and keep local OIDC workflow preview out unless the caller has a package path.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -154,9 +154,9 @@ async function openHost(): Promise<void> {
 
 interface DialogState {
   currentVisible: boolean;
-  hasCurrentTab: boolean;
-  hasOidcTab: boolean;
-  hasUpdate: boolean;
+  hasCurrentHeading: boolean;
+  hasWorkflowTab: boolean;
+  hasConfig: boolean;
   hasRemove: boolean;
   text: string;
 }
@@ -170,15 +170,16 @@ async function readDialogState(): Promise<DialogState> {
     `(() => {
 			const dialog = document.querySelector('[data-slot="dialog-content"]');
 			const text = dialog?.textContent || '';
+			const buttons = Array.from(dialog?.querySelectorAll('button') ?? [], (button) => button.textContent?.trim() ?? '');
 				return JSON.stringify({
 					// The current config renders as a multiline TrustedPublishingReadonly
 					// (Label: Value rows) inside this dialog. The owner/repo appear as
 					// separate field values, so match them independently.
 					currentVisible: (text.includes('myorg') && text.includes('myrepo')) || text.includes('GitHub'),
-        hasCurrentTab: text.includes('Current'),
-        hasOidcTab: text.includes('OIDC'),
-				hasUpdate: text.includes('Update'),
-				hasRemove: text.includes('Remove'),
+			hasCurrentHeading: text.includes('Current Trusted Publishing Configs'),
+			hasWorkflowTab: buttons.includes('Workflow'),
+				hasConfig: buttons.includes('Config'),
+				hasRemove: buttons.includes('Remove Trusted Publishing'),
 				text,
 			});
 		})()`,
@@ -190,9 +191,9 @@ async function readDialogState(): Promise<DialogState> {
   const v = value as Record<string, unknown>;
   return {
     currentVisible: !!v.currentVisible,
-    hasCurrentTab: !!v.hasCurrentTab,
-    hasOidcTab: !!v.hasOidcTab,
-    hasUpdate: !!v.hasUpdate,
+    hasCurrentHeading: !!v.hasCurrentHeading,
+    hasWorkflowTab: !!v.hasWorkflowTab,
+    hasConfig: !!v.hasConfig,
     hasRemove: !!v.hasRemove,
     text: typeof v.text === "string" ? v.text : "",
   };
@@ -208,8 +209,9 @@ async function openDialog(): Promise<void> {
       browserSession,
       "eval",
       `(() => {
-				const text = document.querySelector('[data-slot="dialog-content"]')?.textContent || '';
-				return text.includes('Update') && text.includes('Remove');
+				const dialog = document.querySelector('[data-slot="dialog-content"]');
+				const buttons = Array.from(dialog?.querySelectorAll('button') ?? [], (button) => button.textContent?.trim() ?? '');
+				return buttons.includes('Config') && buttons.includes('Remove Trusted Publishing');
 			})()`,
     ]);
     if (lastOutputLine(output) === "true") return;
@@ -232,9 +234,9 @@ describe("Feature: Trusted Publishing current-config dialog", () => {
 
     const state = await readDialogState();
     expect(state.currentVisible, state.text).toBe(true);
-    expect(state.hasCurrentTab).toBe(true);
-    expect(state.hasOidcTab, state.text).toBe(false);
-    expect(state.hasUpdate).toBe(true);
+    expect(state.hasCurrentHeading).toBe(true);
+    expect(state.hasWorkflowTab, state.text).toBe(false);
+    expect(state.hasConfig).toBe(true);
     expect(state.hasRemove).toBe(true);
   }, 90_000);
 });
