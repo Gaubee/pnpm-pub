@@ -60,12 +60,16 @@ function makeHappyMount() {
     setStyle: async () => ({}),
     listen: () => () => {},
     destroy: async () => {},
+    devtools: {
+      open: vi.fn(async () => {}),
+    },
   };
   const createWebviewWindow = vi.fn((options: WebviewWindowOptions) => {
     void options;
     return panel;
   });
   return {
+    panel,
     createWebviewWindow,
     extend: () => ({
       onMenuClick,
@@ -102,6 +106,47 @@ afterEach(async () => {
 });
 
 describe("bootDaemon logging", () => {
+  it("Scenario: Given a release daemon startup, When the tray WebView is created, Then DevTools stay unavailable", async () => {
+    const mount = makeHappyMount();
+    trayMocks.createTray.mockResolvedValueOnce(mount);
+
+    const handles = await bootDaemon({
+      cliVersion: "0.1.0",
+    });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      expect(mount.createWebviewWindow).toHaveBeenCalledWith(
+        expect.not.objectContaining({ devtools: true }),
+      );
+      expect(mount.panel.devtools.open).not.toHaveBeenCalled();
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
+  it("Scenario: Given a development daemon startup, When the tray WebView is created, Then it admits DevTools before first show", async () => {
+    const mount = makeHappyMount();
+    trayMocks.createTray.mockResolvedValueOnce(mount);
+
+    const handles = await bootDaemon({
+      cliVersion: "0.1.0-dev",
+      enableDevtools: true,
+    });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      expect(mount.createWebviewWindow).toHaveBeenCalledWith(
+        expect.objectContaining({ devtools: true }),
+      );
+      expect(mount.panel.devtools.open).toHaveBeenCalledOnce();
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
   it("Scenario: Given daemon startup, When the tray WebView is created, Then the native window is seeded below full opacity before first show", async () => {
     const mount = makeHappyMount();
     trayMocks.createTray.mockResolvedValueOnce(mount);

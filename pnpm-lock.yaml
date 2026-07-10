@@ -22,14 +22,14 @@ importers:
         specifier: ^7.0.0
         version: 7.10.6
       '@opentray/ext-webview':
-        specifier: ^0.11.2
-        version: 0.11.2(opentray@0.11.2)
+        specifier: ^0.12.0
+        version: 0.12.0(opentray@0.12.0)
       better-sqlite3:
         specifier: ^12.11.1
         version: 12.11.1
       opentray:
-        specifier: ^0.11.2
-        version: 0.11.2
+        specifier: ^0.12.0
+        version: 0.12.0
     devDependencies:
       '@gaubee/node':
         specifier: ^0.4.0
@@ -893,69 +893,64 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@opentray/darwin-arm64@0.11.2':
-    resolution: {integrity: sha512-ryvAhj6N/vmYSZUJ9OIwrxiNoCpcak43IhPcS4GAlJ1AnGMIVy//XIEiOAoKDBNeYgYfYWKlKhjxCE5QPoz/hA==}
+  '@opentray/darwin-arm64@0.12.0':
+    resolution: {integrity: sha512-wzZrEwYCJY/JxN1VJewXqvOp5H1nMtG23dG67kfstP6gfp4nuCr8tQiqE2F7yOLDbB+Tr+QSR2sCfxDN6Wmn8A==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opentray/darwin-x64@0.11.2':
-    resolution: {integrity: sha512-RRWkUhERJPr8tzV2+6lC6kgFWBD5DZFfoCFFGQ1KlpYELAfEEleTEpF691u8UEJxlh/wUABg4DO7wjlsFQukLg==}
+  '@opentray/darwin-x64@0.12.0':
+    resolution: {integrity: sha512-qrluB5dgOj0HkixEL7LTo814IVa6ugA0xsGsvDi9sQVOh7ZmQhLmCt6uGVeHDQ4bUmg2oouYcO+gN3mKo+PeVw==}
     cpu: [x64]
     os: [darwin]
 
-  '@opentray/ext-webview-darwin-arm64@0.11.2':
-    resolution: {integrity: sha512-vfY2rrMFG1tVesYgZVeTH2HAA18UazKO61Av2pqYCTuVOL0KdfvYWn14axM+6cDk0lFrmIWmoUznAv0G/QsMcw==}
+  '@opentray/ext-webview-darwin-arm64@0.12.0':
+    resolution: {integrity: sha512-yuXNu0jy1WqsyuuWUJOMwzl0gdZQdwfnRds7mYCRxSDcL1ooSwtops4Vw8tDJ+RUBvjJv7NHnRpApmkV+chjGw==}
     cpu: [arm64]
     os: [darwin]
     peerDependencies:
       opentray: '>=0.1.0'
 
-  '@opentray/ext-webview-darwin-x64@0.11.2':
-    resolution: {integrity: sha512-5SbCpVG2y815T/7Ym64Ksdw8RQjq2eiglfy5rn4+c7CATBJEy07LM4YY3iLHhjsUSRhAU6zMouaa+Y+O6dSOqQ==}
+  '@opentray/ext-webview-darwin-x64@0.12.0':
+    resolution: {integrity: sha512-jmmGMW9aumwUeZRHssQA1wA4pR6MQdoIF6E00dRHhS2zxB8PME3HNc/Ms0Y2NJGiOpe5IdD5BVEiJVaRwb2Iwg==}
     cpu: [x64]
     os: [darwin]
     peerDependencies:
       opentray: '>=0.1.0'
 
-  '@opentray/ext-webview-windows-arm64@0.11.2':
-    resolution: {integrity: sha512-D5AK7IXYh7LVB7BcL1twy2ZZ+Jg1gWdWgIOrSlbwEs0aSWVEt8syK6TznntRaElGTJE2KoR7tnMWdzOzjip/KA==}
+  '@opentray/ext-webview-windows-arm64@0.12.0':
+    resolution: {integrity: sha512-JVP8fBCfzqdnwI/c/cAoHdDzIFnrZI0/C1pR8FU+QKdPP6eb+ohudSRPV9ts/WymHeynJn6Wed44/8uuEewjAA==}
     cpu: [arm64]
     os: [win32]
     peerDependencies:
       opentray: '>=0.1.0'
 
-  '@opentray/ext-webview-windows-x64@0.11.2':
-    resolution: {integrity: sha512-Kt8AerRVv1lrMReliaLHF/7YjHcx6Vr1RewUdeDth3n8IQyf1J37XrX9O28FI70ZTCkVrtERkWB0aJcQtoLj2g==}
+  '@opentray/ext-webview-windows-x64@0.12.0':
+    resolution: {integrity: sha512-L5FMBjqLIjplg7EpJGE8QCXrz70+atgdLkLJpp8/58P8z4B5Fx8ZhLN3A1OJPZHu8tS43Tk1u3Ts2Jv/mPyavQ==}
     cpu: [x64]
     os: [win32]
     peerDependencies:
       opentray: '>=0.1.0'
 
-  '@opentray/ext-webview@0.11.2':
-    resolution: {integrity: sha512-6CLkaFfKOyamLQacPHgDI7kOawd28xhdsxZ2Juk2oc9Dtt3uhWKNZwt9dI6Cb1EqqTjcAXV77NsMyP+qFakNjw==}
+  '@opentray/ext-webview@0.12.0':
+    resolution: {integrity: sha512-RVlkMl2bvhc9LwqfTYBjngZmAyJnw1bJ64N3d6PSvwrGzV3pt5vbsXoepX5uOrPucb64srQH49G1MTVnEgfkcg==}
     peerDependencies:
       opentray: '>=0.0.0'
 
-  '@opentray/linux-arm64@0.11.2':
-    resolution: {integrity: sha512-X612TIOZo2mIKvf3muP9jhi3S+xdy/fIg4mDjbdMp4IyvjrFDVVncMhnvmSzcY+y5TMjh2L90MVFAiB5BDAldQ==}
+  '@opentray/linux-arm64@0.12.0':
+    resolution: {integrity: sha512-FSNyOJCpmFlKNQXC3CFmeIx837XK1je8X+WKJZBWFReL1kdKsCMHzLjzBFspp+z+A5Bq5uhHa4EyEHt8+rjAyg==}
     cpu: [arm64]
     os: [linux]
 
-  '@opentray/linux-x64@0.11.2':
-    resolution: {integrity: sha512-4hEwilM7Bf6aKh/rcbH5jkHsUNovKMSc4OvMHlB0xu/DO51u3RK9xFYjKJ1NHq0w4Oqj8Cy8JK8WtZJlYEaD/g==}
+  '@opentray/linux-x64@0.12.0':
+    resolution: {integrity: sha512-xRz4go2BZWZ8bWFNF9l09aOmEnE/s75RH90DGfhgn99skvL71EApezLRF4k2PHPIRWV6Cu/9/Njxj/+rlSotsw==}
     cpu: [x64]
     os: [linux]
 
-  '@opentray/spec@0.11.2':
-    resolution: {integrity: sha512-H43KfSOrmJkAYx1lO4VmzNaZ8NfiOFlBuxfZCJT/a4mWb9bljElY9v2K9eo4Gx/thlwTIYHWKLU+DnYFUx0Ozg==}
+  '@opentray/spec@0.12.0':
+    resolution: {integrity: sha512-/rzvWucSd+lxh5E8D7NAZJCawm9GznOLNTC4tOTbZWN6E2UXplAqrNwxtpOA+522LLBCAJhb0yOZl0BTVQHbPA==}
 
-  '@opentray/windows-arm64@0.11.2':
-    resolution: {integrity: sha512-AzH8dPsdnmfnVFTxrsx65xQOKZDT6q5ViRw7d0YFmRpERdx2NVI8ux3y2+DxjDkrJOZmcIm8ZIPMuDduwFKuGQ==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@opentray/windows-x64@0.11.2':
-    resolution: {integrity: sha512-yPkjXRE7IMIxX2sEKm9UBaI0/Gl9KgLEcPfwL9eJ5CuiJCP+GPOIPLrwEKYe3oS1Ko57gc0DnTturTNEodHVGg==}
+  '@opentray/windows-x64@0.12.0':
+    resolution: {integrity: sha512-bZ4ao+/Iw2yRHe+eyq9iXdeo6w4Iw5huVXfdZPyLgeDE7SbrQ0GvQk5PJmPRSRvqEaWMKL9fm8Rjy6ZofYq9Ig==}
     cpu: [x64]
     os: [win32]
 
@@ -2386,8 +2381,8 @@ packages:
   openapi-types@12.1.3:
     resolution: {integrity: sha512-N4YtSYJqghVu4iek2ZUvcN/0aqH1kRDuNqzcycDxhOUpg7GdvLa2F3DgS6yBNhInhv2r/6I0Flkn7CqL8+nIcw==}
 
-  opentray@0.11.2:
-    resolution: {integrity: sha512-FFIjWD47tytX4TNo6XkVBYMhx5VMRwHg5R5d01VcIvYiPtRgwKf86WU1hFrFvvjM15Y7H9WXgLJ3PTn5AiROjg==}
+  opentray@0.12.0:
+    resolution: {integrity: sha512-Yd9LW3tO0z/E3S/pjDGpU90oYJ6v1OotNNHU6sXLq/WuxJOKoSV0AaDY3mVoZXXuZQg2GmS/4HZSD1GHUzW8hQ==}
     hasBin: true
 
   otplib@12.0.1:
@@ -3425,53 +3420,50 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@opentray/darwin-arm64@0.11.2':
+  '@opentray/darwin-arm64@0.12.0':
     optional: true
 
-  '@opentray/darwin-x64@0.11.2':
+  '@opentray/darwin-x64@0.12.0':
     optional: true
 
-  '@opentray/ext-webview-darwin-arm64@0.11.2(opentray@0.11.2)':
+  '@opentray/ext-webview-darwin-arm64@0.12.0(opentray@0.12.0)':
     dependencies:
-      opentray: 0.11.2
+      opentray: 0.12.0
     optional: true
 
-  '@opentray/ext-webview-darwin-x64@0.11.2(opentray@0.11.2)':
+  '@opentray/ext-webview-darwin-x64@0.12.0(opentray@0.12.0)':
     dependencies:
-      opentray: 0.11.2
+      opentray: 0.12.0
     optional: true
 
-  '@opentray/ext-webview-windows-arm64@0.11.2(opentray@0.11.2)':
+  '@opentray/ext-webview-windows-arm64@0.12.0(opentray@0.12.0)':
     dependencies:
-      opentray: 0.11.2
+      opentray: 0.12.0
     optional: true
 
-  '@opentray/ext-webview-windows-x64@0.11.2(opentray@0.11.2)':
+  '@opentray/ext-webview-windows-x64@0.12.0(opentray@0.12.0)':
     dependencies:
-      opentray: 0.11.2
+      opentray: 0.12.0
     optional: true
 
-  '@opentray/ext-webview@0.11.2(opentray@0.11.2)':
+  '@opentray/ext-webview@0.12.0(opentray@0.12.0)':
     dependencies:
-      opentray: 0.11.2
+      opentray: 0.12.0
     optionalDependencies:
-      '@opentray/ext-webview-darwin-arm64': 0.11.2(opentray@0.11.2)
-      '@opentray/ext-webview-darwin-x64': 0.11.2(opentray@0.11.2)
-      '@opentray/ext-webview-windows-arm64': 0.11.2(opentray@0.11.2)
-      '@opentray/ext-webview-windows-x64': 0.11.2(opentray@0.11.2)
+      '@opentray/ext-webview-darwin-arm64': 0.12.0(opentray@0.12.0)
+      '@opentray/ext-webview-darwin-x64': 0.12.0(opentray@0.12.0)
+      '@opentray/ext-webview-windows-arm64': 0.12.0(opentray@0.12.0)
+      '@opentray/ext-webview-windows-x64': 0.12.0(opentray@0.12.0)
 
-  '@opentray/linux-arm64@0.11.2':
+  '@opentray/linux-arm64@0.12.0':
     optional: true
 
-  '@opentray/linux-x64@0.11.2':
+  '@opentray/linux-x64@0.12.0':
     optional: true
 
-  '@opentray/spec@0.11.2': {}
+  '@opentray/spec@0.12.0': {}
 
-  '@opentray/windows-arm64@0.11.2':
-    optional: true
-
-  '@opentray/windows-x64@0.11.2':
+  '@opentray/windows-x64@0.12.0':
     optional: true
 
   '@orpc/client@1.14.6':
@@ -4755,16 +4747,15 @@ snapshots:
 
   openapi-types@12.1.3: {}
 
-  opentray@0.11.2:
+  opentray@0.12.0:
     dependencies:
-      '@opentray/spec': 0.11.2
+      '@opentray/spec': 0.12.0
     optionalDependencies:
-      '@opentray/darwin-arm64': 0.11.2
-      '@opentray/darwin-x64': 0.11.2
-      '@opentray/linux-arm64': 0.11.2
-      '@opentray/linux-x64': 0.11.2
-      '@opentray/windows-arm64': 0.11.2
-      '@opentray/windows-x64': 0.11.2
+      '@opentray/darwin-arm64': 0.12.0
+      '@opentray/darwin-x64': 0.12.0
+      '@opentray/linux-arm64': 0.12.0
+      '@opentray/linux-x64': 0.12.0
+      '@opentray/windows-x64': 0.12.0
 
   otplib@12.0.1:
     dependencies:

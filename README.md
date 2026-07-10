@@ -99,7 +99,8 @@ This:
 1. Starts the WebUI as a live Vite dev server on a random local port.
 2. Boots the daemon (`src/daemon/dev.ts`) through `tsx` on a second random local port.
 3. Proxies WebUI `/api`, `/__token`, and `/ws` traffic to the daemon.
-4. Prints the WebUI URL — open it in a browser (or via `opentray` if installed):
+4. Opens OpenTray DevTools for the tray WebView on supported native WebView runtimes.
+5. Prints the WebUI URL — open it in a browser (or via `opentray` if installed):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

@@ -39,6 +39,7 @@ async function main(): Promise<void> {
     webviewUrl: process.env.PNPM_PUB_DEV_WEBVIEW_URL,
     withTray: trayMode.withTray,
     strictTrayMount: trayMode.strictTrayMount,
+    enableDevtools: true,
   });
 
   if (!handles) {

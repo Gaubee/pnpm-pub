@@ -33,6 +33,8 @@ export interface DaemonOptions {
   port?: number;
   /** When false, skip tray mount (tests/headless). */
   withTray?: boolean;
+  /** Enables and opens the OpenTray WebView inspector for the development window only. */
+  enableDevtools?: boolean;
   /**
    * When true, tray mount failures are surfaced as fatal dev errors instead of
    * silently degrading to headless mode.
@@ -235,6 +237,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       resolveWebviewUrl(opts.webviewUrl, web.webUiUrl(port), webToken),
       opts.packageVersion ?? opts.cliVersion,
       (line) => log(line),
+      opts.enableDevtools ?? false,
     );
     if (mounted.failure && opts.strictTrayMount) {
       await web.stop();
@@ -396,6 +399,7 @@ async function tryCreateTray(
   url: string,
   packageVersion: string,
   log: (line: string) => void,
+  enableDevtools: boolean,
 ): Promise<TrayMount> {
   let baseTray: BaseTray | null = null;
   let tray: MountedTray | null = null;
@@ -442,6 +446,9 @@ async function tryCreateTray(
       title: "pnpm-pub",
       nativeWindowApi: true,
       windowControlsOverlay: true,
+      // The inspector is a per-window creation capability. It cannot be added
+      // after the first show, so only the explicit development launcher opts in.
+      ...(enableDevtools ? { devtools: true } : {}),
       style: {
         // keepOnTop is permanent — the tray window always stays above others.
         // The "keep open" pin (whether blur auto-hide is enabled) is separate
@@ -456,6 +463,10 @@ async function tryCreateTray(
     // created hidden; subsequent toggles go through tray-host show/hide).
     await panel.show();
     log("tray window shown on mount");
+    if (enableDevtools) {
+      await panel.devtools.open();
+      log("tray DevTools opened");
+    }
 
     // Anchor the panel to the tray after the native window exists. Placement is
     // projection behavior, so it must not query bounds before show() activates
