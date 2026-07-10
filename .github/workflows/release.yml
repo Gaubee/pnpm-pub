@@ -61,7 +61,7 @@ jobs:
             echo "Release tag must point to a commit reachable from main." >&2
             exit 1
           fi
-          version="$(pnpm release:verify "$RELEASE_TAG")"
+          version="$(pnpm exec tsx scripts/release/verify-release.ts "$RELEASE_TAG")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Typecheck daemon
