@@ -16,6 +16,26 @@ export interface Preferences {
   values: Record<string, unknown>;
 }
 
+export type AppUpdateManager = "npm" | "pnpm" | "yarn" | "bun" | "volta" | "vp" | "unknown";
+
+export interface AppUpdateOwner {
+  manager: AppUpdateManager;
+  packageRoot: string | null;
+  canUpdate: boolean;
+  reason: string | null;
+}
+
+export interface AppUpdateSnapshot {
+  currentVersion: string;
+  runtimeVersions: { npm: string | null; pnpm: string | null };
+  latestVersion: string | null;
+  status: "idle" | "checking" | "up-to-date" | "available" | "error" | "installing";
+  owner: AppUpdateOwner;
+  lastCheckedAt: number | null;
+  nextCheckAt: number | null;
+  error: string | null;
+}
+
 export interface Profile {
   username: string;
   registry?: string;
@@ -279,6 +299,7 @@ export type WsServerMessage =
     }
   | { type: "profiles"; default: string; profiles: Profile[] }
   | { type: "workspaces"; workspaces: WorkspaceEntry[] }
+  | { type: "app-update"; update: AppUpdateSnapshot }
   | {
       type: "packages";
       root: string;

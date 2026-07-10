@@ -14,6 +14,14 @@
   ],
   "license": "MIT",
   "author": "Gaubee",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gaubee/pnpm-pub.git"
+  },
+  "homepage": "https://github.com/Gaubee/pnpm-pub#readme",
+  "bugs": {
+    "url": "https://github.com/Gaubee/pnpm-pub/issues"
+  },
   "bin": {
     "pnpm-pub": "./dist/cli.js"
   },

@@ -23,13 +23,16 @@
     import GeneralTab from "$lib/components/settings/general-tab.svelte";
     import PreferencesTab from "$lib/components/settings/preferences-tab.svelte";
     import ExportTab from "$lib/components/settings/settings-export-tab.svelte";
+    import AboutTab from "$lib/components/settings/about-tab.svelte";
     import { closeSettings, ui } from "$lib/store.js";
     import { _ } from "svelte-i18n";
     import IconGeneral from "@lucide/svelte/icons/settings-2";
     import IconPreferences from "@lucide/svelte/icons/sliders-horizontal";
     import IconExport from "@lucide/svelte/icons/database-backup";
+    import IconInfo from "@lucide/svelte/icons/info";
+    import { daemon } from "$lib/store.js";
 
-    type TabId = "general" | "preferences" | "export";
+    type TabId = "general" | "preferences" | "export" | "about";
 
     const nav: { id: TabId; labelKey: string; icon: typeof IconGeneral }[] = [
         { id: "general", labelKey: "settings.general", icon: IconGeneral },
@@ -39,10 +42,12 @@
             icon: IconPreferences,
         },
         { id: "export", labelKey: "settings.export", icon: IconExport },
+        { id: "about", labelKey: "settings.about", icon: IconInfo },
     ];
 
     let open = $derived($ui.settingsOpen);
     let activeTab = $state<TabId>("general");
+    const updateAvailable = $derived($daemon.appUpdate.status === "available");
 
     function setOpen(next: boolean): void {
         ui.update((s) => ({ ...s, settingsOpen: next }));
@@ -81,6 +86,9 @@
                     <span class="truncate sr-only @[34rem]:not-sr-only"
                         >{label}</span
                     >
+                    {#if item.id === "about" && updateAvailable}
+                        <span class="size-1.5 shrink-0 rounded-full bg-brand @[34rem]:ml-auto" aria-label={$_("settings.updateAvailable")}></span>
+                    {/if}
                 </button>
             {/snippet}
         </Tooltip.Trigger>
@@ -142,6 +150,8 @@
                     <GeneralTab />
                 {:else if activeTab === "preferences"}
                     <PreferencesTab />
+                {:else if activeTab === "about"}
+                    <AboutTab />
                 {:else}
                     <ExportTab onImported={() => setOpen(false)} />
                 {/if}

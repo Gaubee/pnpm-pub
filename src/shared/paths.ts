@@ -10,6 +10,7 @@ import {
   WORKSPACES_FILE,
   PREFERENCES_FILE,
   EVENTS_DB_FILE,
+  APP_UPDATE_FILE,
 } from "./index.js";
 
 let homeOverride: string | null = null;
@@ -56,6 +57,11 @@ export function preferencesPath(): string {
 /** ~/.pnpm-pub/events.db — the persisted event log (SQLite). */
 export function eventsDbPath(): string {
   return path.join(appDir(), EVENTS_DB_FILE);
+}
+
+/** ~/.pnpm-pub/update.json — daemon-owned app update check cache. */
+export function appUpdatePath(): string {
+  return path.join(appDir(), APP_UPDATE_FILE);
 }
 
 /** Directory containing the Unix socket on macOS / Linux — see socketPath(). */

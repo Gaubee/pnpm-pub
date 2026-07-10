@@ -33,6 +33,7 @@ The daemon starts on demand, so the normal workflow does not require a separate 
 - **Set up Trusted Publishing with review.** Generate npm Trusted Publishing actions for GitHub Actions, GitLab CI, or CircleCI; confirmation is required before the npm trust configuration is changed.
 - **Work with projects, not only one package.** Scan and pin package or pnpm workspace roots, then create actions against the packages they contain.
 - **Keep a local audit trail.** The Events view records completed, rejected, cancelled, and failed actions alongside their relevant output.
+- **Stay current deliberately.** Settings → About shows app/npm/pnpm versions and project links, checks npm's stable latest version daily, and offers an explicit in-app update only when the global package-manager owner is verified.
 
 ## Install
 

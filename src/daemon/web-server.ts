@@ -18,6 +18,7 @@ import { WebSocketServer } from "ws";
 import type { DaemonStore } from "./store.js";
 import type { PublishScheduler } from "./scheduler.js";
 import type { TrayHost } from "./tray-host.js";
+import type { AppUpdateService } from "./app-update.js";
 import type {
   BackupBundle,
   PubEvent,
@@ -66,6 +67,7 @@ export interface WebServerDeps {
   scheduler: PublishScheduler;
   webToken: string;
   webuiDir: string;
+  appUpdate?: AppUpdateService;
   log?: (message: string) => void;
 }
 
@@ -560,6 +562,14 @@ export class WebServer {
           return { ok: true };
         }),
       },
+      appUpdate: {
+        check: rpc.appUpdate.check.handler(async () => {
+          const service = this.deps.appUpdate;
+          if (!service) throw new Error("Application updates are unavailable.");
+          return service.check();
+        }),
+        install: rpc.appUpdate.install.handler(async () => this.installAppUpdate()),
+      },
     });
   }
 
@@ -586,6 +596,9 @@ export class WebServer {
       // Preferences is the single read source for the keep-open pin and any
       // future preference field; the WebUI derives `pinned` from `keepOnTop`.
       { type: "preferences", preferences: this.deps.store.getPreferences() },
+      ...(this.deps.appUpdate
+        ? [{ type: "app-update" as const, update: this.deps.appUpdate.getSnapshot() }]
+        : []),
     ];
     if (this.trayHost) {
       queue.push({ type: "pin", ...this.trayHost.getPinState() });
@@ -610,6 +623,27 @@ export class WebServer {
       }
     } finally {
       this.rpcEvents.off("message", onMessage);
+    }
+  }
+
+  private async installAppUpdate(): Promise<{ ok: boolean; error?: string }> {
+    const service = this.deps.appUpdate;
+    if (!service) return { ok: false, error: "Application updates are unavailable." };
+    const request = await service.prepareInstall();
+    if ("error" in request) return { ok: false, error: request.error };
+    const worker = path.join(path.dirname(request.daemonEntry), "update-worker.js");
+    if (!existsSync(worker)) return { ok: false, error: "The update worker is unavailable in this installation." };
+    try {
+      const { spawn } = await import("node:child_process");
+      const child = spawn(request.nodePath, [worker, JSON.stringify(request)], {
+        detached: true,
+        stdio: "ignore",
+        env: request.env,
+      });
+      child.unref();
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: errorToMessage(error) };
     }
   }
 

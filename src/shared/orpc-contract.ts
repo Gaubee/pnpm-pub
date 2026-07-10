@@ -9,6 +9,7 @@ import { eventIterator, oc } from "@orpc/contract";
 import { z } from "zod";
 import {
   BackupBundleSchema,
+  AppUpdateSnapshotSchema,
   HistoryEventGroupPageSchema,
   PackageDetailSchema,
   PreferencesSchema,
@@ -87,6 +88,11 @@ const ExportResponseSchema = z.object({
 const ImportResponseSchema = z.object({
   ok: z.boolean(),
   imported: z.array(z.string()).optional(),
+  error: z.string().optional(),
+});
+
+const AppUpdateInstallResponseSchema = z.object({
+  ok: z.boolean(),
   error: z.string().optional(),
 });
 
@@ -363,6 +369,11 @@ export const webRpcContract = {
    */
   preferences: {
     set: oc.input(z.object({ patch: PreferencesSchema.partial() })).output(OkResponseSchema),
+  },
+  /** Daemon-owned application update checks and explicitly-confirmed installation. */
+  appUpdate: {
+    check: oc.output(AppUpdateSnapshotSchema),
+    install: oc.output(AppUpdateInstallResponseSchema),
   },
 } as const;
 

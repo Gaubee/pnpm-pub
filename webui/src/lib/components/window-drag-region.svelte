@@ -34,6 +34,7 @@
 	import { localeNames, locales, setAppLocale, type AppLocale } from '$lib/i18n.js';
 	import { daemon, actions, openSettings } from '$lib/store.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Badge } from '$lib/components/ui/badge/index.js';
 	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
 
 	/**
@@ -119,6 +120,7 @@
 	// may authorize page-owned auto-close; the countdown is derived locally from
 	// the WebAnimation opacity timeline.
 	const pinned = $derived($daemon.pinned);
+	const updateAvailable = $derived($daemon.appUpdate.status === 'available');
 	const pinCountdown = $derived($daemon.pinCountdown);
 	const counting = $derived(pinCountdown !== null);
 
@@ -240,9 +242,16 @@
 			onpointerdown={(e) => e.stopPropagation()}
 			aria-label={$_('settings.title')}
 			title={$_('settings.title')}
-		>
-			<IconSettings />
-		</button>
+			>
+				<IconSettings />
+				{#if updateAvailable}
+					<Badge
+						variant="brand"
+						class="absolute -right-0.5 -top-0.5 size-2 min-w-0 border border-background bg-brand p-0 shadow-sm"
+						aria-label={$_('settings.updateAvailable')}
+					></Badge>
+				{/if}
+			</button>
 	{/if}
 	<button
 		type="button"

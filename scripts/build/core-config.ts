@@ -112,6 +112,7 @@ export const corePackConfig = {
   entry: {
     cli: "src/cli/cli.ts",
     daemon: "src/daemon/main.ts",
+    "update-worker": "src/daemon/update-worker.ts",
   },
   outExtensions: () => ({ js: ".js" }),
   format: "esm",

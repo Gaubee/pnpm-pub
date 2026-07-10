@@ -19,6 +19,7 @@ import type {
   EventKind,
   EventPayloadData,
   TrustedPublisherCreateConfig,
+  AppUpdateSnapshot,
 } from "./types";
 import type { RepoInfo } from "./components/repo-info-types.js";
 import { filterVisibleEvents, sortEvents } from "./event-projection.js";
@@ -108,6 +109,8 @@ export interface DaemonState {
    * projection of `preferences.keepOnTop` so existing consumers don't change.
    */
   preferences: Preferences;
+  /** Daemon-owned app update truth. UI controls only request actions against it. */
+  appUpdate: AppUpdateSnapshot;
   /**
    * Tray window keepOnTop pin state (Chapter 6.4). When true the window stays
    * on top and is exempt from blur auto-hide. Derived from
@@ -139,6 +142,16 @@ function createState(): DaemonState {
     groupTrustDefaults: {},
     groupInheritMembers: {},
     preferences: { keepOnTop: false, values: {} },
+    appUpdate: {
+      currentVersion: "…",
+      runtimeVersions: { npm: null, pnpm: null },
+      latestVersion: null,
+      status: "idle",
+      owner: { manager: "unknown", packageRoot: null, canUpdate: false, reason: null },
+      lastCheckedAt: null,
+      nextCheckAt: null,
+      error: null,
+    },
     pinned: false,
     exitRequested: false,
     windowVisibility: "hidden",
@@ -330,6 +343,9 @@ function handleServerMessage(msg: WsServerMessage): void {
     case "workspaces":
       daemon.update((s) => ({ ...s, workspaces: msg.workspaces }));
       break;
+    case "app-update":
+      daemon.update((s) => ({ ...s, appUpdate: msg.update }));
+      break;
     case "events":
       daemon.update((s) => ({ ...s, events: sortEvents(msg.events) }));
       break;
@@ -506,6 +522,24 @@ export const actions = {
    */
   setPreferences(patch: Partial<Preferences>): void {
     void rpc?.preferences.set({ patch });
+  },
+  async checkAppUpdate(): Promise<void> {
+    try {
+      const update = await rpc?.appUpdate.check();
+      if (update) daemon.update((s) => ({ ...s, appUpdate: update }));
+    } catch {
+      pushToast("error", "Unable to check for updates.");
+    }
+  },
+  async installAppUpdate(): Promise<boolean> {
+    try {
+      const result = await rpc?.appUpdate.install();
+      if (!result?.ok && result?.error) pushToast("error", result.error);
+      return result?.ok ?? false;
+    } catch {
+      pushToast("error", "Unable to start the update.");
+      return false;
+    }
   },
   setPreferenceValue(key: string, value: unknown): void {
     const current = get(daemon).preferences.values ?? {};

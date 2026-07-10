@@ -24,6 +24,7 @@ import { daemonLogPath } from "../shared/paths.js";
 import { WINDOW_ENTER_SEED_OPACITY } from "../shared/window-opacity.js";
 import { trayIconForProfile } from "./avatar.js";
 import { getProfileSecrets } from "./keychain.js";
+import { AppUpdateService } from "./app-update.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,6 +60,7 @@ export interface DaemonHandles {
   scheduler: PublishScheduler;
   web: WebServer;
   ipc: IpcServer;
+  appUpdate: AppUpdateService;
   port: number;
   webToken: string;
   stop: (opts?: { exit?: boolean }) => Promise<void>;
@@ -185,11 +187,21 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     return null;
   }
 
-  const web = new WebServer({
+  let web: WebServer | null = null;
+  const appUpdate = new AppUpdateService({
+    currentVersion: opts.cliVersion,
+    daemonEntry: process.argv[1],
+    onSnapshot: (update) => web?.broadcast({ type: "app-update", update }),
+    log: (line) => log(line),
+  });
+  await appUpdate.load();
+
+  web = new WebServer({
     store,
     scheduler,
     webToken,
     webuiDir: resolveWebuiDir(opts.webuiDir),
+    appUpdate,
     log: (line) => log(line),
   });
   const port = await web.start(opts.port ?? 0);
@@ -202,6 +214,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   const { AutoRenewScheduler } = await import("./auto-renew.js");
   const autoRenew = new AutoRenewScheduler({ store, log: (line) => log(line) });
   autoRenew.start();
+  appUpdate.start();
 
   // Tray host (Chapter 6.4). We bind opentray's public createTray() directly;
   // when the runtime is unavailable (dev/headless) we still construct a
@@ -240,8 +253,13 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       opts.enableDevtools ?? false,
     );
     if (mounted.failure && opts.strictTrayMount) {
+      // Startup has not produced handles yet, so the normal stop() closure is
+      // unavailable. Release every scheduler/server resource explicitly.
+      appUpdate.stop();
+      autoRenew.stop();
       await web.stop();
       await ipc.stop();
+      store.close();
       throw new TrayMountError(mounted.failure);
     }
     trayHost = new TrayHost(store, mounted.tray, mounted.window, {
@@ -281,6 +299,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     log(`daemon stop requested (exit=${String(exit)})`);
     scheduler.drainAll();
     autoRenew.stop();
+    appUpdate.stop();
     stopPlacement?.();
     await trayHost?.destroy();
     await web.stop();
@@ -291,7 +310,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
     }
   };
 
-  const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, port, webToken, stop };
+  const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, appUpdate, port, webToken, stop };
 
   process.on("SIGINT", () => {
     log("received SIGINT — stopping daemon");

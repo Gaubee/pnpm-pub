@@ -503,6 +503,54 @@ export const PackageDetailResponseSchema = z.object({
 export type PackageDetailResponse = z.infer<typeof PackageDetailResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// Application update — daemon-owned update truth and its persisted cache.
+// ---------------------------------------------------------------------------
+
+export const AppUpdateManagerSchema = z.enum([
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "volta",
+  "vp",
+  "unknown",
+]);
+export type AppUpdateManager = z.infer<typeof AppUpdateManagerSchema>;
+
+export const AppUpdateOwnerSchema = z.object({
+  manager: AppUpdateManagerSchema,
+  packageRoot: z.string().nullable(),
+  canUpdate: z.boolean(),
+  reason: z.string().nullable(),
+});
+export type AppUpdateOwner = z.infer<typeof AppUpdateOwnerSchema>;
+
+export const AppUpdateSnapshotSchema = z.object({
+  currentVersion: z.string(),
+  runtimeVersions: z.object({ npm: z.string().nullable(), pnpm: z.string().nullable() }),
+  latestVersion: z.string().nullable(),
+  status: z.enum(["idle", "checking", "up-to-date", "available", "error", "installing"]),
+  owner: AppUpdateOwnerSchema,
+  lastCheckedAt: z.number().int().nonnegative().nullable(),
+  nextCheckAt: z.number().int().nonnegative().nullable(),
+  error: z.string().nullable(),
+});
+export type AppUpdateSnapshot = z.infer<typeof AppUpdateSnapshotSchema>;
+
+/** The on-disk cache deliberately mirrors only update facts, never UI read state. */
+export const AppUpdateCacheSchema = AppUpdateSnapshotSchema.pick({
+  runtimeVersions: true,
+  latestVersion: true,
+  owner: true,
+  lastCheckedAt: true,
+  nextCheckAt: true,
+  error: true,
+}).extend({
+  currentVersion: z.string(),
+});
+export type AppUpdateCache = z.infer<typeof AppUpdateCacheSchema>;
+
+// ---------------------------------------------------------------------------
 // WS protocol
 // ---------------------------------------------------------------------------
 
@@ -525,6 +573,8 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("profiles"), default: z.string(), profiles: z.array(ProfileSchema) }),
   z.object({ type: z.literal("workspaces"), workspaces: z.array(WorkspaceEntrySchema) }),
+  /** Daemon-owned application update projection. */
+  z.object({ type: z.literal("app-update"), update: AppUpdateSnapshotSchema }),
   /**
    * Tray/window state projection. Sent on connect and whenever TrayHost facts
    * change. `exitRequested` is the daemon's authorization for the page-owned

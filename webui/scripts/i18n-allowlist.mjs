@@ -10,6 +10,8 @@
 export const intentionallyUntranslated = new Set([
   // Product / brand names.
   "common.appName",
+  "settings.aboutGithub",
+  "settings.aboutNpm",
   "profile.title", // "{username} · pnpm-pub"
   // Provider / service names (do not translate).
   "profile.github",

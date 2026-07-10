@@ -44,3 +44,5 @@ export const WORKSPACES_FILE = "workspaces.json";
 export const PREFERENCES_FILE = "preferences.json";
 /** SQLite database holding the persisted event log (survives restarts). */
 export const EVENTS_DB_FILE = "events.db";
+/** Daemon-owned app-update check cache. It contains no credentials or UI state. */
+export const APP_UPDATE_FILE = "update.json";
