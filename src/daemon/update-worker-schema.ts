@@ -3,6 +3,7 @@ import { AppUpdateManagerSchema } from "../shared/schemas.js";
 
 /** Serialization boundary for the detached update worker invocation. */
 export const AppUpdateWorkerRequestSchema = z.object({
+  action: z.enum(["install", "restart"]),
   manager: AppUpdateManagerSchema.exclude(["unknown"]),
   executable: z.string().min(1),
   packageRoot: z.string().min(1),

@@ -154,6 +154,8 @@ function createState(): DaemonState {
       lastCheckedAt: null,
       nextCheckAt: null,
       error: null,
+      logs: [],
+      restartAt: null,
     },
     runtimeInfo: null,
     pinned: false,
@@ -545,6 +547,26 @@ export const actions = {
       return result?.ok ?? false;
     } catch {
       pushToast("error", "Unable to start the update.");
+      return false;
+    }
+  },
+  async restartAfterAppUpdate(): Promise<boolean> {
+    try {
+      const result = await rpc?.appUpdate.restart();
+      if (!result?.ok && result?.error) pushToast("error", result.error);
+      return result?.ok ?? false;
+    } catch {
+      pushToast("error", "Unable to restart pnpm-pub.");
+      return false;
+    }
+  },
+  async cancelAppUpdateRestart(): Promise<boolean> {
+    try {
+      const result = await rpc?.appUpdate.cancelRestart();
+      if (!result?.ok && result?.error) pushToast("error", result.error);
+      return result?.ok ?? false;
+    } catch {
+      pushToast("error", "Unable to cancel the automatic restart.");
       return false;
     }
   },

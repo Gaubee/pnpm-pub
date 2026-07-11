@@ -395,6 +395,8 @@ export const webRpcContract = {
   appUpdate: {
     check: oc.output(AppUpdateSnapshotSchema),
     install: oc.output(AppUpdateInstallResponseSchema),
+    restart: oc.output(AppUpdateInstallResponseSchema),
+    cancelRestart: oc.output(AppUpdateInstallResponseSchema),
   },
 } as const;
 

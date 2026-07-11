@@ -605,7 +605,18 @@ export class WebServer {
           if (!service) throw new Error("Application updates are unavailable.");
           return service.check();
         }),
-        install: rpc.appUpdate.install.handler(async () => this.installAppUpdate()),
+        install: rpc.appUpdate.install.handler(async () => {
+          const service = this.deps.appUpdate;
+          return service ? service.install() : { ok: false, error: "Application updates are unavailable." };
+        }),
+        restart: rpc.appUpdate.restart.handler(async () => {
+          const service = this.deps.appUpdate;
+          return service ? service.restartNow() : { ok: false, error: "Application updates are unavailable." };
+        }),
+        cancelRestart: rpc.appUpdate.cancelRestart.handler(async () => {
+          const service = this.deps.appUpdate;
+          return service ? service.cancelRestart() : { ok: false, error: "Application updates are unavailable." };
+        }),
       },
     });
   }
@@ -672,28 +683,6 @@ export class WebServer {
       }
     } finally {
       this.rpcEvents.off("message", onMessage);
-    }
-  }
-
-  private async installAppUpdate(): Promise<{ ok: boolean; error?: string }> {
-    const service = this.deps.appUpdate;
-    if (!service) return { ok: false, error: "Application updates are unavailable." };
-    const request = await service.prepareInstall();
-    if ("error" in request) return { ok: false, error: request.error };
-    const worker = path.join(path.dirname(request.daemonEntry), "update-worker.js");
-    if (!existsSync(worker))
-      return { ok: false, error: "The update worker is unavailable in this installation." };
-    try {
-      const { spawn } = await import("node:child_process");
-      const child = spawn(request.nodePath, [worker, JSON.stringify(request)], {
-        detached: true,
-        stdio: "ignore",
-        env: request.env,
-      });
-      child.unref();
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: errorToMessage(error) };
     }
   }
 

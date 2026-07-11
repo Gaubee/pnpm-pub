@@ -47,7 +47,27 @@ describe("Feature: daemon-owned app update checks", () => {
     expect(snapshot.status).toBe("available");
     expect(snapshot.owner).toMatchObject({ manager: "npm", canUpdate: true, packageRoot });
     expect(snapshot.nextCheckAt).toBe(now + 24 * 60 * 60 * 1000);
-    expect(await service.prepareInstall()).toMatchObject({ manager: "npm", executable: "/bin/npm" });
+    let installRequest: { manager: string; executable: string } | null = null;
+    const installService = new AppUpdateService({
+      currentVersion: "1.0.0",
+      packageRoot,
+      cachePath: path.join("/tmp", `pnpm-pub-update-install-${process.pid}-${Date.now()}.json`),
+      resolveCommandPath: managerResolver,
+      process: processFor({
+        "/bin/npm root --global": path.dirname(packageRoot),
+        "/bin/npm --version": "11.0.0\n",
+        "/bin/pnpm --version": "10.0.0\n",
+      }),
+      fetch: async () => new Response(JSON.stringify({ version: "1.1.0" }), { status: 200 }),
+      runInstallWorker: (request) => {
+        installRequest = request;
+        return Promise.resolve();
+      },
+    });
+    await installService.check();
+    expect(await installService.install()).toEqual({ ok: true });
+    expect(installRequest).toMatchObject({ manager: "npm", executable: "/bin/npm" });
+    installService.stop();
   });
 
   it("Scenario: Given an unavailable registry, When a check fails, Then the retry eligibility is one hour instead of one day", async () => {
@@ -101,7 +121,7 @@ describe("Feature: daemon-owned app update checks", () => {
     const snapshot = await service.check();
     expect(snapshot.status).toBe("available");
     expect(snapshot.owner.canUpdate).toBe(false);
-    expect(await service.prepareInstall()).toMatchObject({ error: expect.any(String) });
+    expect(await service.install()).toMatchObject({ ok: false, error: expect.any(String) });
   });
 
   it("Scenario: Given supported package managers, When an install command is requested, Then every command is fixed argv without a shell", () => {
@@ -118,4 +138,101 @@ describe("Feature: daemon-owned app update checks", () => {
     expect(compareVersions("1.0.0", "1.0.0-beta.1")).toBeGreaterThan(0);
     expect(compareVersions("1.0.0", "1.0.0")).toBe(0);
   });
+
+  it("Scenario: Given an update worker failure, When logs arrive and retry succeeds, Then the daemon preserves evidence and reaches restart readiness", async () => {
+    let attempts = 0;
+    const service = updateReadyService({
+      runInstallWorker: async (_request, onLog) => {
+        attempts += 1;
+        onLog(`attempt ${attempts}\ndownloading`);
+        if (attempts === 1) throw new Error("network unavailable");
+        onLog("installed");
+      },
+    });
+    await service.check();
+
+    await expect(service.install()).resolves.toMatchObject({ ok: false, error: "network unavailable" });
+    expect(service.getSnapshot()).toMatchObject({
+      status: "install-failed",
+      logs: ["attempt 1", "downloading", "network unavailable"],
+    });
+
+    await expect(service.install()).resolves.toEqual({ ok: true });
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready-to-restart",
+      logs: ["attempt 2", "downloading", "installed"],
+    });
+    service.stop();
+  });
+
+  it("Scenario: Given a successful update, When the restart countdown is cancelled, Then no automatic restart occurs and manual restart remains available", async () => {
+    let now = 5_000;
+    let restartWorkers = 0;
+    let restartRequests = 0;
+    const service = updateReadyService({
+      now: () => now,
+      runInstallWorker: async (_request, onLog) => onLog("installed"),
+      startRestartWorker: () => {
+        restartWorkers += 1;
+      },
+      onRestartRequested: () => {
+        restartRequests += 1;
+      },
+    });
+    await service.check();
+    await service.install();
+    expect(service.getSnapshot().restartAt).toBe(15_000);
+
+    await expect(service.cancelRestart()).resolves.toEqual({ ok: true });
+    expect(service.getSnapshot().restartAt).toBeNull();
+    expect(restartWorkers).toBe(0);
+
+    now = 20_000;
+    await expect(service.restartNow()).resolves.toEqual({ ok: true });
+    expect(restartWorkers).toBe(1);
+    expect(restartRequests).toBe(1);
+    service.stop();
+  });
+
+  it("Scenario: Given concurrent install requests, When the worker is pending, Then one worker supplies every caller", async () => {
+    let finish: (() => void) | undefined;
+    let workers = 0;
+    const service = updateReadyService({
+      runInstallWorker: () => {
+        workers += 1;
+        return new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+      },
+    });
+    await service.check();
+    const first = service.install();
+    const second = service.install();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(workers).toBe(1);
+    finish?.();
+    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    service.stop();
+  });
 });
+
+function updateReadyService(
+  overrides: Pick<
+    ConstructorParameters<typeof AppUpdateService>[0],
+    "now" | "runInstallWorker" | "startRestartWorker" | "onRestartRequested"
+  >,
+): AppUpdateService {
+  return new AppUpdateService({
+    currentVersion: "1.0.0",
+    packageRoot,
+    cachePath: path.join("/tmp", `pnpm-pub-update-lifecycle-${process.pid}-${Date.now()}-${Math.random()}.json`),
+    resolveCommandPath: managerResolver,
+    process: processFor({
+      "/bin/npm root --global": path.dirname(packageRoot),
+      "/bin/npm --version": "11.0.0\n",
+      "/bin/pnpm --version": "10.0.0\n",
+    }),
+    fetch: async () => new Response(JSON.stringify({ version: "1.1.0" }), { status: 200 }),
+    ...overrides,
+  });
+}

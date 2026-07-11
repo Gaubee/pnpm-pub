@@ -29,11 +29,21 @@ export interface AppUpdateSnapshot {
   currentVersion: string;
   runtimeVersions: { npm: string | null; pnpm: string | null };
   latestVersion: string | null;
-  status: "idle" | "checking" | "up-to-date" | "available" | "error" | "installing";
+  status:
+    | "idle"
+    | "checking"
+    | "up-to-date"
+    | "available"
+    | "error"
+    | "installing"
+    | "install-failed"
+    | "ready-to-restart";
   owner: AppUpdateOwner;
   lastCheckedAt: number | null;
   nextCheckAt: number | null;
   error: string | null;
+  logs: string[];
+  restartAt: number | null;
 }
 
 /** Resolved daemon facts; these are received from the daemon, never inferred by the WebUI. */

@@ -547,11 +547,24 @@ export const AppUpdateSnapshotSchema = z.object({
   currentVersion: z.string(),
   runtimeVersions: z.object({ npm: z.string().nullable(), pnpm: z.string().nullable() }),
   latestVersion: z.string().nullable(),
-  status: z.enum(["idle", "checking", "up-to-date", "available", "error", "installing"]),
+  status: z.enum([
+    "idle",
+    "checking",
+    "up-to-date",
+    "available",
+    "error",
+    "installing",
+    "install-failed",
+    "ready-to-restart",
+  ]),
   owner: AppUpdateOwnerSchema,
   lastCheckedAt: z.number().int().nonnegative().nullable(),
   nextCheckAt: z.number().int().nonnegative().nullable(),
   error: z.string().nullable(),
+  /** Transient worker output; never persisted to the update cache. */
+  logs: z.array(z.string()),
+  /** Daemon-owned auto-restart deadline; null after cancellation. */
+  restartAt: z.number().int().nonnegative().nullable(),
 });
 export type AppUpdateSnapshot = z.infer<typeof AppUpdateSnapshotSchema>;
 

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
+  import * as ButtonGroup from "$lib/components/ui/button-group/index.js";
+  import { Spinner } from "$lib/components/ui/spinner/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
@@ -8,18 +10,36 @@
   import BrandIcon from "$lib/components/brand-icon.svelte";
   import IconArrowUpRight from "@lucide/svelte/icons/arrow-up-right";
   import IconCheck from "@lucide/svelte/icons/check";
+  import IconAlertTriangle from "@lucide/svelte/icons/triangle-alert";
+  import IconBadgeInfo from "@lucide/svelte/icons/badge-info";
+  import IconChevronRight from "@lucide/svelte/icons/chevron-right";
   import IconDownload from "@lucide/svelte/icons/download";
-  import IconLoaderCircle from "@lucide/svelte/icons/loader-circle";
   import IconRefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import IconRotateCw from "@lucide/svelte/icons/rotate-cw";
+  import { onMount } from "svelte";
   import { _ } from "svelte-i18n";
 
   const update = $derived($daemon.appUpdate);
   const updateAvailable = $derived(update.status === "available");
   const checking = $derived(update.status === "checking");
   const installing = $derived(update.status === "installing");
-  const canInstall = $derived(updateAvailable && update.owner.canUpdate);
+  const installFailed = $derived(update.status === "install-failed");
+  const readyToRestart = $derived(update.status === "ready-to-restart");
+  const canInstall = $derived((updateAvailable || installFailed) && update.owner.canUpdate);
   const upToDate = $derived(update.status === "up-to-date");
   const runtimeInfo = $derived($daemon.runtimeInfo);
+  const lastLogLine = $derived(update.logs.at(-1) ?? "");
+  const showUpdateLog = $derived(update.logs.length > 0 || installing || installFailed || readyToRestart);
+  let logExpanded = $state(false);
+  let clock = $state(Date.now());
+  const restartSeconds = $derived(
+    update.restartAt === null ? null : Math.max(0, Math.ceil((update.restartAt - clock) / 1000)),
+  );
+
+  onMount(() => {
+    const timer = window.setInterval(() => (clock = Date.now()), 250);
+    return () => window.clearInterval(timer);
+  });
 
   function formatTimestamp(value: number | null): string {
     if (!value) return $_("settings.aboutNotChecked");
@@ -62,7 +82,7 @@
       </div>
     </div>
 
-    {#if update.error}
+    {#if update.error && !installFailed && !readyToRestart}
       <p class="text-xs text-destructive">{update.error}</p>
     {:else if updateAvailable && !update.owner.canUpdate}
       <p class="text-xs text-muted-foreground">{update.owner.reason}</p>
@@ -78,10 +98,10 @@
               {...props}
               variant="outline"
               size="sm"
-              disabled={checking || installing}
+              disabled={checking || installing || readyToRestart}
               onclick={() => void actions.checkAppUpdate()}
             >
-              {#if checking}<IconLoaderCircle class="animate-spin" />{:else}<IconRefreshCw />{/if}
+              {#if checking}<Spinner />{:else}<IconRefreshCw />{/if}
               {$_("settings.checkForUpdates")}
             </Button>
           {/snippet}
@@ -92,18 +112,89 @@
           })}</Tooltip.Content
         >
       </Tooltip.Root>
-      {#if updateAvailable}
+      {#if readyToRestart}
+        <ButtonGroup.Root>
+          <Button variant="brand" size="sm" onclick={() => void actions.restartAfterAppUpdate()}>
+            <IconRotateCw />
+            {#if restartSeconds === null}
+              {$_("settings.restart")}
+            {:else}
+              {$_("settings.restartCountdown", { values: { seconds: restartSeconds } })}
+            {/if}
+          </Button>
+          {#if update.restartAt !== null}
+            <Button variant="outline" size="sm" onclick={() => void actions.cancelAppUpdateRestart()}>
+              {$_("common.cancel")}
+            </Button>
+          {/if}
+        </ButtonGroup.Root>
+      {:else if updateAvailable || installFailed || installing}
         <Button
           variant="brand"
           size="sm"
           disabled={!canInstall || installing}
           onclick={() => void actions.installAppUpdate()}
         >
-          {#if installing}<IconLoaderCircle class="animate-spin" />{:else}<IconDownload />{/if}
-          {$_("settings.updateNow")}
+          {#if installing}<Spinner />{:else}<IconDownload />{/if}
+          {installing
+            ? $_("settings.updating")
+            : installFailed
+              ? $_("settings.retryUpdate")
+              : $_("settings.updateNow")}
         </Button>
       {/if}
     </div>
+
+    {#if showUpdateLog}
+      <div
+        class="rounded-md border {installFailed
+          ? 'border-destructive/40'
+          : readyToRestart
+            ? 'border-success/30'
+            : 'border-border'}"
+      >
+        <button
+          type="button"
+          class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40 {installFailed
+            ? 'text-destructive'
+            : readyToRestart
+              ? 'text-success'
+              : 'text-muted-foreground'}"
+          onclick={() => (logExpanded = !logExpanded)}
+          aria-expanded={logExpanded}
+        >
+          <IconChevronRight
+            class="size-3 shrink-0 transition-transform {logExpanded ? 'rotate-90' : ''}"
+          />
+          {#if installFailed}
+            <IconAlertTriangle class="size-3 shrink-0" />
+          {:else if readyToRestart}
+            <IconBadgeInfo class="size-3 shrink-0" />
+          {:else}
+            <Spinner class="size-3" />
+          {/if}
+          <span class="shrink-0 font-medium">
+            {installFailed
+              ? $_("settings.updateFailed")
+              : readyToRestart
+                ? $_("settings.updateSuccessful")
+                : $_("settings.updateLog")}:
+          </span>
+          {#if !logExpanded}
+            <span class="truncate font-mono">{lastLogLine}</span>
+          {/if}
+        </button>
+        {#if logExpanded}
+          <div
+            class="max-h-48 overflow-auto border-t px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {installFailed
+              ? 'border-destructive/40 text-destructive'
+              : readyToRestart
+                ? 'border-success/30 text-success'
+                : 'border-border text-muted-foreground'}"
+          >{update.logs.join("\n")}</div>
+        {/if}
+      </div>
+    {/if}
   </section>
 
   <!-- Runtime toolchain (this machine's npm / pnpm). Compact single row. -->

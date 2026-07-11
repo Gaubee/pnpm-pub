@@ -5,7 +5,7 @@
  * cadence, and the verified global package-manager owner. The WebUI receives a
  * snapshot projection and can only request a fresh check or an explicit install.
  */
-import { execFile, type ExecFileOptions } from "node:child_process";
+import { execFile, spawn, type ExecFileOptions } from "node:child_process";
 import { existsSync, promises as fsp, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +22,8 @@ const SUCCESS_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const FAILURE_INTERVAL_MS = 60 * 60 * 1000;
 const SCHEDULER_INTERVAL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const RESTART_DELAY_MS = 10_000;
+const MAX_LOG_LINES = 500;
 
 export interface UpdateProcess {
   execFile(command: string, args: string[], options: ExecFileOptions): Promise<{ stdout: string }>;
@@ -38,9 +40,13 @@ export interface AppUpdateServiceOptions {
   resolveCommandPath?: (command: string) => Promise<string | null>;
   onSnapshot?: (snapshot: AppUpdateSnapshot) => void;
   log?: (line: string) => void;
+  runInstallWorker?: (request: AppUpdateWorkerRequest, onLog: (line: string) => void) => Promise<void>;
+  startRestartWorker?: (request: AppUpdateWorkerRequest) => void;
+  onRestartRequested?: () => Promise<void> | void;
 }
 
 export interface AppUpdateWorkerRequest {
+  action: "install" | "restart";
   manager: Exclude<AppUpdateManager, "unknown">;
   executable: string;
   packageRoot: string;
@@ -78,7 +84,9 @@ export class AppUpdateService {
   private readonly resolveCommandPath: (command: string) => Promise<string | null>;
   private snapshot: AppUpdateSnapshot;
   private timer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
   private checking: Promise<AppUpdateSnapshot> | null = null;
+  private installing: Promise<{ ok: boolean; error?: string }> | null = null;
 
   constructor(private readonly options: AppUpdateServiceOptions) {
     this.now = options.now ?? Date.now;
@@ -102,6 +110,8 @@ export class AppUpdateService {
         lastCheckedAt: cached.lastCheckedAt,
         nextCheckAt: cached.nextCheckAt,
         error: cached.error,
+        logs: [],
+        restartAt: null,
       };
     }
     this.emit();
@@ -115,9 +125,10 @@ export class AppUpdateService {
   }
 
   stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    if (this.restartTimer) clearTimeout(this.restartTimer);
     this.timer = null;
+    this.restartTimer = null;
   }
 
   getSnapshot(): AppUpdateSnapshot {
@@ -131,6 +142,9 @@ export class AppUpdateService {
   }
 
   async check(): Promise<AppUpdateSnapshot> {
+    if (this.snapshot.status === "installing" || this.snapshot.status === "ready-to-restart") {
+      return this.getSnapshot();
+    }
     if (this.checking) return this.checking;
     this.checking = this.runCheck().finally(() => {
       this.checking = null;
@@ -157,6 +171,8 @@ export class AppUpdateService {
         lastCheckedAt: checkedAt,
         nextCheckAt: checkedAt + SUCCESS_INTERVAL_MS,
         error: null,
+        logs: [],
+        restartAt: null,
       };
       await this.persist();
     } catch (error) {
@@ -174,7 +190,37 @@ export class AppUpdateService {
     return this.getSnapshot();
   }
 
-  async prepareInstall(): Promise<AppUpdateWorkerRequest | { error: string }> {
+  async install(): Promise<{ ok: boolean; error?: string }> {
+    if (this.installing) return this.installing;
+    this.installing = this.runInstall().finally(() => {
+      this.installing = null;
+    });
+    return this.installing;
+  }
+
+  private async runInstall(): Promise<{ ok: boolean; error?: string }> {
+    const prepared = await this.prepareInstall();
+    if ("error" in prepared) return { ok: false, error: prepared.error };
+    this.snapshot = { ...this.snapshot, status: "installing", error: null, logs: [], restartAt: null };
+    this.emit();
+    try {
+      const runner = this.options.runInstallWorker ?? ((request, onLog) => this.runInstallWorker(request, onLog));
+      await runner(prepared, (line) => this.appendLog(line));
+      const restartAt = this.now() + RESTART_DELAY_MS;
+      this.snapshot = { ...this.snapshot, status: "ready-to-restart", error: null, restartAt };
+      this.emit();
+      this.scheduleRestart(RESTART_DELAY_MS);
+      return { ok: true };
+    } catch (error) {
+      const message = errorMessage(error);
+      this.appendLog(message);
+      this.snapshot = { ...this.snapshot, status: "install-failed", error: message, restartAt: null };
+      this.emit();
+      return { ok: false, error: message };
+    }
+  }
+
+  private async prepareInstall(): Promise<AppUpdateWorkerRequest | { error: string }> {
     const { latestVersion, owner } = this.snapshot;
     if (!latestVersion || compareVersions(latestVersion, this.options.currentVersion) <= 0) {
       return { error: "pnpm-pub is already up to date." };
@@ -184,13 +230,125 @@ export class AppUpdateService {
     }
     const executable = await this.resolveCommandPath(owner.manager);
     if (!executable) return { error: `The ${owner.manager} executable is no longer available.` };
-    this.snapshot = { ...this.snapshot, status: "installing", error: null };
-    this.emit();
     return {
+      action: "install",
       manager: owner.manager,
       executable,
       packageRoot: owner.packageRoot,
       expectedVersion: latestVersion,
+      daemonPid: process.pid,
+      daemonEntry: this.options.daemonEntry ?? process.argv[1] ?? "",
+      nodePath: process.execPath,
+      env: process.env,
+    };
+  }
+
+  async cancelRestart(): Promise<{ ok: boolean; error?: string }> {
+    if (this.snapshot.status !== "ready-to-restart") return { ok: false, error: "No restart is pending." };
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.snapshot = { ...this.snapshot, restartAt: null };
+    this.emit();
+    return { ok: true };
+  }
+
+  async restartNow(): Promise<{ ok: boolean; error?: string }> {
+    if (this.snapshot.status !== "ready-to-restart") return { ok: false, error: "The update is not ready to restart." };
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    try {
+      const request = this.restartRequest();
+      const start = this.options.startRestartWorker ?? ((value) => this.startRestartWorker(value));
+      start(request);
+      await this.options.onRestartRequested?.();
+      return { ok: true };
+    } catch (error) {
+      const message = errorMessage(error);
+      this.snapshot = { ...this.snapshot, error: message, restartAt: null };
+      this.appendLog(message);
+      return { ok: false, error: message };
+    }
+  }
+
+  private scheduleRestart(delay: number): void {
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = setTimeout(() => void this.restartNow(), delay);
+  }
+
+  private appendLog(source: string): void {
+    const lines = source.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+    if (lines.length === 0) return;
+    this.snapshot = { ...this.snapshot, logs: [...this.snapshot.logs, ...lines].slice(-MAX_LOG_LINES) };
+    for (const line of lines) this.options.log?.(`[app-update] ${line}`);
+    this.emit();
+  }
+
+  private async runInstallWorker(request: AppUpdateWorkerRequest, onLog: (line: string) => void): Promise<void> {
+    const worker = this.workerPath(request);
+    if (!existsSync(worker)) throw new Error("The update worker is unavailable in this installation.");
+    await new Promise<void>((resolve, reject) => {
+      let stdoutBuffer = "";
+      let stderrBuffer = "";
+      const forward = (stream: "stdout" | "stderr", chunk: Buffer): void => {
+        const combined = (stream === "stdout" ? stdoutBuffer : stderrBuffer) + chunk.toString("utf8");
+        const lines = combined.split(/\r?\n/);
+        const remainder = lines.pop() ?? "";
+        if (stream === "stdout") stdoutBuffer = remainder;
+        else stderrBuffer = remainder;
+        for (const line of lines) onLog(line);
+      };
+      const flush = (): void => {
+        if (stdoutBuffer) onLog(stdoutBuffer);
+        if (stderrBuffer) onLog(stderrBuffer);
+        stdoutBuffer = "";
+        stderrBuffer = "";
+      };
+      const child = spawn(request.nodePath, [worker, JSON.stringify(request)], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: request.env,
+        windowsHide: true,
+      });
+      child.stdout.on("data", (chunk: Buffer) => forward("stdout", chunk));
+      child.stderr.on("data", (chunk: Buffer) => forward("stderr", chunk));
+      child.once("error", (error) => {
+        flush();
+        reject(error);
+      });
+      child.once("exit", (code, signal) => {
+        flush();
+        if (code === 0) resolve();
+        else reject(new Error(`Update worker exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`));
+      });
+    });
+  }
+
+  private startRestartWorker(request: AppUpdateWorkerRequest): void {
+    const worker = this.workerPath(request);
+    if (!existsSync(worker)) throw new Error("The update worker is unavailable in this installation.");
+    const child = spawn(request.nodePath, [worker, JSON.stringify(request)], {
+      detached: true,
+      stdio: "ignore",
+      env: request.env,
+      windowsHide: true,
+    });
+    child.unref();
+  }
+
+  private workerPath(request: AppUpdateWorkerRequest): string {
+    return path.join(path.dirname(request.daemonEntry), "update-worker.js");
+  }
+
+  private restartRequest(): AppUpdateWorkerRequest {
+    const owner = this.snapshot.owner;
+    if (owner.manager === "unknown" || !owner.packageRoot || !this.snapshot.latestVersion) {
+      throw new Error("The verified update owner is no longer available.");
+    }
+    return {
+      action: "restart",
+      manager: owner.manager,
+      executable: "unused",
+      packageRoot: owner.packageRoot,
+      expectedVersion: this.snapshot.latestVersion,
       daemonPid: process.pid,
       daemonEntry: this.options.daemonEntry ?? process.argv[1] ?? "",
       nodePath: process.execPath,
@@ -291,6 +449,8 @@ function emptySnapshot(currentVersion: string): AppUpdateSnapshot {
     lastCheckedAt: null,
     nextCheckAt: null,
     error: null,
+    logs: [],
+    restartAt: null,
   };
 }
 

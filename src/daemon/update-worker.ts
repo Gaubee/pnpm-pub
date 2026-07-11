@@ -1,31 +1,37 @@
 /**
- * Detached update handoff process. It waits for the old daemon to exit,
- * performs one fixed package-manager command, validates the installed package,
- * then starts the newly installed daemon. A failed handoff leaves the old
- * daemon untouched because this worker is launched before shutdown is requested.
+ * Update worker for one bounded action. Installation streams package-manager
+ * output while the daemon stays alive; restart waits for that daemon to stop
+ * before launching the newly installed entry.
  */
-import { spawn, execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { promises as fsp } from "node:fs";
-import { promisify } from "node:util";
 import path from "node:path";
 import { AppUpdateWorkerRequestSchema } from "./update-worker-schema.js";
 import { updateCommand } from "./app-update.js";
 
-const execFileAsync = promisify(execFile);
 const request = AppUpdateWorkerRequestSchema.parse(JSON.parse(process.argv[2] ?? "{}"));
 
 async function main(): Promise<void> {
+  if (request.action === "restart") {
+    await restartDaemon();
+    return;
+  }
+  await installUpdate();
+}
+
+async function installUpdate(): Promise<void> {
   const args = updateCommand(request.manager);
-  await execFileAsync(request.executable, args, {
-    timeout: 120_000,
-    windowsHide: true,
-    env: request.env,
-  });
+  process.stdout.write(`Installing pnpm-pub ${request.expectedVersion} with ${request.manager}...\n`);
+  await runPackageManager(args);
+  process.stdout.write("Validating installed package...\n");
   const installed = await installedVersion(request.packageRoot);
   if (installed !== request.expectedVersion) {
     throw new Error(`Update validation failed: expected ${request.expectedVersion}, found ${installed ?? "none"}.`);
   }
-  process.kill(request.daemonPid, "SIGTERM");
+  process.stdout.write(`Installed pnpm-pub ${installed}.\n`);
+}
+
+async function restartDaemon(): Promise<void> {
   await waitForProcessExit(request.daemonPid);
   const child = spawn(request.nodePath, [request.daemonEntry], {
     detached: true,
@@ -33,6 +39,31 @@ async function main(): Promise<void> {
     env: request.env,
   });
   child.unref();
+}
+
+async function runPackageManager(args: string[]): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(request.executable, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      env: request.env,
+    });
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("The package-manager update timed out after 120 seconds."));
+    }, 120_000);
+    child.stdout.on("data", (chunk: Buffer) => process.stdout.write(chunk));
+    child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      if (code === 0) resolve();
+      else reject(new Error(`Package manager exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}.`));
+    });
+  });
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {

@@ -188,11 +188,13 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   }
 
   let web: WebServer | null = null;
+  let requestDaemonRestart: (() => Promise<void>) | null = null;
   const appUpdate = new AppUpdateService({
     currentVersion: opts.cliVersion,
     daemonEntry: process.argv[1],
     onSnapshot: (update) => web?.broadcast({ type: "app-update", update }),
     log: (line) => log(line),
+    onRestartRequested: async () => requestDaemonRestart?.(),
   });
   await appUpdate.load();
 
@@ -309,6 +311,7 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       (opts.exitProcess ?? process.exit)(0);
     }
   };
+  requestDaemonRestart = () => stop({ exit: true });
 
   const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, appUpdate, port, webToken, stop };
 
