@@ -55,6 +55,7 @@ vi.mock("../../src/daemon/keychain.js", () => ({
   getProfileSecrets: mocks.getProfileSecretsMock,
   setProfileSecrets: mocks.setProfileSecretsMock,
   deleteProfileSecrets: mocks.deleteProfileSecretsMock,
+  activeService: () => "pnpm-pub-test-sandbox",
 }));
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-renew-${process.pid}-${Date.now()}`);

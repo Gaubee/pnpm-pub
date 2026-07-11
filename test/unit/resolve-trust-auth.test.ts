@@ -51,6 +51,7 @@ vi.mock("../../src/daemon/avatar.js", () => ({
 vi.mock("../../src/daemon/keychain.js", () => ({
   getProfileSecrets: mocks.getProfileSecretsMock,
   setProfileSecrets: vi.fn(),
+  activeService: () => "pnpm-pub-test-sandbox",
 }));
 
 // readProfileDetail (npm-profile-client) issues a real registry GET; mock it so
