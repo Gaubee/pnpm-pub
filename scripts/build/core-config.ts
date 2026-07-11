@@ -117,7 +117,7 @@ export const corePackConfig = {
   outExtensions: () => ({ js: ".js" }),
   format: "esm",
   platform: "node",
-  target: "node20",
+  target: "node24",
   deps: {
     neverBundle: ["opentray", "@opentray/ext-webview"],
   },

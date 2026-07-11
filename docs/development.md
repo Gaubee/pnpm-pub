@@ -5,7 +5,7 @@ This guide is for contributors working from source. End users should follow the 
 ## Prerequisites
 
 - Bun 1.3+ for build helper scripts.
-- Node.js 20+ for the production bundle, `tsx`, and tests.
+- Node.js 24+ for the production bundle, `tsx`, and tests.
 - pnpm 10+.
 
 ```bash

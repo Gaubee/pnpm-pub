@@ -37,7 +37,7 @@ The daemon starts on demand, so the normal workflow does not require a separate 
 
 ## Install
 
-pnpm-pub supports macOS and Windows. Install it globally with Node.js 20+ and npm or pnpm:
+pnpm-pub supports macOS and Windows. Install it globally with Node.js 24+ and npm or pnpm:
 
 ```bash
 npm install --global pnpm-pub

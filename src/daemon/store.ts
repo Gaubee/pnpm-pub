@@ -10,7 +10,7 @@ import { EventEmitter } from "node:events";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Database as DatabaseType } from "./db.js";
+import type { DatabaseSync } from "node:sqlite";
 import {
   type PnpmPubConfig,
   type Profile,
@@ -74,7 +74,7 @@ export class DaemonStore extends EventEmitter {
   private preferences: Preferences = structuredClone(DEFAULT_PREFS);
   private events: PubEvent[] = [];
   private credentials = new Map<string, CredentialPool>();
-  private eventDb: DatabaseType | null = null;
+  private eventDb: DatabaseSync | null = null;
   /**
    * Trusted-publishing group inheritance state (in-memory, follows the group's
    * pending lifecycle). Kept here as the SINGLE SOURCE OF TRUTH so it survives
@@ -392,7 +392,7 @@ export class DaemonStore extends EventEmitter {
    * TTL-cached repo-info resolver (and other derived/cached lookups). Returns
    * null when the DB isn't open (e.g. before `load()`).
    */
-  getEventDb(): DatabaseType | null {
+  getEventDb(): DatabaseSync | null {
     return this.eventDb;
   }
 

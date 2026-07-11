@@ -16,7 +16,7 @@
  * the raw repository string, so repeated renders of the same package never
  * re-parse.
  */
-import type { Database as DatabaseType } from "./db.js";
+import type { DatabaseSync } from "node:sqlite";
 import { kvGet, kvSet } from "./event-db.js";
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -132,7 +132,7 @@ export function parseRepoInfo(raw: string): RepoInfo | null {
  * caches the result (including nulls, so a bad repo string isn't re-parsed
  * every render). Pass `db = null` to bypass persistence (parse-only).
  */
-export function getCachedRepoInfo(db: DatabaseType | null, raw: string): RepoInfo | null {
+export function getCachedRepoInfo(db: DatabaseSync | null, raw: string): RepoInfo | null {
   const key = CACHE_PREFIX + raw;
   if (db) {
     const cached = kvGet(db, key);

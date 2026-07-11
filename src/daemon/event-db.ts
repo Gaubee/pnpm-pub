@@ -2,10 +2,9 @@
  * SQLite-backed event persistence.
  *
  * The event log is a live activity feed plus an audit trail. This module owns
- * all DB interaction so DaemonStore stays a thin coordinator. The driver is
- * runtime-portable (Node/Bun/Deno) via `./db.ts`; the API stays synchronous, so
- * createEvent/resolveEvent keep their sync signatures and callers need no
- * changes.
+ * all DB interaction so DaemonStore stays a thin coordinator. Node's built-in
+ * SQLite API is synchronous, so createEvent/resolveEvent keep their sync
+ * signatures and callers need no changes.
  *
  * Nested/variable fields (payload, tarballSummary) are stored as JSON TEXT;
  * flat fields map to native columns for indexing/querying. WAL mode keeps
@@ -13,8 +12,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Database as DatabaseType } from "./db.js";
-import { openDatabase } from "./db.js";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { EventKind, EventStatus, PubEvent } from "../shared/index.js";
 import { z } from "zod";
 import {
@@ -108,11 +106,11 @@ const COLUMNS = [
 ] as const;
 
 /** Open (or create) the events database, set up schema, sweep orphan pendings. */
-export function openEventDb(dbPath: string): DatabaseType {
-  // The driver does not create the parent directory; ensure it exists.
+export function openEventDb(dbPath: string): DatabaseSync {
+  // DatabaseSync does not create the parent directory; ensure it exists.
   mkdirSync(dirname(dbPath), { recursive: true });
-  const db = openDatabase(dbPath);
-  db.pragma("journal_mode = WAL");
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
@@ -183,7 +181,7 @@ export function openEventDb(dbPath: string): DatabaseType {
 
 /** Look up a cached value by key. Returns undefined when missing or expired
  *  (expired rows are lazily deleted on read). */
-export function kvGet(db: DatabaseType, key: string): unknown {
+export function kvGet(db: DatabaseSync, key: string): unknown {
   const row = db.prepare(`SELECT value, expires_at FROM key_value WHERE key = ?`).get(key) as
     | { value: string; expires_at: number }
     | undefined;
@@ -200,7 +198,7 @@ export function kvGet(db: DatabaseType, key: string): unknown {
 }
 
 /** Store a value with a TTL (ms from now). Upserts by key. */
-export function kvSet(db: DatabaseType, key: string, value: unknown, ttlMs: number): void {
+export function kvSet(db: DatabaseSync, key: string, value: unknown, ttlMs: number): void {
   const expiresAt = Date.now() + ttlMs;
   db.prepare(`INSERT OR REPLACE INTO key_value (key, value, expires_at) VALUES (?, ?, ?)`).run(
     key,
@@ -210,25 +208,25 @@ export function kvSet(db: DatabaseType, key: string, value: unknown, ttlMs: numb
 }
 
 /** Delete all rows past their expiry. Called at startup and opportunistically. */
-export function kvSweepExpired(db: DatabaseType): number {
+export function kvSweepExpired(db: DatabaseSync): number {
   const res = db.prepare(`DELETE FROM key_value WHERE expires_at <= ?`).run(Date.now());
-  return res.changes;
+  return Number(res.changes);
 }
 
 /** Insert or fully replace an event row (upsert by id). */
-export function insertEvent(db: DatabaseType, evt: PubEvent): void {
+export function insertEvent(db: DatabaseSync, evt: PubEvent): void {
   db.prepare(
     `INSERT OR REPLACE INTO events (${COLUMNS.join(", ")}) VALUES (${COLUMNS.map(() => "?").join(", ")})`,
   ).run(...serializeRow(evt));
 }
 
 /** Update an existing event row by id (used by resolveEvent). */
-export function updateEvent(db: DatabaseType, evt: PubEvent): void {
+export function updateEvent(db: DatabaseSync, evt: PubEvent): void {
   insertEvent(db, evt); // INSERT OR REPLACE is idempotent and simpler than a partial UPDATE.
 }
 
 /** The N most recent events (newest-first). For preview / initial snapshots. */
-export function recentEvents(db: DatabaseType, limit: number): PubEvent[] {
+export function recentEvents(db: DatabaseSync, limit: number): PubEvent[] {
   const rows = db
     .prepare(`SELECT * FROM events ORDER BY created_at DESC LIMIT ?`)
     .all(limit) as unknown as RawRow[];
@@ -236,7 +234,7 @@ export function recentEvents(db: DatabaseType, limit: number): PubEvent[] {
 }
 
 /** Count events matching a status scope. */
-export function countByScope(db: DatabaseType, scope: "pending" | "history"): number {
+export function countByScope(db: DatabaseSync, scope: "pending" | "history"): number {
   const row = (
     scope === "pending"
       ? db.prepare(`SELECT COUNT(*) AS n FROM events WHERE status = 'pending'`).get()
@@ -246,7 +244,7 @@ export function countByScope(db: DatabaseType, scope: "pending" | "history"): nu
 }
 
 /** Paginated, filtered query. Returns rows + total for page controls. */
-export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
+export function queryEvents(db: DatabaseSync, q: EventQuery): EventQueryResult {
   const { where, params } = buildEventFilters(q);
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
@@ -269,7 +267,7 @@ export function queryEvents(db: DatabaseType, q: EventQuery): EventQueryResult {
 
 /** Paginated grouped history query. Groups are keyed by `group_id ?? id`. */
 export function queryHistoryGroups(
-  db: DatabaseType,
+  db: DatabaseSync,
   q: HistoryEventGroupQuery,
 ): HistoryEventGroupQueryResult {
   const page = Math.max(0, q.page);
@@ -361,7 +359,7 @@ const TarballSummariesColumnSchema = z.array(
   z.object({ name: z.string(), version: z.string(), summary: TarballSummarySchema }),
 );
 
-function serializeRow(evt: PubEvent): unknown[] {
+function serializeRow(evt: PubEvent): SQLInputValue[] {
   return [
     evt.id,
     evt.kind,
@@ -472,10 +470,10 @@ function buildEventFilters(q: {
   keywords?: string[];
 }): {
   where: string[];
-  params: unknown[];
+  params: SQLInputValue[];
 } {
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLInputValue[] = [];
 
   if (q.status === "pending") {
     where.push(`status = 'pending'`);
@@ -508,7 +506,7 @@ function buildEventFilters(q: {
 
 function buildHistoryMatchedGroups(q: Pick<HistoryEventGroupQuery, "name" | "keywords">): {
   sql: string;
-  params: unknown[];
+  params: SQLInputValue[];
 } {
   const matchedFilters = buildEventFilters({
     status: "history",

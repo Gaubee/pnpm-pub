@@ -20,7 +20,7 @@ import {
   recentEvents,
 } from "../../src/daemon/event-db.js";
 import type { PubEvent } from "../../src/shared/index.js";
-import type { Database as DatabaseType } from "../../src/daemon/db.js";
+import type { DatabaseSync } from "node:sqlite";
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-eventdb-${process.pid}-${Date.now()}`);
 
@@ -36,7 +36,7 @@ function makeEvent(overrides: Partial<PubEvent> = {}): PubEvent {
 }
 
 function insertCorruptPayloadRow(
-  db: DatabaseType,
+  db: DatabaseSync,
   {
     id,
     createdAt,
@@ -86,7 +86,7 @@ function insertCorruptPayloadRow(
 }
 
 function insertLegacyStatusRow(
-  db: DatabaseType,
+  db: DatabaseSync,
   {
     id,
     createdAt,
@@ -144,7 +144,7 @@ function insertLegacyStatusRow(
   );
 }
 
-let db: DatabaseType;
+let db: DatabaseSync;
 
 beforeEach(async () => {
   await fsp.rm(sandbox, { recursive: true, force: true });

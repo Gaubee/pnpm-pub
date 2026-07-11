@@ -63,7 +63,9 @@ export default defineConfig({
     // bad locale edit fails locally before it reaches CI.
     "webui/src/locales/**": "pnpm --filter ./webui i18n:check:strict",
   },
-  fmt: {},
+  fmt: {
+    svelte: true,
+  },
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
