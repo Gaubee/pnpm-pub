@@ -7,7 +7,7 @@
 import { execa } from "execa";
 import { generateTotp, totpAfterDrift, parseHttpDate } from "./totp.js";
 import { isOtpFailureText, isExpiredTokenText } from "./npm-api.js";
-import { withTempNpmrc } from "./npmrc-auth.js";
+import { withTempUserconfig } from "./npmrc-auth.js";
 
 /** Log sink — the scheduler's PendingClient (CLI terminal + WebUI relay). */
 export interface PublishLogSink {
@@ -101,9 +101,9 @@ function isParentLifecycleEnv(key: string): boolean {
  * lifecycle facts describe the parent runner, not the user's publish action,
  * and can make pnpm classify the child publish as part of the parent script.
  * Preserve normal process config/PATH, but strip parent lifecycle/config
- * ontology. The runner injects the authoritative publish registry through a
- * temporary project `.npmrc`; inherited `npm_config_registry` or pnpm-specific
- * config env must not override that source.
+ * ontology. The runner injects the authoritative publish registry through an
+ * external userconfig overlay; inherited registry config must not override
+ * that source.
  */
 export function buildPublishSubprocessEnv(
   source: NodeJS.ProcessEnv = process.env,
@@ -139,14 +139,14 @@ export function extractNpmError(stderr: string): string | undefined {
 
 /** Spawn `pnpm publish ...`, stream stdout/stderr to the sink, return outcome. */
 async function runPublishSubprocess(opts: RunPublishSubprocessOpts): Promise<SubprocessOutcome> {
-  return withTempNpmrc(opts.cwd, opts.registry, opts.token, async () => {
+  return withTempUserconfig(opts.cwd, opts.registry, opts.token, async (publishConfigEnv) => {
     // Strip any --otp/--registry the caller already carried: the runner injects
     // authoritative values below (--otp from the TOTP secret, registry via the
-    // temporary .npmrc) and pnpm rejects duplicate flags.
+    // external userconfig environment) and pnpm rejects duplicate flags.
     const args = stripOverriddenArgs(opts.args, ["--otp", "--registry"]);
     const subprocess = execa("pnpm", ["publish", ...args, "--otp", opts.otp], {
       cwd: opts.cwd,
-      env: buildPublishSubprocessEnv(),
+      env: { ...buildPublishSubprocessEnv(), ...publishConfigEnv },
       extendEnv: false,
       reject: false,
       buffer: false,

@@ -9,7 +9,7 @@
  * from PATH (Chapter 7.1.2).
  *
  * This module is a thin façade over two focused collaborators:
- *   - `npmrc-auth.ts` — temporary project `.npmrc` auth injection
+ *   - `npmrc-auth.ts` — inherited external userconfig auth injection
  *   - `subprocess-runner.ts` — streaming spawn, OTP, clock-drift recovery
  *
  * It owns the two concerns that are *not* subprocess mechanics: pnpm presence

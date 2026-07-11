@@ -1,11 +1,7 @@
 /**
- * Unit tests for the `pnpm publish` subprocess publisher's pure helpers and
- * the temporary `.npmrc` snapshot/restore lifecycle.
+ * Unit tests for the `pnpm publish` subprocess publisher's pure helpers.
  */
-import { afterEach, describe, expect, it } from "vite-plus/test";
-import os from "node:os";
-import path from "node:path";
-import { promises as fsp } from "node:fs";
+import { describe, expect, it } from "vite-plus/test";
 import {
   stripOverriddenArgs,
   ensureRecursive,
@@ -14,18 +10,11 @@ import {
   parseRecursivePackageList,
   PnpmNotOnPathError,
 } from "../../src/daemon/publisher.js";
-import { withTempNpmrc } from "../../src/daemon/npmrc-auth.js";
 import {
   buildPublishSubprocessEnv,
   combinePublishDiagnostics,
   extractNpmError,
 } from "../../src/daemon/subprocess-runner.js";
-
-const sandbox = path.join(os.tmpdir(), `pnpm-pub-pub-${process.pid}-${Date.now()}`);
-
-afterEach(async () => {
-  await fsp.rm(sandbox, { recursive: true, force: true });
-});
 
 describe("Feature: publisher arg stripping (no duplicate --otp/--registry)", () => {
   it("Scenario: Given args with --otp value, When stripping, Then both tokens are removed", () => {
@@ -127,15 +116,16 @@ describe("Feature: publisher .npmrc auth merging", () => {
     expect(result).toContain("//r.test/:_authToken=tok");
   });
 
-  it("Scenario: Given a user npmrc with a stale authToken + registry, When merging, Then they are replaced (not duplicated)", () => {
-    const user = "registry=https://old.test/\n//old.test/:_authToken=stale\nsave-exact=true\n";
+  it("Scenario: Given inherited registry auth, When merging, Then only the selected registry is replaced", () => {
+    const user =
+      "registry=https://old.test/\n//old.test/:_authToken=preserved\n//new.test/:_authToken=stale\nsave-exact=true\n";
     const result = mergeAuthIntoNpmrc(user, "https://new.test/", "//new.test/", "fresh");
-    expect(result).not.toContain("old.test");
+    expect(result).toContain("//old.test/:_authToken=preserved");
     expect(result).not.toContain("stale");
     expect(result).toContain("registry=https://new.test/");
     expect(result).toContain("//new.test/:_authToken=fresh");
     expect(result).toContain("save-exact=true");
-    expect(result.match(/_authToken=/g)).toHaveLength(1);
+    expect(result.match(/_authToken=/g)).toHaveLength(2);
     expect(result.match(/^registry=/gm)).toHaveLength(1);
   });
 
@@ -280,66 +270,6 @@ describe("Feature: publish subprocess environment boundary", () => {
       PATH: "/bin",
       PNPM_HOME: "/pnpm",
     });
-  });
-});
-
-describe("Feature: withTempNpmrc filesystem lifecycle", () => {
-  it("Scenario: Given a directory with no .npmrc, When running, Then a temp .npmrc is created and removed after", async () => {
-    const dir = path.join(sandbox, "no-npmrc");
-    await fsp.mkdir(dir, { recursive: true });
-    const npmrc = path.join(dir, ".npmrc");
-
-    const inner = await withTempNpmrc(dir, "https://r.test/", "tok", async () =>
-      fsp.readFile(npmrc, "utf8"),
-    );
-    expect(inner).toContain("registry=https://r.test/");
-    expect(inner).toContain("_authToken=tok");
-    // After: file removed.
-    await expect(fsp.stat(npmrc)).rejects.toThrow();
-  });
-
-  it("Scenario: Given a directory with an existing .npmrc, When running, Then it is restored verbatim after", async () => {
-    const dir = path.join(sandbox, "existing-npmrc");
-    await fsp.mkdir(dir, { recursive: true });
-    const npmrc = path.join(dir, ".npmrc");
-    const original = "# user config\nsave-exact=true\n";
-    await fsp.writeFile(npmrc, original);
-
-    await withTempNpmrc(dir, "https://r.test/", "tok", async () => {
-      // During: the file carries the injected auth.
-      const during = await fsp.readFile(npmrc, "utf8");
-      expect(during).toContain("_authToken=tok");
-    });
-    // After: exact original restored, no token leak.
-    const after = await fsp.readFile(npmrc, "utf8");
-    expect(after).toBe(original);
-    expect(after).not.toContain("tok");
-  });
-
-  it("Scenario: Given a binary .npmrc (non-utf8), When running, Then the original bytes are restored", async () => {
-    const dir = path.join(sandbox, "binary-npmrc");
-    await fsp.mkdir(dir, { recursive: true });
-    const npmrc = path.join(dir, ".npmrc");
-    const original = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x41]);
-    await fsp.writeFile(npmrc, original);
-
-    await withTempNpmrc(dir, "https://r.test/", "tok", async () => "ok");
-    const after = await fsp.readFile(npmrc);
-    expect(Buffer.compare(after, original)).toBe(0);
-  });
-
-  it("Scenario: Given fn throws, When running, Then the .npmrc is still restored", async () => {
-    const dir = path.join(sandbox, "throw-fn");
-    await fsp.mkdir(dir, { recursive: true });
-    const npmrc = path.join(dir, ".npmrc");
-
-    await expect(
-      withTempNpmrc(dir, "https://r.test/", "tok", async () => {
-        throw new Error("publish failed");
-      }),
-    ).rejects.toThrow("publish failed");
-    // No .npmrc existed before → removed on cleanup.
-    await expect(fsp.stat(npmrc)).rejects.toThrow();
   });
 });
 

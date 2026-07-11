@@ -2450,9 +2450,9 @@ export class PublishScheduler {
 
       // Assemble the argv forwarded to `pnpm publish`: the user's original args
       // (whitelist-validated) carry --access/--tag/--no-git-checks/etc. The
-      // publisher injects --otp (from the TOTP secret) and the registry (via a
-      // temporary .npmrc) itself, stripping any stale --otp/--registry the args
-      // may carry.
+      // publisher injects --otp (from the TOTP secret) and the registry (via an
+      // external userconfig environment) itself, stripping any stale
+      // --otp/--registry the args may carry.
 
       // Primary path: the real `pnpm publish` child process (Chapter 1.3.1).
       // Falls back to the registry-API path ONLY when pnpm is absent from PATH
