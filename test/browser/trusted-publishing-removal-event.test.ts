@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import net from "node:net";
@@ -80,8 +82,8 @@ async function state(): Promise<Record<string, unknown>> {
       const reject = buttons(footer, 'Reject')[0];
       const groupConfirm = buttons(group, 'Confirm all')[0];
       return JSON.stringify({
-        keepPressed: buttons(review, 'Keep').map((button) => button.getAttribute('aria-pressed')),
-        removePressed: buttons(review, 'Remove').map((button) => button.getAttribute('aria-pressed')),
+        keepPressed: buttons(review, 'Keep').map((button) => button.getAttribute('data-state')),
+        removePressed: buttons(review, 'Remove').map((button) => button.getAttribute('data-state')),
         confirmDisabled: confirm?.disabled ?? null,
         rejectDisabled: reject?.disabled ?? null,
         groupConfirmDisabled: groupConfirm?.disabled ?? null,
@@ -134,8 +136,8 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
     await runBrowser(["--session", browserSession, "wait", "--load", "networkidle"]);
 
     expect(await state()).toMatchObject({
-      keepPressed: ["false", "false"],
-      removePressed: ["true", "true"],
+      keepPressed: ["off", "off"],
+      removePressed: ["on", "on"],
       confirmDisabled: false,
       rejectDisabled: false,
       groupConfirmDisabled: false,
@@ -152,7 +154,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
         .forEach((button) => button.click())`,
     ]);
     expect(await state()).toMatchObject({
-      keepPressed: ["true", "true"],
+      keepPressed: ["on", "on"],
       confirmDisabled: true,
       rejectDisabled: false,
     });
@@ -165,8 +167,8 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
         .find((button) => button.textContent?.trim() === 'Remove')?.click()`,
     ]);
     expect(await state()).toMatchObject({
-      keepPressed: ["false", "true"],
-      removePressed: ["true", "false"],
+      keepPressed: ["off", "on"],
+      removePressed: ["on", "off"],
       confirmDisabled: false,
       rejectDisabled: false,
     });
@@ -193,7 +195,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
           removeActions: labels.filter((label) => label === 'Remove').length,
           removePressed: [...(dialog?.querySelectorAll('button') ?? [])]
             .filter((button) => button.textContent?.trim() === 'Remove')
-            .map((button) => button.getAttribute('aria-pressed')),
+            .map((button) => button.getAttribute('data-state')),
         });
       })()`,
     ]);
@@ -201,7 +203,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
       currentConfigs: true,
       keepActions: 2,
       removeActions: 2,
-      removePressed: ["true", "true"],
+      removePressed: ["on", "on"],
     });
   }, 90_000);
 });
