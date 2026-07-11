@@ -240,5 +240,8 @@
   "groupEvent.memberCustomPending": "Noch nicht konfiguriert",
   "groupEvent.precheckSkip": "überspringen",
   "groupEvent.precheckConflict": "Konflikt",
-  "trustFormCard.notConfigured": "Noch nicht konfiguriert"
+  "trustFormCard.notConfigured": "Noch nicht konfiguriert",
+  "profile.otpCopy": "OTP kopieren",
+  "profile.otpNotConfigured": "Für dieses Profil ist keine 2FA konfiguriert.",
+  "profile.otpLoadError": "OTP konnte nicht geladen werden."
 }

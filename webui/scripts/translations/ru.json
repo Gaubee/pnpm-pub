@@ -235,5 +235,8 @@
   "groupEvent.memberCustomPending": "Ещё не настроено",
   "groupEvent.precheckSkip": "пропуск",
   "groupEvent.precheckConflict": "конфликт",
-  "trustFormCard.notConfigured": "Ещё не настроено"
+  "trustFormCard.notConfigured": "Ещё не настроено",
+  "profile.otpCopy": "Скопировать OTP",
+  "profile.otpNotConfigured": "Для этого профиля 2FA не настроена.",
+  "profile.otpLoadError": "Не удалось загрузить OTP."
 }

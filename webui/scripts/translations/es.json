@@ -237,5 +237,8 @@
   "groupEvent.memberCustomPending": "Aún no configurado",
   "groupEvent.precheckSkip": "omitir",
   "groupEvent.precheckConflict": "conflicto",
-  "trustFormCard.notConfigured": "Aún no configurado"
+  "trustFormCard.notConfigured": "Aún no configurado",
+  "profile.otpCopy": "Copiar OTP",
+  "profile.otpNotConfigured": "Este perfil no tiene 2FA configurado.",
+  "profile.otpLoadError": "No se pudo cargar el OTP."
 }

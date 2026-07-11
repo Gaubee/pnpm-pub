@@ -56,6 +56,7 @@ import {
   type ProfileSecrets,
   activeService,
 } from "./keychain.js";
+import { generateTotp } from "./totp.js";
 import { exportBundle, importBundle } from "./crypto.js";
 import { getCachedAvatarPath, lookupNpmProfileIdentity } from "./avatar.js";
 import { recordTokenCreatedAt } from "./auto-renew.js";
@@ -381,6 +382,36 @@ export class WebServer {
           return password
             ? { ok: true, password }
             : { ok: false, error: "No password stored for this profile." };
+        }),
+        otp: rpc.profile.otp.handler(async ({ input }) => {
+          // Generated daemon-side from the in-memory pool or the merged keychain
+          // item (Chapter 3.1: the TOTP secret only lives in daemon memory).
+          // Keyed by username — works for any saved profile, not just the
+          // active one, mirroring `profile.token` / `profile.password`.
+          const username = input.username;
+          const creds = this.deps.store.getCredentials(username);
+          let totpSecret = creds?.totpSecret ?? null;
+          if (!totpSecret) {
+            const secrets = await getProfileSecrets(username);
+            totpSecret = secrets?.totp_secret ?? null;
+            if (secrets && totpSecret) {
+              // Warm the pool so subsequent reads don't re-prompt the keychain.
+              this.deps.store.setCredentials(username, {
+                token: secrets.npm_token,
+                totpSecret: secrets.totp_secret,
+                npmPwd: secrets.npm_pwd,
+              });
+            }
+          }
+          if (!totpSecret) {
+            return { ok: false, configured: false, error: "No TOTP secret configured." };
+          }
+          const now = Date.now();
+          const code = generateTotp(totpSecret);
+          // RFC 6238 30s step. `30 - k` with k ∈ [0, 29] yields [30, 1], so a
+          // fresh window reports the full 30s and the schema's [1, 30] holds.
+          const remainingSec = 30 - Math.floor((now / 1000) % 30);
+          return { ok: true, code, remainingSec, epochMs: now, configured: true };
         }),
         detail: rpc.profile.detail.handler(async () => {
           const username = this.deps.store.getDefault();

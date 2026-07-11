@@ -236,5 +236,8 @@
   "groupEvent.memberCustomPending": "未設定",
   "groupEvent.precheckSkip": "スキップ",
   "groupEvent.precheckConflict": "競合",
-  "trustFormCard.notConfigured": "未設定"
+  "trustFormCard.notConfigured": "未設定",
+  "profile.otpCopy": "OTP をコピー",
+  "profile.otpNotConfigured": "このプロファイルでは 2FA が設定されていません。",
+  "profile.otpLoadError": "OTP の読み込みに失敗しました。"
 }

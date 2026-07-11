@@ -59,6 +59,25 @@ const ProfileSecretResponseSchema = z.object({
   error: z.string().optional(),
 });
 
+/**
+ * Live TOTP frame for the Profile detail page's OTP button. The 6-digit `code`
+ * is generated daemon-side from the in-memory `totp_secret` (never sent to the
+ * browser); `remainingSec`/`epochMs` let the WebUI drive a countdown ring off
+ * the daemon's clock without re-querying every second.
+ */
+const ProfileOtpResponseSchema = z.object({
+  ok: z.boolean(),
+  /** 6-digit TOTP for the current 30s window. */
+  code: z.string().optional(),
+  /** Seconds left in the current 30s window, in [1, 30]. */
+  remainingSec: z.number().int().positive().max(30).optional(),
+  /** Daemon wall-clock (ms) at the moment the code was generated. */
+  epochMs: z.number().int().nonnegative().optional(),
+  /** Whether a `totp_secret` exists for this profile (false → button disabled). */
+  configured: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
 const ProfileDetailResponseSchema = z.object({
   ok: z.boolean(),
   detail: z
@@ -208,6 +227,7 @@ export const webRpcContract = {
     password: oc
       .input(z.object({ username: z.string().min(1) }))
       .output(ProfileSecretResponseSchema),
+    otp: oc.input(z.object({ username: z.string().min(1) })).output(ProfileOtpResponseSchema),
     detail: oc.output(ProfileDetailResponseSchema),
     add: oc
       .input(

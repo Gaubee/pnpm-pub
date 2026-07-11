@@ -33,6 +33,8 @@ export const intentionallyUntranslated = new Set([
   "trustedPublishing.contextIdsPlaceholder", // "uuid, uuid, …"
   // Short technical labels that read better untranslated.
   "profile.idLabel", // "id"
+  "profile.otp", // "OTP" — universal acronym
+  "profile.otpCopied", // "Copied!"
   // "Trusted Publishing" / "Trusted Publish" — a proper feature name (npm/GitHub
   // OIDC terminology); kept verbatim in every locale, like a product name.
   "events.trustedPublish", // "Trusted Publish"

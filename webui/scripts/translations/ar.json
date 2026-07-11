@@ -233,5 +233,8 @@
   "groupEvent.memberCustomPending": "لم يتم التكوين بعد",
   "groupEvent.precheckSkip": "تخطٍ",
   "groupEvent.precheckConflict": "تعارض",
-  "trustFormCard.notConfigured": "لم يتم التكوين بعد"
+  "trustFormCard.notConfigured": "لم يتم التكوين بعد",
+  "profile.otpCopy": "نسخ OTP",
+  "profile.otpNotConfigured": "2FA غير مُعد لهذا الملف الشخصي.",
+  "profile.otpLoadError": "تعذر تحميل OTP."
 }

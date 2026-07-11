@@ -236,5 +236,8 @@
   "groupEvent.memberCustomPending": "아직 구성되지 않음",
   "groupEvent.precheckSkip": "건너뜀",
   "groupEvent.precheckConflict": "충돌",
-  "trustFormCard.notConfigured": "아직 구성되지 않음"
+  "trustFormCard.notConfigured": "아직 구성되지 않음",
+  "profile.otpCopy": "OTP 복사",
+  "profile.otpNotConfigured": "이 프로필에는 2FA가 설정되어 있지 않습니다.",
+  "profile.otpLoadError": "OTP를 불러오지 못했습니다."
 }
