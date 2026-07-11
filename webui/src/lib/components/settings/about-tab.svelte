@@ -31,6 +31,7 @@
   const lastLogLine = $derived(update.logs.at(-1) ?? "");
   const showUpdateLog = $derived(update.logs.length > 0 || installing || installFailed || readyToRestart);
   let logExpanded = $state(false);
+  let logContainer = $state<HTMLDivElement>();
   let clock = $state(Date.now());
   const restartSeconds = $derived(
     update.restartAt === null ? null : Math.max(0, Math.ceil((update.restartAt - clock) / 1000)),
@@ -39,6 +40,11 @@
   onMount(() => {
     const timer = window.setInterval(() => (clock = Date.now()), 250);
     return () => window.clearInterval(timer);
+  });
+
+  $effect(() => {
+    const logCount = update.logs.length;
+    if (logExpanded && logCount > 0) logContainer?.scrollTo({ top: logContainer.scrollHeight });
   });
 
   function formatTimestamp(value: number | null): string {
@@ -116,7 +122,7 @@
         <ButtonGroup.Root>
           <Button variant="brand" size="sm" onclick={() => void actions.restartAfterAppUpdate()}>
             <IconRotateCw />
-            {#if restartSeconds === null}
+            {#if restartSeconds === null || restartSeconds === 0}
               {$_("settings.restart")}
             {:else}
               {$_("settings.restartCountdown", { values: { seconds: restartSeconds } })}
@@ -186,6 +192,7 @@
         </button>
         {#if logExpanded}
           <div
+            bind:this={logContainer}
             class="max-h-48 overflow-auto border-t px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-words {installFailed
               ? 'border-destructive/40 text-destructive'
               : readyToRestart

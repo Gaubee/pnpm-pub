@@ -607,7 +607,7 @@ export class WebServer {
         }),
         install: rpc.appUpdate.install.handler(async () => {
           const service = this.deps.appUpdate;
-          return service ? service.install() : { ok: false, error: "Application updates are unavailable." };
+          return service ? service.startInstall() : { ok: false, error: "Application updates are unavailable." };
         }),
         restart: rpc.appUpdate.restart.handler(async () => {
           const service = this.deps.appUpdate;

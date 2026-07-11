@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
-import { AppUpdateWorkerRequestSchema } from "./update-worker-schema.js";
+import { AppUpdateWorkerRequestSchema, type AppUpdateWorkerRequest } from "./update-worker-schema.js";
 import { updateCommand } from "./app-update.js";
 
 const request = AppUpdateWorkerRequestSchema.parse(JSON.parse(process.argv[2] ?? "{}"));
@@ -16,17 +16,19 @@ async function main(): Promise<void> {
     await restartDaemon();
     return;
   }
-  await installUpdate();
+  await installUpdate(request);
 }
 
-async function installUpdate(): Promise<void> {
-  const args = updateCommand(request.manager);
-  process.stdout.write(`Installing pnpm-pub ${request.expectedVersion} with ${request.manager}...\n`);
-  await runPackageManager(args);
+type InstallRequest = Extract<AppUpdateWorkerRequest, { action: "install" }>;
+
+async function installUpdate(install: InstallRequest): Promise<void> {
+  const args = updateCommand(install.manager);
+  process.stdout.write(`Installing pnpm-pub ${install.expectedVersion} with ${install.manager}...\n`);
+  await runPackageManager(install, args);
   process.stdout.write("Validating installed package...\n");
-  const installed = await installedVersion(request.packageRoot);
-  if (installed !== request.expectedVersion) {
-    throw new Error(`Update validation failed: expected ${request.expectedVersion}, found ${installed ?? "none"}.`);
+  const installed = await installedVersion(install.packageRoot);
+  if (installed !== install.expectedVersion) {
+    throw new Error(`Update validation failed: expected ${install.expectedVersion}, found ${installed ?? "none"}.`);
   }
   process.stdout.write(`Installed pnpm-pub ${installed}.\n`);
 }
@@ -41,12 +43,12 @@ async function restartDaemon(): Promise<void> {
   child.unref();
 }
 
-async function runPackageManager(args: string[]): Promise<void> {
+async function runPackageManager(install: InstallRequest, args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(request.executable, args, {
+    const child = spawn(install.executable, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      env: request.env,
+      env: install.env,
     });
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");

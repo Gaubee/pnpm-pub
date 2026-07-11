@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import path from "node:path";
 import { AppUpdateService, compareVersions, updateCommand, type UpdateProcess } from "../../src/daemon/app-update.js";
 
@@ -65,7 +65,8 @@ describe("Feature: daemon-owned app update checks", () => {
       },
     });
     await installService.check();
-    expect(await installService.install()).toEqual({ ok: true });
+    expect(await installService.startInstall()).toEqual({ ok: true });
+    await waitForStatus(installService, "ready-to-restart");
     expect(installRequest).toMatchObject({ manager: "npm", executable: "/bin/npm" });
     installService.stop();
   });
@@ -121,7 +122,7 @@ describe("Feature: daemon-owned app update checks", () => {
     const snapshot = await service.check();
     expect(snapshot.status).toBe("available");
     expect(snapshot.owner.canUpdate).toBe(false);
-    expect(await service.install()).toMatchObject({ ok: false, error: expect.any(String) });
+    expect(await service.startInstall()).toMatchObject({ ok: false, error: expect.any(String) });
   });
 
   it("Scenario: Given supported package managers, When an install command is requested, Then every command is fixed argv without a shell", () => {
@@ -151,13 +152,15 @@ describe("Feature: daemon-owned app update checks", () => {
     });
     await service.check();
 
-    await expect(service.install()).resolves.toMatchObject({ ok: false, error: "network unavailable" });
+    await expect(service.startInstall()).resolves.toEqual({ ok: true });
+    await waitForStatus(service, "install-failed");
     expect(service.getSnapshot()).toMatchObject({
       status: "install-failed",
       logs: ["attempt 1", "downloading", "network unavailable"],
     });
 
-    await expect(service.install()).resolves.toEqual({ ok: true });
+    await expect(service.startInstall()).resolves.toEqual({ ok: true });
+    await waitForStatus(service, "ready-to-restart");
     expect(service.getSnapshot()).toMatchObject({
       status: "ready-to-restart",
       logs: ["attempt 2", "downloading", "installed"],
@@ -180,7 +183,8 @@ describe("Feature: daemon-owned app update checks", () => {
       },
     });
     await service.check();
-    await service.install();
+    await service.startInstall();
+    await waitForStatus(service, "ready-to-restart");
     expect(service.getSnapshot().restartAt).toBe(15_000);
 
     await expect(service.cancelRestart()).resolves.toEqual({ ok: true });
@@ -206,15 +210,80 @@ describe("Feature: daemon-owned app update checks", () => {
       },
     });
     await service.check();
-    const first = service.install();
-    const second = service.install();
-    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    const first = service.startInstall();
+    const second = service.startInstall();
+    await Promise.all([first, second]);
     expect(workers).toBe(1);
     finish?.();
-    await expect(Promise.all([first, second])).resolves.toEqual([{ ok: true }, { ok: true }]);
+    await waitForStatus(service, "ready-to-restart");
+    service.stop();
+  });
+
+  it("Scenario: Given a ready update, When ten seconds elapse, Then one automatic restart source is invoked", async () => {
+    vi.useFakeTimers();
+    try {
+      let restartWorkers = 0;
+      let restartRequests = 0;
+      const service = updateReadyService({
+        now: Date.now,
+        runInstallWorker: async () => undefined,
+        startRestartWorker: () => {
+          restartWorkers += 1;
+        },
+        onRestartRequested: () => {
+          restartRequests += 1;
+        },
+      });
+      await service.check();
+      await service.startInstall();
+      await waitForStatus(service, "ready-to-restart");
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(restartWorkers).toBe(1);
+      expect(restartRequests).toBe(1);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Scenario: Given concurrent restart sources, When restart is pending, Then one worker handles every caller", async () => {
+    let releaseRestart: (() => void) | undefined;
+    let restartWorkers = 0;
+    const service = updateReadyService({
+      runInstallWorker: async () => undefined,
+      startRestartWorker: () => {
+        restartWorkers += 1;
+      },
+      onRestartRequested: () =>
+        new Promise<void>((resolve) => {
+          releaseRestart = resolve;
+        }),
+    });
+    await service.check();
+    await service.startInstall();
+    await waitForStatus(service, "ready-to-restart");
+
+    const automatic = service.restartNow();
+    const manual = service.restartNow();
+    expect(restartWorkers).toBe(1);
+    releaseRestart?.();
+    await expect(Promise.all([automatic, manual])).resolves.toEqual([{ ok: true }, { ok: true }]);
     service.stop();
   });
 });
+
+async function waitForStatus(
+  service: AppUpdateService,
+  status: ReturnType<AppUpdateService["getSnapshot"]>["status"],
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (service.getSnapshot().status === status) return;
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+  }
+  throw new Error(`update status did not reach ${status}`);
+}
 
 function updateReadyService(
   overrides: Pick<
