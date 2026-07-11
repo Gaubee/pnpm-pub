@@ -10,15 +10,15 @@
 	 */
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { getRpcClient } from '$lib/store.js';
-	import { safeSetHtml } from '$lib/safe-html.js';
+	import { actions, getRpcClient } from '$lib/store.js';
+	import { renderReadme } from '$lib/markdown/render-readme.js';
+	import '$lib/markdown/readme.css';
 	import { createTrustedPublishingStatus } from '$lib/hooks/use-trusted-publishing.svelte.js';
 	import { trustedPublisherSummary } from '$lib/trusted-publishing.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import TrustedPublishingStatus from '$lib/components/trusted-publishing-status.svelte';
-	import { marked } from 'marked';
 	import type { PackageDetail, TrustedPublisherConfig } from '$lib/types.js';
 	import IconArrowLeft from '@lucide/svelte/icons/arrow-left';
 	import IconExternalLink from '@lucide/svelte/icons/external-link';
@@ -44,21 +44,26 @@
 	let notFound = $state(false);
 	let readmeEl = $state<HTMLDivElement | null>(null);
 
-	// README is parsed once per detail change and re-injected safely.
-	let readmeHtml = $derived(detail?.readme ? (marked.parse(detail.readme, { async: false }) as string) : '');
-
 	$effect(() => {
 		const n = name;
 		if (!n) return;
 		loadDetail(n);
 	});
 
-	// Re-inject the README whenever the parsed HTML changes (new detail loaded).
+	// Re-project the README whenever its source or package route changes.
 	$effect(() => {
-		const html = readmeHtml;
+		const markdown = detail?.readme;
 		const el = readmeEl;
-		if (!el) return;
-		safeSetHtml(el, html);
+		const pageUrl = page.url;
+		if (!el || !markdown) return;
+		renderReadme(el, markdown, {
+			pageUrl,
+			repositoryDirectory: detail?.repositoryDirectory ?? null,
+			repositoryBrowseFileTemplate: detail?.repositoryBrowseFileTemplate ?? null,
+			repositoryRawFileTemplate: detail?.repositoryRawFileTemplate ?? null,
+		});
+		el.addEventListener('click', onReadmeLinkClick);
+		return () => el.removeEventListener('click', onReadmeLinkClick);
 	});
 
 	let activeReq = 0;
@@ -110,6 +115,35 @@
 		return n.toLocaleString();
 	}
 
+	function openExternalLink(event: MouseEvent, url: string): void {
+		event.preventDefault();
+		try {
+			const externalUrl = new URL(url);
+			if (!['http:', 'https:', 'mailto:', 'tel:'].includes(externalUrl.protocol)) return;
+			void actions.openUrl(externalUrl.href);
+		} catch {
+			// Registry metadata cannot manufacture an external effect without a valid URL.
+		}
+	}
+
+	function onExternalAnchorClick(event: MouseEvent): void {
+		if (!(event.currentTarget instanceof HTMLAnchorElement)) return;
+		openExternalLink(event, event.currentTarget.href);
+	}
+
+	function onReadmeLinkClick(event: MouseEvent): void {
+		if (!(event.target instanceof Element)) return;
+		const anchor = event.target.closest<HTMLAnchorElement>('a[href]');
+		if (!anchor || anchor.getAttribute('href')?.startsWith('#')) return;
+		try {
+			const url = new URL(anchor.href);
+			if ((url.protocol === 'http:' || url.protocol === 'https:') && url.origin === page.url.origin) return;
+			openExternalLink(event, url.href);
+		} catch {
+			// Malformed README links remain inert under the sanitizer boundary.
+		}
+	}
+
 	// ----- Trusted Publishing -----
 	const trustedPublishing = createTrustedPublishingStatus();
 	$effect(() => {
@@ -147,6 +181,7 @@
 	}
 
 	const repoHint = $derived(detail?.repository ?? '');
+	const repositoryHref = $derived(detail?.repositoryBrowseUrl ?? null);
 
 	// Detect a GitHub repo so we can render the github icon on the repository row.
 	function isGitHubRepo(url: string | null | undefined): boolean {
@@ -192,6 +227,7 @@
 					target="_blank"
 					rel="noreferrer"
 					class="ml-1 inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-brand hover:underline"
+					onclick={onExternalAnchorClick}
 				>
 					<IconExternalLink class="h-3 w-3" /> npm
 				</a>
@@ -212,7 +248,10 @@
 					{#if detail.readme}
 						<!-- README HTML is parsed by marked then injected through safeSetHtml
 						     (DOM Sanitizer API) — never bound via {@html}. -->
-						<div bind:this={readmeEl} class="prose prose-sm max-w-none dark:prose-invert prose-headings:scroll-mt-0 prose-a:text-brand prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:before:content-none prose-code:after:content-none"></div>
+						<div
+							bind:this={readmeEl}
+							class="readme-markdown prose prose-zinc prose-sm max-w-none dark:prose-invert prose-headings:scroll-mt-4 prose-a:text-brand"
+						></div>
 					{:else}
 						<p class="text-xs text-muted-foreground">{$_('packageDetail.noReadme')}</p>
 					{/if}
@@ -267,14 +306,19 @@
 									<IconGlobe class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 								{/if}
 								<span class="w-20 shrink-0 text-muted-foreground">{$_('packageDetail.repository')}</span>
-								<a
-									href={detail.repository}
-									target="_blank"
-									rel="noreferrer"
-									class="truncate font-mono transition-colors hover:text-brand hover:underline"
-								>
-									{detail.repository}
-								</a>
+								{#if repositoryHref}
+									<a
+										href={repositoryHref}
+										target="_blank"
+										rel="noreferrer"
+										class="truncate font-mono transition-colors hover:text-brand hover:underline"
+										onclick={onExternalAnchorClick}
+									>
+										{detail.repository}
+									</a>
+								{:else}
+									<span class="truncate font-mono">{detail.repository}</span>
+								{/if}
 							</div>
 						{/if}
 						{#if detail.homepage}
@@ -286,6 +330,7 @@
 									target="_blank"
 									rel="noreferrer"
 									class="truncate font-mono transition-colors hover:text-brand hover:underline"
+									onclick={onExternalAnchorClick}
 								>
 									{detail.homepage}
 								</a>

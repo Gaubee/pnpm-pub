@@ -12,6 +12,7 @@
  * Everything is projected into a stable, UI-facing `PackageDetail` shape; raw
  * registry fields never leak across the boundary.
  */
+import hostedGitInfo from "hosted-git-info";
 import { z } from "zod";
 import {
   createClient,
@@ -20,6 +21,7 @@ import {
   type NpmClient,
 } from "safe-npm-sdk";
 import type { PackageCollaborator, PackageDetail } from "../shared/index.js";
+import { README_REPOSITORY_PATH_TOKEN } from "../shared/readme.js";
 
 /** Credentials needed to construct a one-shot SDK client (mirrors trusted-publishing-api). */
 export interface PackageDetailAuth {
@@ -83,6 +85,64 @@ function repositoryUrl(repo: z.infer<typeof PackumentSchema>["repository"]): str
   if (!repo) return null;
   if (typeof repo === "string") return readString(repo);
   return readString(repo.url);
+}
+
+/** Preserve a monorepo package's path relative to its hosted repository root. */
+function repositoryDirectory(repo: z.infer<typeof PackumentSchema>["repository"]): string | null {
+  if (!repo || typeof repo === "string") return null;
+  return readString(repo.directory);
+}
+
+type ParsedHostedRepository = NonNullable<ReturnType<typeof hostedGitInfo.fromUrl>>;
+type HostedRepository = ParsedHostedRepository & {
+  browseFile(path: string): string;
+};
+
+function hasBrowseFile(repository: ParsedHostedRepository): repository is HostedRepository {
+  return "browseFile" in repository && typeof repository.browseFile === "function";
+}
+
+function fallbackRepositoryBrowseUrl(repository: string): string | null {
+  const value = repository
+    .trim()
+    .replace(/^git\+/, "")
+    .replace(/\.git$/i, "");
+  const scp = /^git@([^:]+):(.+)$/.exec(value);
+  const candidate = scp?.[1] && scp[2] ? `https://${scp[1]}/${scp[2]}` : value;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol === "ssh:") url.protocol = "https:";
+    url.username = "";
+    url.password = "";
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function repositoryLinkProjection(repository: string | null): {
+  browseUrl: string | null;
+  browseFileTemplate: string | null;
+  rawFileTemplate: string | null;
+} {
+  if (!repository) {
+    return { browseUrl: null, browseFileTemplate: null, rawFileTemplate: null };
+  }
+  const hosted = hostedGitInfo.fromUrl(repository);
+  if (!hosted) {
+    return {
+      browseUrl: fallbackRepositoryBrowseUrl(repository),
+      browseFileTemplate: null,
+      rawFileTemplate: null,
+    };
+  }
+  return {
+    browseUrl: hosted.browse(),
+    browseFileTemplate: hasBrowseFile(hosted)
+      ? hosted.browseFile(README_REPOSITORY_PATH_TOKEN)
+      : null,
+    rawFileTemplate: hosted.file(README_REPOSITORY_PATH_TOKEN),
+  };
 }
 
 /** Best-effort license label (the field is either a string or {type}). */
@@ -179,13 +239,20 @@ export async function fetchPackageDetail(
       ? collaborators
       : (p.maintainers ?? []).map((m) => ({ username: m.name, email: m.email ?? undefined }));
 
+  const repository = repositoryUrl(p.repository);
+  const repositoryLinks = repositoryLinkProjection(repository);
+
   const detail: PackageDetail = {
     name: p.name ?? cleanName,
     version: latest ?? "0.0.0",
     description: readString(p.description),
     readme: readString(p.readme) ?? "",
     license: licenseLabel(p.license),
-    repository: repositoryUrl(p.repository),
+    repository,
+    repositoryDirectory: repositoryDirectory(p.repository),
+    repositoryBrowseUrl: repositoryLinks.browseUrl,
+    repositoryBrowseFileTemplate: repositoryLinks.browseFileTemplate,
+    repositoryRawFileTemplate: repositoryLinks.rawFileTemplate,
     homepage: readString(p.homepage),
     lastPublish: later(lastPublish, null),
     modified,

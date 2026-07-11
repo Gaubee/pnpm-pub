@@ -41,7 +41,11 @@ function packument(overrides: Record<string, unknown> = {}): unknown {
     readme: "# My Pkg\n\nHello.",
     license: "MIT",
     homepage: "https://example.com",
-    repository: { type: "git", url: "git+https://github.com/me/mypkg.git" },
+    repository: {
+      type: "git",
+      url: "git+https://github.com/me/mypkg.git",
+      directory: "packages/mypkg",
+    },
     keywords: ["cli", "tool"],
     maintainers: [{ name: "me", email: "me@example.com" }],
     ...overrides,
@@ -75,6 +79,12 @@ describe("fetchPackageDetail", () => {
       readme: "# My Pkg\n\nHello.",
       license: "MIT",
       repository: "git+https://github.com/me/mypkg.git",
+      repositoryDirectory: "packages/mypkg",
+      repositoryBrowseUrl: "https://github.com/me/mypkg",
+      repositoryBrowseFileTemplate:
+        "https://github.com/me/mypkg/blob/HEAD/__PNPM_PUB_README_PATH__",
+      repositoryRawFileTemplate:
+        "https://raw.githubusercontent.com/me/mypkg/HEAD/__PNPM_PUB_README_PATH__",
       homepage: "https://example.com",
       lastPublish: "2024-04-10T00:00:00.000Z",
       modified: "2024-05-01T00:00:00.000Z",
@@ -101,6 +111,50 @@ describe("fetchPackageDetail", () => {
     expect(res.ok).toBe(true);
     expect(sdkMocks.request.mock.calls[0]![0].path).toBe("/@scope%2Fmypkg");
   });
+
+  it.each([
+    {
+      name: "gitlab-pkg",
+      repository: "git+https://gitlab.com/group/pkg.git",
+      browseUrl: "https://gitlab.com/group/pkg",
+      browseFileTemplate: "https://gitlab.com/group/pkg/tree/HEAD/__PNPM_PUB_README_PATH__",
+      rawFileTemplate: "https://gitlab.com/group/pkg/raw/HEAD/__PNPM_PUB_README_PATH__",
+    },
+    {
+      name: "bitbucket-pkg",
+      repository: "git+https://bitbucket.org/team/pkg.git",
+      browseUrl: "https://bitbucket.org/team/pkg",
+      browseFileTemplate: "https://bitbucket.org/team/pkg/src/HEAD/__PNPM_PUB_README_PATH__",
+      rawFileTemplate: "https://bitbucket.org/team/pkg/raw/HEAD/__PNPM_PUB_README_PATH__",
+    },
+    {
+      name: "sourcehut-pkg",
+      repository: "https://git.sr.ht/~team/pkg",
+      browseUrl: "https://git.sr.ht/~team/pkg",
+      browseFileTemplate: "https://git.sr.ht/~team/pkg/tree/HEAD/__PNPM_PUB_README_PATH__",
+      rawFileTemplate: "https://git.sr.ht/~team/pkg/blob/HEAD/__PNPM_PUB_README_PATH__",
+    },
+  ])(
+    "projects $name repository navigation through the hosted-git contract",
+    async ({ name, repository, browseUrl, browseFileTemplate, rawFileTemplate }) => {
+      sdkMocks.request.mockResolvedValue({
+        ok: true,
+        data: packument({ name, repository: { type: "git", url: repository } }),
+      });
+      sdkMocks.getPackageCollaborators.mockResolvedValue({ ok: true, data: {} });
+      fetchSpy.mockResolvedValue(new Response(JSON.stringify({ downloads: 0 }), { status: 200 }));
+
+      const res = await fetchPackageDetail(name, AUTH);
+
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.detail).toMatchObject({
+        repositoryBrowseUrl: browseUrl,
+        repositoryBrowseFileTemplate: browseFileTemplate,
+        repositoryRawFileTemplate: rawFileTemplate,
+      });
+    },
+  );
 
   it("returns 404 when the packument is not found", async () => {
     sdkMocks.request.mockResolvedValue({

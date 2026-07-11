@@ -140,6 +140,10 @@ export interface PackageDetail {
   readme: string;
   license: string | null;
   repository: string | null;
+  repositoryDirectory: string | null;
+  repositoryBrowseUrl: string | null;
+  repositoryBrowseFileTemplate: string | null;
+  repositoryRawFileTemplate: string | null;
   homepage: string | null;
   lastPublish: string | null;
   modified: string | null;

@@ -484,6 +484,14 @@ export const PackageDetailSchema = z
     readme: z.string(),
     license: z.string().nullable(),
     repository: z.string().nullable(),
+    /** Package root inside a monorepo-backed repository, if declared by npm. */
+    repositoryDirectory: z.string().nullable(),
+    /** HTTPS repository root suitable for native external navigation. */
+    repositoryBrowseUrl: z.string().nullable(),
+    /** Hosted file-browser URL containing the shared README path token. */
+    repositoryBrowseFileTemplate: z.string().nullable(),
+    /** Hosted raw-file URL containing the shared README path token. */
+    repositoryRawFileTemplate: z.string().nullable(),
     homepage: z.string().nullable(),
     /** ISO-8601 publish time of the latest dist-tag version, if known. */
     lastPublish: z.string().nullable(),

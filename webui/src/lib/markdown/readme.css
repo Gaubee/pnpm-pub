@@ -1,0 +1,101 @@
+@import "highlight.js/styles/github-dark-dimmed.css";
+
+.readme-markdown :where(h1, h2, h3) {
+  text-wrap: balance;
+}
+
+.readme-markdown :where(p, li) {
+  text-wrap: pretty;
+}
+
+.readme-markdown :where(p, ul, ol, blockquote) {
+  max-width: 75ch;
+}
+
+.readme-markdown :where(a) {
+  overflow-wrap: anywhere;
+  text-underline-offset: 0.2em;
+}
+
+.readme-markdown :where(a:hover) {
+  text-decoration-thickness: 0.1em;
+}
+
+.readme-markdown :where(a[data-readme-unresolved-url]) {
+  cursor: not-allowed;
+  color: var(--muted-foreground);
+  text-decoration-style: dotted;
+}
+
+.readme-markdown :where(blockquote) {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--muted);
+  padding: 0.75rem 1rem;
+  color: var(--foreground);
+  font-style: normal;
+}
+
+.readme-markdown :where(blockquote p:first-child) {
+  margin-top: 0;
+}
+
+.readme-markdown :where(blockquote p:last-child) {
+  margin-bottom: 0;
+}
+
+.readme-markdown :where(pre) {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, white 12%, transparent);
+  border-radius: var(--radius);
+  background: #22272e;
+  padding: 0;
+}
+
+.readme-markdown :where(pre code.hljs) {
+  scrollbar-color: color-mix(in srgb, currentColor 28%, transparent) transparent;
+  scrollbar-width: thin;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+}
+
+.readme-markdown :where(code:not(pre code)) {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  background: var(--muted);
+  padding: 0.1em 0.35em;
+  font-weight: 500;
+}
+
+.readme-markdown :where(code:not(pre code))::before,
+.readme-markdown :where(code:not(pre code))::after {
+  content: none;
+}
+
+.readme-markdown :where(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+}
+
+.readme-markdown .readme-table-scroll {
+  max-width: 100%;
+  margin-block: 1.5em;
+  overflow-x: auto;
+  scrollbar-color: color-mix(in srgb, currentColor 24%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.readme-markdown .readme-table-scroll > table {
+  min-width: 100%;
+  margin: 0;
+}
+
+.readme-markdown :where(input[type="checkbox"]) {
+  accent-color: var(--brand);
+}
+
+.readme-markdown :where(hr) {
+  border-color: var(--border);
+}

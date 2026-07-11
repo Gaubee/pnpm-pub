@@ -34,6 +34,68 @@ interface ElementWithSetHTML extends Element {
   ): void;
 }
 
+// The native default sanitizer intentionally drops images. README content needs
+// a slightly broader, explicit document vocabulary while still excluding all
+// executable, embedding, form, and metadata elements.
+const safeDocumentElements: string[] = [
+  "a",
+  "abbr",
+  "audio",
+  "b",
+  "blockquote",
+  "br",
+  "caption",
+  "center",
+  "code",
+  "col",
+  "colgroup",
+  "dd",
+  "del",
+  "details",
+  "div",
+  "dl",
+  "dt",
+  "em",
+  "figcaption",
+  "figure",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "i",
+  "img",
+  "input",
+  "kbd",
+  "li",
+  "mark",
+  "ol",
+  "p",
+  "picture",
+  "pre",
+  "s",
+  "section",
+  "small",
+  "source",
+  "span",
+  "strong",
+  "sub",
+  "summary",
+  "sup",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul",
+  "video",
+];
+
 /** True when the host supports the native Sanitizer API (`Element.setHTML`). */
 const supportsSetHtml =
   typeof Element !== "undefined" &&
@@ -75,7 +137,7 @@ function scrubNode(root: ParentNode): ParentNode {
 export function safeSetHtml(el: Element, html: string): void {
   const target = el as ElementWithSetHTML;
   if (supportsSetHtml && typeof target.setHTML === "function") {
-    target.setHTML(html);
+    target.setHTML(html, { sanitizer: { allowElements: safeDocumentElements } });
     return;
   }
   // Fallback: parse into a detached template, scrub, then adopt.
