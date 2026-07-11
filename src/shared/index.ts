@@ -8,6 +8,7 @@
 
 // Re-export all Zod schemas + derived types from the schema module.
 export * from "./schemas.js";
+export * from "./package-name.js";
 
 // ---------------------------------------------------------------------------
 // Chapter 4.2 — OS keychain credential mapping (constants only — not schemas)

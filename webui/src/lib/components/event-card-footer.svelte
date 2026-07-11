@@ -19,7 +19,7 @@
 	 * state for unpublish / retry-of-unpublish) lives here because it is purely
 	 * a footer-internal UI concern.
 	 */
-	import type { ConfigureTrustContext, EventKind, EventStatus, PublishContext, TrustedPublisherCreateConfig, UnpublishContext } from '$lib/types.js';
+	import type { ConfigureTrustContext, DeletePackageContext, EventKind, EventStatus, PublishTarget, TrustedPublisherCreateConfig, UnpublishContext } from '$lib/types.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { ButtonGroup, ButtonGroupSeparator } from '$lib/components/ui/button-group/index.js';
 	import ConfirmAction from '$lib/components/confirm-action.svelte';
@@ -44,10 +44,12 @@
 		isRetryable: boolean;
 		hasRetryButton: boolean;
 		isUnpublishable: boolean;
+		isPackageDeletable: boolean;
 		isPublish: boolean;
 		configureTrustCtx: ConfigureTrustContext | null;
 		unpublishCtx: UnpublishContext | null;
-		publishData: PublishContext | null;
+		deletePackageCtx: DeletePackageContext | null;
+		publishTarget: PublishTarget | null;
 		canConfirm: boolean;
 		confirming: boolean;
 		rejecting: boolean;
@@ -66,6 +68,7 @@
 		onReject: () => void;
 		onRetry: () => void;
 		onUnpublish: () => void;
+		onDeletePackage: () => void;
 		onAutoClose?: () => void;
 		/** Trust form dirty state + reset, forwarded into the `leftCluster`
 		 *  snippet so the host's override can drive a discard button. Only
@@ -100,10 +103,12 @@
 		isRetryable,
 		hasRetryButton,
 		isUnpublishable,
+		isPackageDeletable,
 		isPublish,
 		configureTrustCtx,
 		unpublishCtx,
-		publishData,
+		deletePackageCtx,
+		publishTarget,
 		canConfirm,
 		confirming,
 		rejecting,
@@ -118,6 +123,7 @@
 		onReject,
 		onRetry,
 		onUnpublish,
+		onDeletePackage,
 		onAutoClose,
 		draftDirty,
 		resetDraft,
@@ -140,11 +146,24 @@
 	const unpublishWarn = $derived(
 		$_('eventCard.unpublishConfirm', {
 			values: {
-				name: unpublishCtx?.name ?? publishData?.target.name ?? '',
-				version: unpublishCtx?.version ?? publishData?.target.version ?? '',
+				name: unpublishCtx?.name ?? publishTarget?.name ?? '',
+				version: unpublishCtx?.version ?? publishTarget?.version ?? '',
 			},
 		}),
 	);
+	const deletePackageWarn = $derived(
+		`${$_('common.delete')} ${deletePackageCtx?.name ?? publishTarget?.name ?? ''}? ${$_('island.irreversible')}`,
+	);
+	const isPackageRemovalEvent = $derived(eventKind === 'unpublish' || eventKind === 'delete-package');
+	const removalWarn = $derived(eventKind === 'delete-package' || isPackageDeletable ? deletePackageWarn : unpublishWarn);
+	const removalConfirmLabel = $derived(
+		isPackageRemovalEvent ? $_('eventCard.retry') : isPackageDeletable ? $_('common.delete') : $_('eventCard.unpublish'),
+	);
+	function confirmRemoval(): void {
+		if (isPackageRemovalEvent) onRetry();
+		else if (isPackageDeletable) onDeletePackage();
+		else onUnpublish();
+	}
 </script>
 
 {#if isPending}
@@ -158,7 +177,7 @@
 			{@render leftCluster({ draftDirty: !!draftDirty, resetDraft: resetDraft ?? (() => {}), stagedConfig: stagedConfig ?? null })}
 		{:else}
 			<ButtonGroup>
-				<Button variant={eventKind === 'unpublish' || configureTrustCtx?.action === 'remove' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={onConfirm}>
+				<Button variant={eventKind === 'unpublish' || eventKind === 'delete-package' || configureTrustCtx?.action === 'remove' ? 'destructive' : 'brand'} size="sm" class="flex-1" disabled={!canConfirm || confirming} onclick={onConfirm}>
 					{#if confirming}<IconLoader class="h-3.5 w-3.5 animate-spin" />{:else}<IconCheck class="h-3.5 w-3.5" />{/if}
 					{#if confirming}
 						{$_('eventCard.confirming')}
@@ -172,6 +191,8 @@
 						{$_('eventCard.confirmTokenRefresh')}
 					{:else if eventKind === 'unpublish'}
 						{$_('eventCard.confirmUnpublish')}
+					{:else if eventKind === 'delete-package'}
+						{$_('common.delete')}
 					{:else}
 						{$_('eventCard.confirmPublish')}
 					{/if}
@@ -207,16 +228,16 @@
 			</ButtonGroup>
 		</div>
 	{/if}
-{:else if isRetryable || isUnpublishable}
+{:else if isRetryable || isUnpublishable || isPackageDeletable}
 	{#if confirmUnpublish}
 		<!-- Two-step confirmation expanded inline (unpublish / retry-of-unpublish).
 		     The confirm card is a full-width block; the open links sit below it,
 		     isolated to the inline-end, so they stay reachable mid-confirm. -->
 		<ConfirmAction
 			bind:open={confirmUnpublish}
-			warn={unpublishWarn}
-			confirmLabel={$_('eventCard.unpublish')}
-			onConfirm={eventKind === 'unpublish' ? onRetry : onUnpublish}
+			warn={removalWarn}
+			confirmLabel={removalConfirmLabel}
+			onConfirm={confirmRemoval}
 		/>
 		{#if hasOpenActions}
 			<div class="mt-2 flex justify-end">
@@ -237,13 +258,19 @@
 					</Button>
 				{/if}
 				{#if isUnpublishable}
-					<ConfirmAction bind:open={confirmUnpublish} warn={$_('eventCard.unpublishConfirm', { values: { name: publishData?.target.name ?? '', version: publishData?.target.version ?? '' } })} confirmLabel={$_('eventCard.unpublish')} flex={!isRetryableStatus} onConfirm={onUnpublish}>
+					<ConfirmAction bind:open={confirmUnpublish} warn={$_('eventCard.unpublishConfirm', { values: { name: publishTarget?.name ?? '', version: publishTarget?.version ?? '' } })} confirmLabel={$_('eventCard.unpublish')} flex={!isRetryableStatus} onConfirm={onUnpublish}>
 						{#snippet triggerIcon()}<IconTrash class="h-3.5 w-3.5" />{/snippet}
 						{#snippet triggerLabel()}{$_('eventCard.unpublish')}{/snippet}
 					</ConfirmAction>
 				{/if}
-				{#if eventKind === 'unpublish' && isRetryableStatus}
-					<ConfirmAction bind:open={confirmUnpublish} warn={$_('eventCard.unpublishConfirm', { values: { name: unpublishCtx?.name ?? '', version: unpublishCtx?.version ?? '' } })} confirmLabel={$_('eventCard.retry')} flex onConfirm={onRetry}>
+				{#if isPackageDeletable}
+					<ConfirmAction bind:open={confirmUnpublish} warn={deletePackageWarn} confirmLabel={$_('common.delete')} flex={!isRetryableStatus} onConfirm={onDeletePackage}>
+						{#snippet triggerIcon()}<IconTrash class="h-3.5 w-3.5" />{/snippet}
+						{#snippet triggerLabel()}{$_('common.delete')}{/snippet}
+					</ConfirmAction>
+				{/if}
+				{#if isPackageRemovalEvent && isRetryableStatus}
+					<ConfirmAction bind:open={confirmUnpublish} warn={removalWarn} confirmLabel={$_('eventCard.retry')} flex onConfirm={onRetry}>
 						{#snippet triggerIcon()}<IconRotateCw class="h-3.5 w-3.5" />{/snippet}
 						{#snippet triggerLabel()}{$_('eventCard.retry')}{/snippet}
 					</ConfirmAction>

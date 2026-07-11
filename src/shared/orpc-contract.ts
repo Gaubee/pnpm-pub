@@ -328,6 +328,7 @@ export const webRpcContract = {
             "create-placeholder",
             "refresh-token",
             "unpublish",
+            "delete-package",
             "recursive-publish",
           ]),
           payload: z.unknown(),

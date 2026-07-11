@@ -227,6 +227,7 @@ export interface ConfigureTrustContext {
 
 export interface CreatePlaceholderContext {
   name: string;
+  args: string[];
 }
 
 export interface RefreshTokenContext {
@@ -238,12 +239,17 @@ export interface UnpublishContext {
   version: string;
 }
 
+export interface DeletePackageContext {
+  name: string;
+}
+
 export type EventKind =
   | "publish"
   | "configure-trust"
   | "create-placeholder"
   | "refresh-token"
   | "unpublish"
+  | "delete-package"
   | "recursive-publish";
 
 export type EventStatus = SharedEventStatus;
@@ -254,6 +260,7 @@ export type EventPayload =
   | { kind: "create-placeholder"; data: CreatePlaceholderContext }
   | { kind: "refresh-token"; data: RefreshTokenContext }
   | { kind: "unpublish"; data: UnpublishContext }
+  | { kind: "delete-package"; data: DeletePackageContext }
   | { kind: "recursive-publish"; data: RecursivePublishContext };
 
 /** Payload data shape for one concrete Event kind. */

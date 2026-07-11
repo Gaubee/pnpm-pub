@@ -30,10 +30,12 @@
      */
     import type {
         EventStatus,
+        DeletePackageContext,
         PubEvent,
         RemovalDecision,
         TrustedPublisherCreateConfig,
     } from "$lib/types.js";
+    import { normalizeNpmPackageName } from "$shared/package-name.js";
     import {
         type BadgeVariant,
     } from "$lib/components/ui/badge/index.js";
@@ -189,6 +191,7 @@
             "create-placeholder": IconPlaceholder,
             "refresh-token": IconRefresh,
             unpublish: IconTrash,
+            "delete-package": IconTrash,
             import: IconRefresh,
             export: IconRefresh,
         })[kind] ?? IconPublish;
@@ -205,6 +208,7 @@
             case "recursive-publish":
                 return "brand";
             case "unpublish":
+            case "delete-package":
                 return "destructive";
             case "configure-trust":
                 return isRemoval ? "warning" : "success";
@@ -298,7 +302,7 @@
     // Publish carries a target; placeholder projects its generated v0.0.0 target for display.
     function makePlaceholderTarget(name: string) {
         return {
-            name,
+            name: normalizeNpmPackageName(name),
             version: "0.0.0",
             previousVersion: undefined,
             description: $_("eventCard.generatedPlaceholder"),
@@ -324,6 +328,12 @@
     const unpublishCtx = $derived(
         event.payload?.kind === "unpublish" ? event.payload.data : null,
     );
+    const placeholderCtx = $derived(
+        event.payload?.kind === "create-placeholder" ? event.payload.data : null,
+    );
+    const deletePackageCtx = $derived(
+        event.payload?.kind === "delete-package" ? event.payload.data : null,
+    );
     const recursiveCtx = $derived(
         event.payload?.kind === "recursive-publish" ? event.payload.data : null,
     );
@@ -331,8 +341,10 @@
     const timeLabel = $derived(new Date(event.createdAt).toLocaleTimeString());
 
     // Tarball file-tree preview — collapsed by default. (Body-local state now.)
-    // Publish actions (retry / unpublish) — only for publish events.
-    const isPublish = $derived(event.payload?.kind === "publish");
+    // Publish actions are shared by source-backed and generated packages.
+    const isPublish = $derived(
+        event.payload?.kind === "publish" || event.payload?.kind === "create-placeholder",
+    );
     const publishData = $derived(
         event.payload?.kind === "publish" ? event.payload.data : null,
     );
@@ -348,6 +360,8 @@
                 ? configureTrustCtx.target.name
                 : unpublishCtx
                   ? unpublishCtx.name
+                  : deletePackageCtx
+                    ? deletePackageCtx.name
                   : event.kind,
     );
     const versionLabel = $derived(
@@ -398,6 +412,7 @@
     // For unpublish, from its name/version. For create-placeholder, name only.
     const packageName = $derived(
         unpublishCtx?.name ??
+            deletePackageCtx?.name ??
             publishTarget?.target.name ??
             configureTrustCtx?.target.name ??
             (event.payload?.kind === "create-placeholder"
@@ -433,6 +448,7 @@
     const isRetryable = $derived(
         (isPublish ||
             event.payload?.kind === "unpublish" ||
+            event.payload?.kind === "delete-package" ||
             event.payload?.kind === "recursive-publish" ||
             isConfigureTrust) &&
             isRetryableStatus,
@@ -445,7 +461,8 @@
                 event.payload?.kind === "recursive-publish" ||
                 isConfigureTrust),
     );
-    const isUnpublishable = $derived(isPublish && event.status === "success");
+    const isUnpublishable = $derived(!!publishData && event.status === "success");
+    const isPackageDeletable = $derived(!!placeholderCtx && event.status === "success");
     // trustedPublishingDraftValid crosses Body↔Footer (gates the confirm button);
     // confirming/rejecting cross Footer(action)↔Body(form disabled). These stay
     // here in the assembler. confirmUnpublish is footer-internal.
@@ -493,6 +510,8 @@
         const retryGroupId = event.groupId ? crypto.randomUUID() : undefined;
         if (publishData) {
             actions.createEvent("publish", publishData, retryGroupId);
+        } else if (placeholderCtx) {
+            actions.createEvent("create-placeholder", placeholderCtx, retryGroupId);
         } else if (recursiveCtx) {
             actions.createEvent(
                 "recursive-publish",
@@ -507,21 +526,32 @@
             );
         } else if (unpublishCtx) {
             actions.createEvent("unpublish", unpublishCtx, retryGroupId);
+        } else if (deletePackageCtx) {
+            actions.createEvent("delete-package", deletePackageCtx, retryGroupId);
         }
     }
 
     /** Create a pending unpublish event for this package@version. The user then
      *  confirms/rejects on the new EventCard, exactly like publish. */
     function doUnpublish(): void {
-        if (!publishData) return;
+        const target = publishTarget?.target;
+        if (!target) return;
         actions.createEvent(
             "unpublish",
             {
-                name: publishData.target.name,
-                version: publishData.target.version,
+                name: target.name,
+                version: target.version,
             },
             event.groupId,
         );
+    }
+
+    /** Create a pending whole-package deletion event for a generated placeholder. */
+    function doDeletePackage(): void {
+        const target = publishTarget?.target;
+        if (!target) return;
+        const context: DeletePackageContext = { name: target.name };
+        actions.createEvent("delete-package", context, event.groupId);
     }
 
     // --- Advanced publish options (only for pending publish events) ---
@@ -534,7 +564,7 @@
      *  advanced-option deriveds below read from this single source so the panel
      *  works identically for both kinds. */
     const editableArgs = $derived(
-        publishData?.args ?? recursiveCtx?.args ?? [],
+        publishData?.args ?? placeholderCtx?.args ?? recursiveCtx?.args ?? [],
     );
     const currentBranch = $derived(
         publishData?.branch ?? recursiveCtx?.branch ?? "",
@@ -550,6 +580,7 @@
     // pragmatic gate).
     const isScopedPkg = $derived.by(() => {
         if (publishData) return publishData.target.name.startsWith("@");
+        if (placeholderCtx) return placeholderCtx.name.startsWith("@");
         if (recursiveCtx)
             return recursiveCtx.targets.some((t) => t.name.startsWith("@"));
         return false;
@@ -606,7 +637,7 @@
      *  ship an update-event. Works for both `publish` and `recursive-publish`
      *  (both carry an editable `args` array). */
     function rebuildArgs(overrides?: PublishAdvancedArgsOverrides): void {
-        if (!publishData && !recursiveCtx) return;
+        if (!publishData && !placeholderCtx && !recursiveCtx) return;
         const args = rebuildPublishAdvancedArgs(editableArgs, overrides, {
             recursive: !!recursiveCtx,
         });
@@ -626,6 +657,7 @@
             needsAction ||
             isRetryable ||
             isUnpublishable ||
+            isPackageDeletable ||
             (autoClose && variant === "full") ||
             !!repoInfo ||
             !!sourcePath ||
@@ -700,6 +732,8 @@
                 {publishBranchValue}
                 {currentBranch}
                 {isScopedPkg}
+                showPublicOnlyAccess={!!placeholderCtx && !isScopedPkg}
+                hasSourcePublishOptions={!placeholderCtx}
                 {branchMismatch}
                 {branchNoCurrent}
                 onRebuildArgs={rebuildArgs}
@@ -716,10 +750,12 @@
                         {isRetryable}
                         {hasRetryButton}
                         {isUnpublishable}
+                        {isPackageDeletable}
                         isPublish={isPublish}
                         {configureTrustCtx}
                         {unpublishCtx}
-                        {publishData}
+                        {deletePackageCtx}
+                        publishTarget={publishTarget?.target ?? null}
                         {canConfirm}
                         {confirming}
                         {rejecting}
@@ -739,6 +775,7 @@
                         resetDraft={() => bodyRef?.resetToSeed()}
                         stagedConfig={trustedPublishingStagedConfig}
                         onUnpublish={doUnpublish}
+                        onDeletePackage={doDeletePackage}
                         onAutoClose={onAutoClose}
                     />
                 </div>
@@ -799,6 +836,8 @@
             {publishBranchValue}
             {currentBranch}
             {isScopedPkg}
+            showPublicOnlyAccess={!!placeholderCtx && !isScopedPkg}
+            hasSourcePublishOptions={!placeholderCtx}
             {branchMismatch}
             {branchNoCurrent}
             onRebuildArgs={rebuildArgs}
@@ -816,10 +855,12 @@
                 {isRetryable}
                 {hasRetryButton}
                 {isUnpublishable}
+                {isPackageDeletable}
                 isPublish={isPublish}
                 {configureTrustCtx}
                 {unpublishCtx}
-                {publishData}
+                {deletePackageCtx}
+                publishTarget={publishTarget?.target ?? null}
                 {canConfirm}
                 {confirming}
                 {rejecting}
@@ -839,6 +880,7 @@
                 stagedConfig={trustedPublishingStagedConfig}
                 onRetry={retry}
                 onUnpublish={doUnpublish}
+                onDeletePackage={doDeletePackage}
                 onAutoClose={onAutoClose}
             />
         {/if}

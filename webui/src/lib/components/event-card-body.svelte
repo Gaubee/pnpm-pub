@@ -87,6 +87,8 @@
 		publishBranchValue: string;
 		currentBranch: string;
 		isScopedPkg: boolean;
+		showPublicOnlyAccess: boolean;
+		hasSourcePublishOptions: boolean;
 		branchMismatch: boolean;
 		branchNoCurrent: boolean;
 		onRebuildArgs: (overrides?: {
@@ -130,6 +132,8 @@
 		publishBranchValue,
 		currentBranch,
 		isScopedPkg,
+		showPublicOnlyAccess,
+		hasSourcePublishOptions,
 		branchMismatch,
 		branchNoCurrent,
 		onRebuildArgs,
@@ -340,7 +344,7 @@
 						<!-- Access -->
 						<div class="space-y-1">
 							<Label class="text-[11px] text-muted-foreground">{$_('eventCard.access')}</Label>
-							{#if isScopedPkg}
+							{#if isScopedPkg || showPublicOnlyAccess}
 								<ToggleGroup.Root
 									type="single"
 									value={accessArg}
@@ -349,8 +353,11 @@
 									size="sm"
 								>
 									<ToggleGroup.Item value="public" class="px-2 text-[11px]">{$_('eventCard.accessPublic')}</ToggleGroup.Item>
-									<ToggleGroup.Item value="restricted" class="px-2 text-[11px]">{$_('eventCard.accessRestricted')}</ToggleGroup.Item>
+									<ToggleGroup.Item value="restricted" disabled={showPublicOnlyAccess} class="px-2 text-[11px]">{$_('eventCard.accessRestricted')}</ToggleGroup.Item>
 								</ToggleGroup.Root>
+								{#if showPublicOnlyAccess}
+									<p class="text-[10px] text-muted-foreground/70">{$_('eventCard.accessNonScopedHint')}</p>
+								{/if}
 							{:else}
 								<p class="text-[11px] text-muted-foreground/70">{$_('eventCard.accessNonScopedHint')}</p>
 							{/if}
@@ -366,6 +373,7 @@
 								oninput={(e) => onRebuildArgs({ tag: (e.currentTarget as HTMLInputElement).value })}
 							/>
 						</div>
+						{#if hasSourcePublishOptions}
 						<!-- ignore-scripts -->
 						<div class="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-1.5">
 							<div class="min-w-0">
@@ -382,7 +390,9 @@
 							</div>
 							<Switch checked={noGitChecksOn} disabled={publishBranchOn} onCheckedChange={(v: boolean) => onRebuildArgs({ noGitChecks: v })} />
 						</div>
+						{/if}
 					</div>
+					{#if hasSourcePublishOptions}
 					<!-- publish-branch (full width) -->
 					<div class="rounded-md border border-border px-2.5 py-2">
 						<div class="flex items-center justify-between gap-2">
@@ -422,6 +432,7 @@
 							</div>
 						{/if}
 					</div>
+					{/if}
 				</div>
 			{/if}
 		</div>

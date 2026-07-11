@@ -15,7 +15,7 @@ import { DaemonStore } from "../../src/daemon/store.js";
 import { PublishScheduler } from "../../src/daemon/scheduler.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
 import type { TrustedPublisherRegistryConfig } from "../../src/shared/index.js";
-import { publishPackage } from "../../src/daemon/npm-api.js";
+import { deletePackage, publishPackage } from "../../src/daemon/npm-api.js";
 import {
   addTrustedPublisher,
   listTrustedPublishers,
@@ -35,6 +35,7 @@ import {
 } from "../../src/daemon/publisher.js";
 
 vi.mock("../../src/daemon/npm-api.js", () => ({
+  deletePackage: vi.fn(),
   publishPackage: vi.fn(),
 }));
 
@@ -65,6 +66,7 @@ const addTrustedPublisherMock = vi.mocked(addTrustedPublisher);
 const removeTrustedPublisherMock = vi.mocked(removeTrustedPublisher);
 const listTrustedPublishersMock = vi.mocked(listTrustedPublishers);
 const publishPackageMock = vi.mocked(publishPackage);
+const deletePackageMock = vi.mocked(deletePackage);
 const packPackageMock = vi.mocked(packPackage);
 const readPackageTarballMock = vi.mocked(readPackageTarball);
 const summarizePackageTarballMock = vi.mocked(summarizePackageTarball);
@@ -102,6 +104,11 @@ beforeEach(async () => {
     status: 200,
     stdout: "[publish] + reserved-name@0.0.0",
     stderr: "",
+  });
+  deletePackageMock.mockResolvedValue({
+    ok: true,
+    status: 201,
+    wholePackageRemoved: true,
   });
   // Default: pnpm absent from PATH → scheduler falls back to the registry-API
   // path, so these tests assert against publishPackageMock (the API path) as
@@ -184,6 +191,36 @@ describe("Feature: WebUI-created proactive events", () => {
     expect(evt?.payload?.kind).toBe("create-placeholder");
     if (evt?.payload?.kind !== "create-placeholder") return;
     expect(evt.payload.data.name).toBe("reserved-name");
+    expect(evt.payload.data.args).toEqual(["--access", "public"]);
+  });
+
+  it("Scenario: Given mixed-case placeholder input, When mounted, Then its package identity is stored lowercase", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const created = await scheduler.createProactiveEvent("create-placeholder", "alice", {
+      name: "@Gaubee/Reserved-Name",
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok || created.event.payload?.kind !== "create-placeholder") return;
+    expect(created.event.payload.data.name).toBe("@gaubee/reserved-name");
+  });
+
+  it("Scenario: Given an invalid npm package name, When mounted, Then no placeholder event is created", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice" });
+    const scheduler = new PublishScheduler(store);
+
+    const created = await scheduler.createProactiveEvent("create-placeholder", "alice", {
+      name: "invalid package name",
+    });
+
+    expect(created.ok).toBe(false);
+    expect(store.getEvents()).toEqual([]);
   });
 
   it("Scenario: Given scanned package metadata, When routed from Workspaces, Then the trust repo comes from the package source", async () => {
@@ -1004,6 +1041,58 @@ describe("Feature: WebUI-created proactive events", () => {
         name: "reserved-name",
         version: "0.0.0",
       }),
+      access: "public",
+    });
+    expect(store.getEvent(created.event.id)?.status).toBe("success");
+  });
+
+  it("Scenario: Given edited placeholder publish options, When confirmed, Then access and tag reach npm", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+
+    const scheduler = new PublishScheduler(store);
+    const created = await scheduler.createProactiveEvent("create-placeholder", "alice", {
+      name: "@scope/reserved-name",
+      args: ["--access", "public"],
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    expect(
+      store.updateEventArgs(created.event.id, ["--access", "restricted", "--tag", "next"]),
+    ).toBeTruthy();
+
+    await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
+    expect(publishPackageMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "@scope/reserved-name",
+        access: "restricted",
+        distTag: "next",
+      }),
+    );
+  });
+
+  it("Scenario: Given a successful placeholder, When its package deletion is confirmed, Then the whole package is removed", async () => {
+    const store = new DaemonStore();
+    await store.load();
+    await store.upsertProfile({ username: "alice", registry: "http://registry.test/" });
+    store.setCredentials("alice", { token: "npm_token", totpSecret: "JBSWY3DPEHPK3PXP" });
+
+    const scheduler = new PublishScheduler(store);
+    const created = await scheduler.createProactiveEvent("delete-package", "alice", {
+      name: "@scope/reserved-name",
+    });
+
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    await expect(scheduler.confirm(created.event.id)).resolves.toBe(true);
+    expect(deletePackageMock).toHaveBeenCalledWith({
+      registry: "http://registry.test/",
+      token: "npm_token",
+      totpSecret: "JBSWY3DPEHPK3PXP",
+      name: "@scope/reserved-name",
     });
     expect(store.getEvent(created.event.id)?.status).toBe("success");
   });

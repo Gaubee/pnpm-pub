@@ -434,6 +434,7 @@
             return payload.data.target.name;
         if (payload?.kind === "create-placeholder") return payload.data.name;
         if (payload?.kind === "unpublish") return payload.data.name;
+        if (payload?.kind === "delete-package") return payload.data.name;
         return member.kind;
     }
 
@@ -451,6 +452,7 @@
         if (payload?.kind === "publish")
             return `@${payload.data.target.version}`;
         if (payload?.kind === "unpublish") return `@${payload.data.version}`;
+        if (payload?.kind === "delete-package") return "";
         if (payload?.kind === "configure-trust") {
             const ctx = payload.data;
             if (ctx.target.repository) return ctx.target.repository;

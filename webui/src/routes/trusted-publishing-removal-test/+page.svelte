@@ -93,10 +93,12 @@
 			isRetryable={false}
 			hasRetryButton={false}
 			isUnpublishable={false}
+			isPackageDeletable={false}
 			isPublish={false}
 			configureTrustCtx={removalContext}
 			unpublishCtx={null}
-			publishData={null}
+			deletePackageCtx={null}
+			publishTarget={null}
 			canConfirm={review.reviewed && review.hasRemove}
 			confirming={false}
 			rejecting={false}
@@ -111,6 +113,7 @@
 			onReject={() => {}}
 			onRetry={() => {}}
 			onUnpublish={() => {}}
+			onDeletePackage={() => {}}
 		/>
 	</section>
 

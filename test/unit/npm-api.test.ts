@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { applyToken, isExpiredToken, publishPackage } from "../../src/daemon/npm-api.js";
+import {
+  applyToken,
+  deletePackage,
+  isExpiredToken,
+  publishPackage,
+} from "../../src/daemon/npm-api.js";
 
 const npmProfileMocks = vi.hoisted(() => ({
   loginWithPassword: vi.fn(),
@@ -262,4 +267,45 @@ describe("registry response body projection", () => {
     expect(isExpiredToken(403, circular)).toBe(false);
   });
 
+});
+
+describe("deletePackage whole-package protocol", () => {
+  it("Scenario: Given a package revision, When deleting the package, Then the registry document is removed directly", async () => {
+    const requests: Array<{ method: string; url: string; otp: string | null }> = [];
+    fetchSpy.mockImplementation(async (input, init) => {
+      const method = init?.method ?? "GET";
+      requests.push({
+        method,
+        url: String(input),
+        otp: new Headers(init?.headers).get("npm-otp"),
+      });
+      return new Response(
+        JSON.stringify(method === "GET" ? { name: "@scope/pkg", _rev: "3-abc" } : { ok: true }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    await expect(
+      deletePackage({
+        registry: "https://registry.example.test/",
+        token: "npm_token",
+        totpSecret: "JBSWY3DPEHPK3PXP",
+        name: "@scope/pkg",
+        otp: "123456",
+      }),
+    ).resolves.toMatchObject({ ok: true, wholePackageRemoved: true });
+
+    expect(requests).toEqual([
+      {
+        method: "GET",
+        url: "https://registry.example.test/@scope%2Fpkg",
+        otp: null,
+      },
+      {
+        method: "DELETE",
+        url: "https://registry.example.test/@scope%2Fpkg/-rev/3-abc",
+        otp: "123456",
+      },
+    ]);
+  });
 });

@@ -192,6 +192,7 @@ export const EventKindSchema = z.enum([
   "create-placeholder",
   "refresh-token",
   "unpublish",
+  "delete-package",
   "recursive-publish",
 ]);
 export type EventKind = z.infer<typeof EventKindSchema>;
@@ -251,6 +252,8 @@ export type PublishContext = z.infer<typeof PublishContextSchema>;
 
 export const CreatePlaceholderContextSchema = z.object({
   name: z.string(),
+  /** Publish argv retained as event source truth for edits and retries. */
+  args: z.array(z.string()).default(["--access", "public"]),
 });
 export type CreatePlaceholderContext = z.infer<typeof CreatePlaceholderContextSchema>;
 
@@ -266,6 +269,12 @@ export const UnpublishContextSchema = z.object({
   version: z.string(),
 });
 export type UnpublishContext = z.infer<typeof UnpublishContextSchema>;
+
+export const DeletePackageContextSchema = z.object({
+  /** Fully-qualified package name to remove from the registry. */
+  name: z.string(),
+});
+export type DeletePackageContext = z.infer<typeof DeletePackageContextSchema>;
 
 /**
  * Recursive publish context — a workspace-level publish driven by
@@ -417,6 +426,7 @@ export const EventPayloadSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("create-placeholder"), data: CreatePlaceholderContextSchema }),
   z.object({ kind: z.literal("refresh-token"), data: RefreshTokenContextSchema }),
   z.object({ kind: z.literal("unpublish"), data: UnpublishContextSchema }),
+  z.object({ kind: z.literal("delete-package"), data: DeletePackageContextSchema }),
   z.object({ kind: z.literal("recursive-publish"), data: RecursivePublishContextSchema }),
 ]);
 export type EventPayload = z.infer<typeof EventPayloadSchema>;

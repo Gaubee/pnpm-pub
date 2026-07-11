@@ -475,15 +475,19 @@ export class WebServer {
           if (
             !existing ||
             existing.status !== "pending" ||
-            (existing.payload?.kind !== "publish" && existing.payload?.kind !== "recursive-publish")
+            (existing.payload?.kind !== "publish" &&
+              existing.payload?.kind !== "recursive-publish" &&
+              existing.payload?.kind !== "create-placeholder")
           ) {
-            return { ok: false, error: "Only pending publish events can be edited." };
+            return { ok: false, error: "Only pending publish-like events can be edited." };
           }
-          const srcDir =
-            existing.payload.data.source.kind === "directory"
-              ? existing.payload.data.source.path
-              : path.dirname(existing.payload.data.source.path);
-          existing.payload.data.branch = await this.detectGitBranch(srcDir);
+          if (existing.payload.kind !== "create-placeholder") {
+            const srcDir =
+              existing.payload.data.source.kind === "directory"
+                ? existing.payload.data.source.path
+                : path.dirname(existing.payload.data.source.path);
+            existing.payload.data.branch = await this.detectGitBranch(srcDir);
+          }
           const updated = this.deps.store.updateEventArgs(input.id, input.args);
           return updated ? { ok: true } : { ok: false, error: "No such pending event." };
         }),

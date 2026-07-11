@@ -55,7 +55,8 @@
   "dependencies": {
     "@github/keytar": "^7.0.0",
     "@opentray/ext-webview": "^0.12.0",
-    "opentray": "^0.12.0"
+    "opentray": "^0.12.0",
+    "validate-npm-package-name": "^8.0.0"
   },
   "devDependencies": {
     "@gaubee/node": "^0.4.0",
@@ -68,6 +69,7 @@
     "@types/hosted-git-info": "^3.0.5",
     "@types/http-proxy": "^1.17.17",
     "@types/node": "^24.0.0",
+    "@types/validate-npm-package-name": "^4.0.2",
     "@types/ws": "8.18.1",
     "@types/yargs": "^17.0.33",
     "agent-browser": "0.31.1",

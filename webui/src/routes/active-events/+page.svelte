@@ -26,6 +26,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import TrustedPublishingDialog from '$lib/components/trusted-publishing-dialog.svelte';
 	import { actions } from '$lib/store.js';
+	import { validateNpmPackageName } from '$shared/package-name.js';
 	import IconPlus from '@lucide/svelte/icons/plus';
 	import IconPackage from '@lucide/svelte/icons/package';
 	import IconShieldCog from '@lucide/svelte/icons/shield-cog-corner';
@@ -35,6 +36,10 @@
 
 	let actionsOpen = $state(false);
 	let placeholderName = $state('');
+	const placeholderValidation = $derived(validateNpmPackageName(placeholderName));
+	const placeholderNamePresent = $derived(placeholderName.length > 0);
+	const placeholderNameValid = $derived(placeholderNamePresent && placeholderValidation.valid);
+	const placeholderNameError = $derived(placeholderValidation.errors[0] ?? 'Invalid npm package name.');
 	// Trusted Publishing 配置走专属对话框（输入包名后打开），不再在菜单里堆裸表单字段。
 	let trustedPublishingName = $state('');
 	let trustedPublishingDialogOpen = $state(false);
@@ -195,11 +200,17 @@
 	});
 
 	function createPlaceholder(): void {
-		const name = placeholderName.trim();
-		if (!name) return;
-		actions.createEvent('create-placeholder', { name });
+		if (!placeholderNameValid) return;
+		actions.createEvent('create-placeholder', {
+			name: placeholderValidation.name,
+			args: ['--access', 'public'],
+		});
 		actionsOpen = false;
 		placeholderName = '';
+	}
+
+	function updatePlaceholderName(value: string): void {
+		placeholderName = value.toLowerCase();
 	}
 
 	function openTrustedPublishingDialog(): void {
@@ -223,12 +234,24 @@
 					<IconPlus class="h-3.5 w-3.5" /> {$_('events.newAction')}
 				</Button>
 			</DropdownMenu.Trigger>
-			<DropdownMenu.Content class="w-72 p-3" align="end" sideOffset={4}>
+			<DropdownMenu.Content class="w-80 p-3" align="end" sideOffset={4}>
 				<div class="space-y-3">
 					<div class="space-y-1.5">
 						<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconPackage class="h-3.5 w-3.5" /> {$_('events.placeholder')}</div>
-						<Input bind:value={placeholderName} placeholder={$_('events.placeholderName')} onkeydown={(e) => e.key === 'Enter' && createPlaceholder()} />
-						<Button variant="outline" size="sm" class="w-full" onclick={createPlaceholder}>{$_('events.createPlaceholder')}</Button>
+						<Label class="sr-only" for="placeholder-package-name">{$_('events.packageName')}</Label>
+						<Input
+							id="placeholder-package-name"
+							value={placeholderName}
+							placeholder={$_('events.placeholderName')}
+							aria-invalid={placeholderNamePresent && !placeholderNameValid}
+							aria-describedby={placeholderNamePresent && !placeholderNameValid ? 'placeholder-package-name-error' : undefined}
+							oninput={(e) => updatePlaceholderName(e.currentTarget.value)}
+							onkeydown={(e) => e.key === 'Enter' && createPlaceholder()}
+						/>
+						{#if placeholderNamePresent && !placeholderNameValid}
+							<p id="placeholder-package-name-error" class="text-[11px] text-destructive">{placeholderNameError}</p>
+						{/if}
+						<Button variant="outline" size="sm" class="w-full" disabled={!placeholderNameValid} onclick={createPlaceholder}>{$_('events.createPlaceholder')}</Button>
 					</div>
 					<div class="space-y-1.5 border-t border-border pt-3">
 							<div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><IconShieldCog class="h-3.5 w-3.5" /> {$_('events.trustedPublish')}</div>

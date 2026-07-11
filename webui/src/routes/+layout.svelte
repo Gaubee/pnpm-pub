@@ -72,6 +72,7 @@
 		const p = e.payload;
 		if (p?.kind === 'publish') return $_('island.publishing', { values: { target: `${p.data.target.name}@${p.data.target.version}` } });
 		if (p?.kind === 'unpublish') return $_('island.unpublishing', { values: { target: `${p.data.name}@${p.data.version}` } });
+		if (p?.kind === 'delete-package') return `${$_('common.delete')} ${p.data.name}`;
 		if (p?.kind === 'configure-trust') {
 			const k = p.data.action === 'add' ? 'island.addingTrust' : p.data.action === 'update' ? 'island.updatingTrust' : 'island.removingTrust';
 			return $_(k);
@@ -91,6 +92,7 @@
 			return p.data.source.path.split('/').pop() ?? p.data.source.path;
 		}
 		if (p?.kind === 'unpublish') return $_('island.irreversible');
+		if (p?.kind === 'delete-package') return $_('island.irreversible');
 		if (p?.kind === 'configure-trust') {
 			const t = p.data.target;
 			return t.repository ? `${t.name} · ${t.repository}` : t.name;

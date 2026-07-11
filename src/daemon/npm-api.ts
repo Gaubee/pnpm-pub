@@ -19,10 +19,12 @@ import {
   createClient,
   publish as sdkPublish,
   buildPublishPackument,
+  escapePackageName,
   unpublishPackage as sdkUnpublish,
   verifyCredentials as sdkVerifyCredentials,
   type VerificationResult,
 } from "safe-npm-sdk";
+import { z } from "zod";
 
 export interface RegistryConfig {
   registry: string;
@@ -385,6 +387,42 @@ export async function unpublishVersion(opts: {
     };
   }
   return { ok: false, status: result.error.status, error: result.error.message };
+}
+
+/** Remove the entire package document, regardless of how many versions it contains. */
+export async function deletePackage(opts: {
+  registry: string;
+  token: string;
+  totpSecret: string;
+  name: string;
+  /** One-shot OTP (overrides the TOTP derived from the secret). */
+  otp?: string;
+}): Promise<UnpublishResult> {
+  const otp = opts.otp ?? generateTotp(opts.totpSecret);
+  const client = createClient({ auth: { token: opts.token }, registry: opts.registry });
+  const escapedName = escapePackageName(opts.name);
+  const packument = await client.request({
+    method: "GET",
+    path: `/${escapedName}`,
+    schema: z.object({ _rev: z.string().optional() }).passthrough(),
+  });
+  if (!packument.ok) {
+    return { ok: false, status: packument.error.status, error: packument.error.message };
+  }
+  const revision = packument.data._rev;
+  if (!revision) {
+    return { ok: false, status: packument.response.status, error: "packument has no _rev" };
+  }
+  const result = await client.request({
+    method: "DELETE",
+    path: `/${escapedName}/-rev/${encodeURIComponent(revision)}`,
+    schema: z.unknown(),
+    otp,
+    extraHeaders: { "npm-command": "unpublish" },
+  });
+  return result.ok
+    ? { ok: true, status: result.response.status, wholePackageRemoved: true }
+    : { ok: false, status: result.error.status, error: result.error.message };
 }
 
 // ---------------------------------------------------------------------------

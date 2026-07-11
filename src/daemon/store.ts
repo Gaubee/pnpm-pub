@@ -497,14 +497,17 @@ export class DaemonStore extends EventEmitter {
    * the SAME PubEvent instance in `this.pending`, and re-reads `args` live at
    * confirm time, so mutating the shared object makes the edit take effect on
    * the next confirm without any extra wiring. Returns the event on success, or
-   * undefined when the event is missing / not pending / not a publish event.
+   * undefined when the event is missing / not pending / not publish-like.
    */
   updateEventArgs(id: string, args: string[]): PubEvent | undefined {
     const evt = this.events.find((e) => e.id === id);
     if (!evt || evt.status !== "pending") return undefined;
-    // Both single-package `publish` and `recursive-publish` carry an editable
-    // `args` array on their payload data.
-    if (evt.payload?.kind !== "publish" && evt.payload?.kind !== "recursive-publish")
+    // Every publish-like event carries editable args as its source of truth.
+    if (
+      evt.payload?.kind !== "publish" &&
+      evt.payload?.kind !== "recursive-publish" &&
+      evt.payload?.kind !== "create-placeholder"
+    )
       return undefined;
     evt.payload.data.args = args;
     if (this.eventDb) updateEvent(this.eventDb, evt);

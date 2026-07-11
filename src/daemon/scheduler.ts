@@ -18,6 +18,7 @@ import { promisify } from "node:util";
 import type { DaemonStore } from "./store.js";
 import type {
   CreatePlaceholderContext,
+  DeletePackageContext,
   EventKind,
   EventPayload,
   IpcOidcRequest,
@@ -41,6 +42,7 @@ import type {
 import {
   TrustedPublisherConfigSchema,
   TrustedPublisherCreateConfigSchema,
+  validateNpmPackageName,
 } from "../shared/index.js";
 import {
   packPackage,
@@ -50,7 +52,7 @@ import {
   type PackageTarballFile,
   type PackageTarballSummary,
 } from "./packer.js";
-import { publishPackage, unpublishVersion } from "./npm-api.js";
+import { deletePackage, publishPackage, unpublishVersion } from "./npm-api.js";
 import {
   publishPackageViaCli,
   publishRecursiveViaCli,
@@ -303,6 +305,10 @@ function parseProactivePayload(kind: EventKind, payload: unknown): EventPayload 
     }
     case "unpublish": {
       const data = parseUnpublishContext(payload);
+      return data ? { kind, data } : null;
+    }
+    case "delete-package": {
+      const data = parseDeletePackageContext(payload);
       return data ? { kind, data } : null;
     }
     case "recursive-publish": {
@@ -1350,7 +1356,14 @@ function parseCreatePlaceholderContext(value: unknown): CreatePlaceholderContext
   if (!isRecord(value)) return null;
   const name = readString(value, "name");
   if (!name) return null;
-  return { name };
+  const validated = validateNpmPackageName(name);
+  if (!validated.valid) return null;
+  const rawArgs = value.args;
+  const args =
+    Array.isArray(rawArgs) && rawArgs.every((arg) => typeof arg === "string")
+      ? rawArgs
+      : ["--access", "public"];
+  return { name: validated.name, args };
 }
 
 function parseRefreshTokenContext(value: unknown): RefreshTokenContext | null {
@@ -1365,6 +1378,14 @@ function parseUnpublishContext(value: unknown): UnpublishContext | null {
   const version = readString(value, "version");
   if (!name || !version) return null;
   return { name, version };
+}
+
+function parseDeletePackageContext(value: unknown): DeletePackageContext | null {
+  if (!isRecord(value)) return null;
+  const name = readString(value, "name");
+  if (!name) return null;
+  const validated = validateNpmPackageName(name);
+  return validated.valid ? { name: validated.name } : null;
 }
 
 function readString(record: Record<string, unknown>, key: string): string | undefined {
@@ -2316,6 +2337,8 @@ export class PublishScheduler {
       await this.runPlaceholder(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === "unpublish") {
       await this.runUnpublish(event, client, creds.token, creds.totpSecret, profileRegistry);
+    } else if (event.payload?.kind === "delete-package") {
+      await this.runDeletePackage(event, client, creds.token, creds.totpSecret, profileRegistry);
     } else if (event.payload?.kind === "recursive-publish") {
       const registry = resolvePublishRegistry(event.payload.data.args, profileRegistry);
       const otp = resolvePublishOtp(event.payload.data.args);
@@ -2753,6 +2776,8 @@ export class PublishScheduler {
     if (event.payload?.kind !== "create-placeholder") return;
     const ctx = event.payload.data;
     const version = "0.0.0";
+    const distTag = resolvePublishDistTag(ctx.args);
+    const access = resolvePublishAccess(ctx.args, "public");
     let tempDir: string | null = null;
     try {
       tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "pnpm-pub-placeholder-"));
@@ -2785,6 +2810,8 @@ export class PublishScheduler {
         version,
         tarball: packed.tarball,
         metadata: packed.metadata,
+        access,
+        ...(distTag ? { distTag } : {}),
       });
       if (result.stdout) client.log("stdout", result.stdout + "\n");
       if (result.stderr) client.log("stderr", result.stderr + "\n");
@@ -2836,6 +2863,41 @@ export class PublishScheduler {
         const msg = result.wholePackageRemoved
           ? `Removed ${ctx.name} entirely (last version).`
           : `Removed ${ctx.name}@${ctx.version}.`;
+        this.store.resolveEvent(event.id, "success", msg);
+        client.log("stdout", msg + "\n");
+        client.exit(0);
+      } else {
+        this.store.resolveEvent(event.id, "failed", result.error);
+        client.log("stderr", result.error + "\n");
+        client.exit(1, result.error);
+      }
+    } catch (error: unknown) {
+      const msg = errorToMessage(error);
+      this.store.resolveEvent(event.id, "failed", msg);
+      client.log("stderr", msg + "\n");
+      client.exit(1, msg);
+    }
+  }
+
+  private async runDeletePackage(
+    event: PubEvent,
+    client: PendingClient,
+    token: string,
+    totpSecret: string,
+    registry: string,
+  ): Promise<void> {
+    if (event.payload?.kind !== "delete-package") return;
+    const ctx = event.payload.data;
+    client.log("stdout", `deleting package ${ctx.name}...\n`);
+    try {
+      const result = await deletePackage({
+        registry,
+        token,
+        totpSecret,
+        name: ctx.name,
+      });
+      if (result.ok) {
+        const msg = `Deleted package ${ctx.name}.`;
         this.store.resolveEvent(event.id, "success", msg);
         client.log("stdout", msg + "\n");
         client.exit(0);
