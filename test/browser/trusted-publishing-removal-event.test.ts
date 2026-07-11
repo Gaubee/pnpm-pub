@@ -82,8 +82,8 @@ async function state(): Promise<Record<string, unknown>> {
       const reject = buttons(footer, 'Reject')[0];
       const groupConfirm = buttons(group, 'Confirm all')[0];
       return JSON.stringify({
-        keepPressed: buttons(review, 'Keep').map((button) => button.getAttribute('data-state')),
-        removePressed: buttons(review, 'Remove').map((button) => button.getAttribute('data-state')),
+        keepPressed: buttons(review, 'Keep').map((button) => button.getAttribute('aria-checked')),
+        removePressed: buttons(review, 'Remove').map((button) => button.getAttribute('aria-checked')),
         confirmDisabled: confirm?.disabled ?? null,
         rejectDisabled: reject?.disabled ?? null,
         groupConfirmDisabled: groupConfirm?.disabled ?? null,
@@ -136,8 +136,8 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
     await runBrowser(["--session", browserSession, "wait", "--load", "networkidle"]);
 
     expect(await state()).toMatchObject({
-      keepPressed: ["off", "off"],
-      removePressed: ["on", "on"],
+      keepPressed: ["false", "false"],
+      removePressed: ["true", "true"],
       confirmDisabled: false,
       rejectDisabled: false,
       groupConfirmDisabled: false,
@@ -154,7 +154,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
         .forEach((button) => button.click())`,
     ]);
     expect(await state()).toMatchObject({
-      keepPressed: ["on", "on"],
+      keepPressed: ["true", "true"],
       confirmDisabled: true,
       rejectDisabled: false,
     });
@@ -167,8 +167,8 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
         .find((button) => button.textContent?.trim() === 'Remove')?.click()`,
     ]);
     expect(await state()).toMatchObject({
-      keepPressed: ["off", "on"],
-      removePressed: ["on", "off"],
+      keepPressed: ["false", "true"],
+      removePressed: ["true", "false"],
       confirmDisabled: false,
       rejectDisabled: false,
     });
@@ -195,7 +195,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
           removeActions: labels.filter((label) => label === 'Remove').length,
           removePressed: [...(dialog?.querySelectorAll('button') ?? [])]
             .filter((button) => button.textContent?.trim() === 'Remove')
-            .map((button) => button.getAttribute('data-state')),
+            .map((button) => button.getAttribute('aria-checked')),
         });
       })()`,
     ]);
@@ -203,7 +203,7 @@ describe("Feature: per-config Trusted Publishing removal review", () => {
       currentConfigs: true,
       keepActions: 2,
       removeActions: 2,
-      removePressed: ["on", "on"],
+      removePressed: ["true", "true"],
     });
   }, 90_000);
 });
