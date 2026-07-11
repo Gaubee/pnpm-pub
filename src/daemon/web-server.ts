@@ -54,6 +54,7 @@ import {
   getProfileSecrets,
   setProfileSecrets,
   type ProfileSecrets,
+  activeService,
 } from "./keychain.js";
 import { exportBundle, importBundle } from "./crypto.js";
 import { getCachedAvatarPath, lookupNpmProfileIdentity } from "./avatar.js";
@@ -61,6 +62,7 @@ import { recordTokenCreatedAt } from "./auto-renew.js";
 import { listTrustedPublishers } from "./trusted-publishing-api.js";
 import { previewPublishWorkflow, writePublishWorkflow } from "./oidc-workflow.js";
 import { kvGet, kvSet } from "./event-db.js";
+import { appDir, daemonLogPath, eventsDbPath, profilesPath } from "../shared/paths.js";
 
 export interface WebServerDeps {
   store: DaemonStore;
@@ -593,6 +595,18 @@ export class WebServer {
         profiles: this.deps.store.getProfiles(),
       },
       { type: "workspaces", workspaces: this.deps.store.getWorkspaces() },
+      {
+        type: "runtime-info",
+        info: {
+          pid: process.pid,
+          platform: process.platform,
+          appDir: appDir(),
+          profilesPath: profilesPath(),
+          eventsDbPath: eventsDbPath(),
+          daemonLogPath: daemonLogPath(),
+          credentialService: activeService(),
+        },
+      },
       // Preferences is the single read source for the keep-open pin and any
       // future preference field; the WebUI derives `pinned` from `keepOnTop`.
       { type: "preferences", preferences: this.deps.store.getPreferences() },
@@ -632,7 +646,8 @@ export class WebServer {
     const request = await service.prepareInstall();
     if ("error" in request) return { ok: false, error: request.error };
     const worker = path.join(path.dirname(request.daemonEntry), "update-worker.js");
-    if (!existsSync(worker)) return { ok: false, error: "The update worker is unavailable in this installation." };
+    if (!existsSync(worker))
+      return { ok: false, error: "The update worker is unavailable in this installation." };
     try {
       const { spawn } = await import("node:child_process");
       const child = spawn(request.nodePath, [worker, JSON.stringify(request)], {

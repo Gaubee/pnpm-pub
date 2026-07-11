@@ -115,11 +115,23 @@ describe("Feature: WebUI oRPC WebSocket transport", () => {
     await vi.waitFor(() => {
       expect(frames.some((frame) => frame.type === "profiles")).toBe(true);
       expect(frames.some((frame) => frame.type === "workspaces")).toBe(true);
+      expect(frames.some((frame) => frame.type === "runtime-info")).toBe(true);
     });
     await stop().catch((error: unknown) => {
       if (!isAbortError(error)) throw error;
     });
     expect(streamError).toBeNull();
+    const runtimeInfo = frames.find((frame) => frame.type === "runtime-info");
+    expect(runtimeInfo).toMatchObject({
+      type: "runtime-info",
+      info: {
+        appDir: path.join(sandbox, ".pnpm-pub"),
+        profilesPath: path.join(sandbox, ".pnpm-pub", "profiles.json"),
+        eventsDbPath: path.join(sandbox, ".pnpm-pub", "events.db"),
+        daemonLogPath: path.join(sandbox, ".pnpm-pub", "logs", "daemon.log"),
+        credentialService: "pnpm-pub",
+      },
+    });
     ws.close();
   });
 

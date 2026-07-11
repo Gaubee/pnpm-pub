@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
+  import * as Accordion from "$lib/components/ui/accordion/index.js";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { actions, daemon } from "$lib/store.js";
   import AppMark from "$lib/components/app-mark.svelte";
@@ -18,14 +19,17 @@
   const installing = $derived(update.status === "installing");
   const canInstall = $derived(updateAvailable && update.owner.canUpdate);
   const upToDate = $derived(update.status === "up-to-date");
+  const runtimeInfo = $derived($daemon.runtimeInfo);
 
   function formatTimestamp(value: number | null): string {
     if (!value) return $_("settings.aboutNotChecked");
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(value);
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+      value,
+    );
   }
 </script>
 
-<div class="flex flex-col gap-6">
+<div class="flex flex-col gap-4">
   <!-- Hero: identity + version + status, all in one block. The version line
        uses an arrow (1.2.3 → 1.3.0) when an update exists so "current" and
        "latest" read as one relationship instead of two detached rows. -->
@@ -82,10 +86,19 @@
             </Button>
           {/snippet}
         </Tooltip.Trigger>
-        <Tooltip.Content>{$_("settings.aboutLastChecked", { values: { time: formatTimestamp(update.lastCheckedAt) } })}</Tooltip.Content>
+        <Tooltip.Content
+          >{$_("settings.aboutLastChecked", {
+            values: { time: formatTimestamp(update.lastCheckedAt) },
+          })}</Tooltip.Content
+        >
       </Tooltip.Root>
       {#if updateAvailable}
-        <Button variant="brand" size="sm" disabled={!canInstall || installing} onclick={() => void actions.installAppUpdate()}>
+        <Button
+          variant="brand"
+          size="sm"
+          disabled={!canInstall || installing}
+          onclick={() => void actions.installAppUpdate()}
+        >
           {#if installing}<IconLoaderCircle class="animate-spin" />{:else}<IconDownload />{/if}
           {$_("settings.updateNow")}
         </Button>
@@ -128,4 +141,41 @@
       <IconArrowUpRight class="size-3" />
     </button>
   </footer>
+
+  <!-- Daemon facts are projected from the running process, including any
+       PNPM_PUB_HOME override. Secrets are named by backend, never displayed. -->
+  {#if runtimeInfo}
+    <Accordion.Root type="single" class="border-t">
+      <Accordion.Item value="daemon">
+        <Accordion.Trigger class="py-4 hover:no-underline">
+          <span class="flex min-w-0 flex-1 items-center justify-between gap-3 pr-2">
+            <span class="text-xs font-medium text-muted-foreground"
+              >{$_("settings.aboutDaemon")}</span
+            >
+            <span class="shrink-0 text-xs font-normal tabular-nums text-muted-foreground">
+              {runtimeInfo.platform} · PID {runtimeInfo.pid}
+            </span>
+          </span>
+        </Accordion.Trigger>
+        <Accordion.Content class="pb-4">
+          <dl class="grid gap-x-3 gap-y-2 text-xs @[34rem]:grid-cols-[auto_minmax(0,1fr)]">
+            <dt class="text-muted-foreground">{$_("settings.aboutDataDir")}</dt>
+            <dd class="min-w-0 break-all font-mono">{runtimeInfo.appDir}</dd>
+            <dt class="text-muted-foreground">{$_("settings.aboutProfilesPath")}</dt>
+            <dd class="min-w-0 break-all font-mono">{runtimeInfo.profilesPath}</dd>
+            <dt class="text-muted-foreground">{$_("settings.aboutCredentials")}</dt>
+            <dd class="min-w-0 break-words">
+              {$_("settings.aboutCredentialService", {
+                values: { service: runtimeInfo.credentialService },
+              })}
+            </dd>
+            <dt class="text-muted-foreground">{$_("settings.aboutEventsPath")}</dt>
+            <dd class="min-w-0 break-all font-mono">{runtimeInfo.eventsDbPath}</dd>
+            <dt class="text-muted-foreground">{$_("settings.aboutLogPath")}</dt>
+            <dd class="min-w-0 break-all font-mono">{runtimeInfo.daemonLogPath}</dd>
+          </dl>
+        </Accordion.Content>
+      </Accordion.Item>
+    </Accordion.Root>
+  {/if}
 </div>

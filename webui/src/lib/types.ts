@@ -36,6 +36,17 @@ export interface AppUpdateSnapshot {
   error: string | null;
 }
 
+/** Resolved daemon facts; these are received from the daemon, never inferred by the WebUI. */
+export interface DaemonRuntimeInfo {
+  pid: number;
+  platform: string;
+  appDir: string;
+  profilesPath: string;
+  eventsDbPath: string;
+  daemonLogPath: string;
+  credentialService: string;
+}
+
 export interface Profile {
   username: string;
   registry?: string;
@@ -299,6 +310,7 @@ export type WsServerMessage =
     }
   | { type: "profiles"; default: string; profiles: Profile[] }
   | { type: "workspaces"; workspaces: WorkspaceEntry[] }
+  | { type: "runtime-info"; info: DaemonRuntimeInfo }
   | { type: "app-update"; update: AppUpdateSnapshot }
   | {
       type: "packages";

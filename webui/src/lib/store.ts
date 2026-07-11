@@ -20,6 +20,7 @@ import type {
   EventPayloadData,
   TrustedPublisherCreateConfig,
   AppUpdateSnapshot,
+  DaemonRuntimeInfo,
 } from "./types";
 import type { RepoInfo } from "./components/repo-info-types.js";
 import { filterVisibleEvents, sortEvents } from "./event-projection.js";
@@ -111,6 +112,8 @@ export interface DaemonState {
   preferences: Preferences;
   /** Daemon-owned app update truth. UI controls only request actions against it. */
   appUpdate: AppUpdateSnapshot;
+  /** Resolved daemon process and persistence facts for diagnostic projections. */
+  runtimeInfo: DaemonRuntimeInfo | null;
   /**
    * Tray window keepOnTop pin state (Chapter 6.4). When true the window stays
    * on top and is exempt from blur auto-hide. Derived from
@@ -152,6 +155,7 @@ function createState(): DaemonState {
       nextCheckAt: null,
       error: null,
     },
+    runtimeInfo: null,
     pinned: false,
     exitRequested: false,
     windowVisibility: "hidden",
@@ -342,6 +346,9 @@ function handleServerMessage(msg: WsServerMessage): void {
       break;
     case "workspaces":
       daemon.update((s) => ({ ...s, workspaces: msg.workspaces }));
+      break;
+    case "runtime-info":
+      daemon.update((s) => ({ ...s, runtimeInfo: msg.info }));
       break;
     case "app-update":
       daemon.update((s) => ({ ...s, appUpdate: msg.update }));

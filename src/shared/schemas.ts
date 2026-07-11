@@ -550,6 +550,22 @@ export const AppUpdateCacheSchema = AppUpdateSnapshotSchema.pick({
 });
 export type AppUpdateCache = z.infer<typeof AppUpdateCacheSchema>;
 
+/**
+ * Resolved daemon runtime facts projected to diagnostic surfaces such as About.
+ * Paths come from the daemon process so PNPM_PUB_HOME and test/dev overrides are
+ * represented exactly; the WebUI must never reconstruct them from browser state.
+ */
+export const DaemonRuntimeInfoSchema = z.object({
+  pid: z.number().int().positive(),
+  platform: z.string().min(1),
+  appDir: z.string().min(1),
+  profilesPath: z.string().min(1),
+  eventsDbPath: z.string().min(1),
+  daemonLogPath: z.string().min(1),
+  credentialService: z.string().min(1),
+});
+export type DaemonRuntimeInfo = z.infer<typeof DaemonRuntimeInfoSchema>;
+
 // ---------------------------------------------------------------------------
 // WS protocol
 // ---------------------------------------------------------------------------
@@ -573,6 +589,8 @@ export const WsServerMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("profiles"), default: z.string(), profiles: z.array(ProfileSchema) }),
   z.object({ type: z.literal("workspaces"), workspaces: z.array(WorkspaceEntrySchema) }),
+  /** Resolved paths and process identity for the About diagnostic projection. */
+  z.object({ type: z.literal("runtime-info"), info: DaemonRuntimeInfoSchema }),
   /** Daemon-owned application update projection. */
   z.object({ type: z.literal("app-update"), update: AppUpdateSnapshotSchema }),
   /**
