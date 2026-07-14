@@ -11,11 +11,14 @@ import http from "node:http";
 import net from "node:net";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Anchor module resolution at the repo root so `tsx` (a root devDep, not in
-// webui) is reachable under pnpm's isolated layout.
+// webui) is reachable under pnpm's isolated layout. `--import` is resolved by
+// Node's ESM loader, which on Windows requires a `file://` URL (a bare
+// `E:\...` path throws ERR_UNSUPPORTED_ESM_URL_SCHEME), so convert here.
 const rootRequire = createRequire(path.resolve(repoRoot(), "package.json"));
-const tsxLoader = rootRequire.resolve("tsx");
+const tsxLoader = pathToFileURL(rootRequire.resolve("tsx")).href;
 
 // Chapter 4.4.1: adapter-static compiles the SvelteKit app to a pure SPA whose
 // output the daemon serves from dist/webui.

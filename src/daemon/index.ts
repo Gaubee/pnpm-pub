@@ -28,6 +28,9 @@ import { AppUpdateService } from "./app-update.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/** Windows uses page-owned frameless controls; macOS keeps native overlay controls. */
+const usesWindowsFramelessControls = process.platform === "win32";
+
 export interface DaemonOptions {
   cliVersion: string;
   webuiDir?: string;
@@ -313,7 +316,16 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   };
   requestDaemonRestart = () => stop({ exit: true });
 
-  const daemonHandles: DaemonHandles = { store, scheduler, web, ipc, appUpdate, port, webToken, stop };
+  const daemonHandles: DaemonHandles = {
+    store,
+    scheduler,
+    web,
+    ipc,
+    appUpdate,
+    port,
+    webToken,
+    stop,
+  };
 
   process.on("SIGINT", () => {
     log("received SIGINT — stopping daemon");
@@ -387,7 +399,8 @@ export { keychain };
  * Mount the WebUI inside a real opentray WebView window (Chapter 6.4).
  *
  * Implements the opentray skill's "Tray-Launched WebView Surface" +
- * "Tray-Anchored Lightweight Panel" + "Overlay Native Controls" scenario cards:
+ * "Tray-Anchored Lightweight Panel" scenario cards. macOS keeps native
+ * overlay controls; Windows uses frameless chrome with page-owned controls.
  *   const tray = (await createTray({ menu, primaryEvent })).extend(WebviewExt);
  *   const window = tray.createWebviewWindow({ url, windowControlsOverlay, ... });
  *   new WebviewPlacementKit({ tray, screen }).watch(window, { placement: "tray" });
@@ -396,13 +409,13 @@ export { keychain };
  * to the app). This function owns only the opentray lifecycle: create tray,
  * extend, create ONE window session, keep the handle, anchor it to the tray.
  *
- * Window chrome choice: `windowControlsOverlay: true` keeps the OS
- * min/max/close cluster while letting page content occupy the titlebar area.
- * Per the skill (ext-webview.md "Overlay and Frameless Guidance") the page must
- * read `navigator.opentrayWindow.overlay.getTitlebarAreaRect()` and bind native
- * drag via `startAppRegionDrag()` itself — this host NEVER injects drag
- * CSS/titlebars. The semantic-blur background is the native material; the page
- * paints translucent so that blur shows through.
+ * Window chrome choice: macOS keeps `windowControlsOverlay: true`, retaining
+ * transparent native traffic lights. Windows uses `frameless: true` so the
+ * page can render matching traffic lights in the top-left and avoid opaque
+ * Windows caption-button colors. The page always binds drag through
+ * `navigator.opentrayWindow.startAppRegionDrag()`; this host never injects
+ * titlebar CSS. The semantic-blur background is native, while the page paints
+ * translucent content so that material remains visible.
  *
  * Placement: `WebviewPlacementKit.watch(panel, { placement: "tray" })` anchors
  * the panel to tray geometry and re-applies after the window settles (quiescent
@@ -457,21 +470,25 @@ async function tryCreateTray(
     });
     tray = baseTray.extend(ext.WebviewExt);
 
-    // Bootstrap the single tray-scoped window session ONCE. Overlay chrome keeps
-    // the OS control cluster while the page owns the titlebar drag area; the
-    // native semantic-blur material supplies the gaussian background, and
-    // nativeWindowApi exposes navigator.opentrayWindow for startAppRegionDrag.
+    // Bootstrap the single tray-scoped window session ONCE. macOS retains its
+    // native overlay controls; Windows owns its frameless control cluster in
+    // the page. The native semantic-blur material supplies the background, and
+    // nativeWindowApi exposes navigator.opentrayWindow for titlebar dragging.
     panel = tray.createWebviewWindow({
       url,
       width: WINDOW_WIDTH,
       height: WINDOW_HEIGHT,
       title: "pnpm-pub",
       nativeWindowApi: true,
-      windowControlsOverlay: true,
+      windowControlsOverlay: !usesWindowsFramelessControls,
       // The inspector is a per-window creation capability. It cannot be added
       // after the first show, so only the explicit development launcher opts in.
       ...(enableDevtools ? { devtools: true } : {}),
       style: {
+        frameless: usesWindowsFramelessControls,
+        // Frameless windows default to fixed size. Keep the established panel
+        // behavior by opting into native edge and corner resizing.
+        resizable: true,
         // keepOnTop is permanent — the tray window always stays above others.
         // The "keep open" pin (whether blur auto-hide is enabled) is separate
         // and lives in TrayHost, not the window style.

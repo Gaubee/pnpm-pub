@@ -1,10 +1,10 @@
 <!--
-	Titlebar drag region for the overlay-chrome window (Chapter 6.1.3 / skill
-	"Overlay Native Controls").
+	Titlebar drag region for native-overlay and Windows frameless windows
+	(Chapter 6.1.3 / skill "Overlay Native Controls").
 
-	The opentray window is created with `windowControlsOverlay: true`, so the OS
-	min/max/close cluster stays and the page occupies the titlebar area. Per the
-	skill (ext-webview.md), drag is bound through the NATIVE
+	macOS is created with `windowControlsOverlay: true`, keeping native controls.
+	Windows is frameless and renders page-owned macOS-style controls at top-left.
+	On both paths drag is bound through the NATIVE
 	`navigator.opentrayWindow.startAppRegionDrag()` API — never injected CSS
 	app-region. On pointerdown over this strip we hand control to the native
 	window manager, which performs the drag (and keeps the OS controls clickable
@@ -21,144 +21,166 @@
 	support), the strip renders with conservative symmetric insets.
 -->
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { userPrefersMode, setMode } from 'mode-watcher';
-	import IconSun from '@lucide/svelte/icons/sun';
-	import IconMoon from '@lucide/svelte/icons/moon';
-	import IconMonitor from '@lucide/svelte/icons/monitor';
-	import IconLanguages from '@lucide/svelte/icons/languages';
-	import IconPin from '@lucide/svelte/icons/pin';
-	import IconPinOff from '@lucide/svelte/icons/pin-off';
-	import IconSettings from '@lucide/svelte/icons/settings';
-	import { _, locale } from 'svelte-i18n';
-	import { localeNames, locales, setAppLocale, type AppLocale } from '$lib/i18n.js';
-	import { daemon, actions, openSettings } from '$lib/store.js';
-	import { Button } from '$lib/components/ui/button/index.js';
-	import { Badge } from '$lib/components/ui/badge/index.js';
-	import type { OpentrayRect, OpentrayWindowOverlay } from '../../opentray.d.ts';
+  import { onMount } from "svelte";
+  import { userPrefersMode, setMode } from "mode-watcher";
+  import IconSun from "@lucide/svelte/icons/sun";
+  import IconMoon from "@lucide/svelte/icons/moon";
+  import IconMonitor from "@lucide/svelte/icons/monitor";
+  import IconLanguages from "@lucide/svelte/icons/languages";
+  import IconPin from "@lucide/svelte/icons/pin";
+  import IconPinOff from "@lucide/svelte/icons/pin-off";
+  import IconSettings from "@lucide/svelte/icons/settings";
+  import { _, locale } from "svelte-i18n";
+  import { localeNames, locales, setAppLocale, type AppLocale } from "$lib/i18n.js";
+  import { daemon, actions, openSettings } from "$lib/store.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
+  import MacosWindowControls from "$lib/components/macos-window-controls.svelte";
+  import type { OpentrayRect, OpentrayWindowOverlay } from "../../opentray.d.ts";
 
-	/**
-	 * Toolbar variant. The onboarding (add-profile) shell shows language +
-	 * theme (the user may need to switch language before authenticating); the
-	 * main shell replaces the language picker with a Settings entry, since
-	 * language is otherwise reachable from Settings → 通用.
-	 */
-	type Variant = 'onboarding' | 'main';
-	let { variant = 'main' }: { variant?: Variant } = $props();
+  /**
+   * Toolbar variant. The onboarding (add-profile) shell shows language +
+   * theme (the user may need to switch language before authenticating); the
+   * main shell replaces the language picker with a Settings entry, since
+   * language is otherwise reachable from Settings → 通用.
+   */
+  type Variant = "onboarding" | "main";
+  let { variant = "main" }: { variant?: Variant } = $props();
 
-	/**
-	 * The three theme states the titlebar toggle cycles through. Mirrors
-	 * mode-watcher's `Mode` ('dark' | 'light' | 'system') — duplicated locally
-	 * because mode-watcher doesn't export the type through its public surface.
-	 */
-	type ThemeMode = 'dark' | 'light' | 'system';
+  /**
+   * The three theme states the titlebar toggle cycles through. Mirrors
+   * mode-watcher's `Mode` ('dark' | 'light' | 'system') — duplicated locally
+   * because mode-watcher doesn't export the type through its public surface.
+   */
+  type ThemeMode = "dark" | "light" | "system";
 
-	/**
-	 * Safe-area insets derived from the overlay geometry, in CSS px.
-	 *   - `safeLeft`: gap before the first usable pixel (macOS traffic lights).
-	 *   - `safeRight`: gap after the last usable pixel (Windows caption buttons).
-	 * Buttons are positioned `left: safeLeft + N` / `right: safeRight + N` so
-	 * they never collide with the native control cluster. Conservative fallbacks
-	 * when the overlay is unavailable (plain browser / no overlay support).
-	 */
-	let safeLeft = $state(8);
-	let safeRight = $state(8);
+  /**
+   * Safe-area insets derived from the overlay geometry, in CSS px.
+   *   - `safeLeft`: gap before the first usable pixel (macOS traffic lights).
+   *   - `safeRight`: gap after the last usable pixel (Windows caption buttons).
+   * Buttons are positioned `left: safeLeft + N` / `right: safeRight + N` so
+   * they never collide with the native control cluster. Conservative fallbacks
+   * when the overlay is unavailable (plain browser / no overlay support).
+   */
+  let safeLeft = $state(8);
+  let safeRight = $state(8);
+  let hasFramelessControls = $state(false);
 
-	const ot = (): Navigator['opentrayWindow'] | NonNullable<Navigator['opentray']>['window'] | undefined =>
-		navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
+  const ot = ():
+    | Navigator["opentrayWindow"]
+    | NonNullable<Navigator["opentray"]>["window"]
+    | undefined => navigator.opentrayWindow ?? navigator.opentray?.window ?? undefined;
 
-	/** Begin a native window drag when the user grabs the titlebar strip. */
-	function onPointerDown(e: PointerEvent) {
-		const win = ot();
-		try {
-			win?.startAppRegionDrag?.({ x: e.clientX, y: e.clientY, pointerId: e.pointerId })?.catch(() => {});
-		} catch {
-			/* drag is a nicety — never throw */
-		}
-	}
+  /** Begin a native window drag when the user grabs the titlebar strip. */
+  function onPointerDown(e: PointerEvent) {
+    const win = ot();
+    try {
+      win
+        ?.startAppRegionDrag?.({ x: e.clientX, y: e.clientY, pointerId: e.pointerId })
+        ?.catch(() => {});
+    } catch {
+      /* drag is a nicety — never throw */
+    }
+  }
 
-	/**
-	 * Recompute the safe-area insets from a titlebar rect. The rect is the SAFE
-	 * AREA (controls excluded): its left edge is after the macOS traffic lights,
-	 * its right edge is before the Windows caption buttons. So the OS controls
-	 * occupy [0, rect.x) on the left and [rect.x + rect.width, innerWidth) on
-	 * the right. We add a small breathing margin so buttons don't sit flush
-	 * against the native cluster.
-	 */
-	const CONTROL_MARGIN = 4;
-	function applyRect(rect: OpentrayRect): void {
-		const inner = globalThis.innerWidth;
-		const left = Math.max(0, Math.round(rect.x));
-		const right = Math.max(0, Math.round(inner - rect.x - rect.width));
-		safeLeft = left + (left > 0 ? CONTROL_MARGIN : 0);
-		safeRight = right + (right > 0 ? CONTROL_MARGIN : 0);
-	}
+  /**
+   * Recompute the safe-area insets from a titlebar rect. The rect is the SAFE
+   * AREA (controls excluded): its left edge is after the macOS traffic lights,
+   * its right edge is before the Windows caption buttons. So the OS controls
+   * occupy [0, rect.x) on the left and [rect.x + rect.width, innerWidth) on
+   * the right. We add a small breathing margin so buttons don't sit flush
+   * against the native cluster.
+   */
+  const CONTROL_MARGIN = 4;
+  function applyRect(rect: OpentrayRect): void {
+    const inner = globalThis.innerWidth;
+    const left = Math.max(0, Math.round(rect.x));
+    const right = Math.max(0, Math.round(inner - rect.x - rect.width));
+    safeLeft = left + (left > 0 ? CONTROL_MARGIN : 0);
+    safeRight = right + (right > 0 ? CONTROL_MARGIN : 0);
+  }
 
-	// Three-state theme cycle: system → light → dark → system.
-	// `userPrefersMode.current` is the user's explicit pick ('dark'|'light'|'system').
-	const ORDER: ThemeMode[] = ['system', 'light', 'dark'];
-	const LABEL_KEY: Record<ThemeMode, string> = {
-		system: 'titlebar.themeSystem',
-		light: 'titlebar.themeLight',
-		dark: 'titlebar.themeDark',
-	};
-	const currentMode = $derived(userPrefersMode.current);
-	const currentLocale = $derived(($locale ?? 'en') as AppLocale);
-	function cycleTheme(): void {
-		const idx = ORDER.indexOf(currentMode);
-		const next = ORDER[(idx + 1) % ORDER.length] ?? 'system';
-		setMode(next);
-	}
+  // Three-state theme cycle: system → light → dark → system.
+  // `userPrefersMode.current` is the user's explicit pick ('dark'|'light'|'system').
+  const ORDER: ThemeMode[] = ["system", "light", "dark"];
+  const LABEL_KEY: Record<ThemeMode, string> = {
+    system: "titlebar.themeSystem",
+    light: "titlebar.themeLight",
+    dark: "titlebar.themeDark",
+  };
+  const currentMode = $derived(userPrefersMode.current);
+  const localeOptions = locales.map((value) => ({ value, label: localeNames[value] }));
+  function isAppLocale(value: string): value is AppLocale {
+    return locales.some((locale) => locale === value);
+  }
+  const currentLocale = $derived.by((): AppLocale => {
+    const candidate = $locale ?? "";
+    return isAppLocale(candidate) ? candidate : "en";
+  });
+  function cycleTheme(): void {
+    const idx = ORDER.indexOf(currentMode);
+    const next = ORDER[(idx + 1) % ORDER.length] ?? "system";
+    setMode(next);
+  }
 
-	function onLocaleChange(event: Event): void {
-		const select = event.currentTarget as HTMLSelectElement;
-		setAppLocale(select.value as AppLocale);
-	}
+  function onLocaleChange(value: string): void {
+    if (isAppLocale(value)) setAppLocale(value);
+  }
 
-	// "Keep open" pin (Chapter 6.4). The window is ALWAYS kept on top; this pin
-	// only decides whether blur auto-hide is enabled. When unpinned, daemon blur
-	// may authorize page-owned auto-close; the countdown is derived locally from
-	// the WebAnimation opacity timeline.
-	const pinned = $derived($daemon.pinned);
-	const updateAvailable = $derived($daemon.appUpdate.status === 'available');
-	const pinCountdown = $derived($daemon.pinCountdown);
-	const counting = $derived(pinCountdown !== null);
+  // "Keep open" pin (Chapter 6.4). The window is ALWAYS kept on top; this pin
+  // only decides whether blur auto-hide is enabled. When unpinned, daemon blur
+  // may authorize page-owned auto-close; the countdown is derived locally from
+  // the WebAnimation opacity timeline.
+  const pinned = $derived($daemon.pinned);
+  const updateAvailable = $derived($daemon.appUpdate.status === "available");
+  const pinCountdown = $derived($daemon.pinCountdown);
+  const counting = $derived(pinCountdown !== null);
 
-	/** Tooltip varies by state: pinned / unpinned / countdown-active. */
-	const pinLabel = $derived(
-		counting
-			? $_('titlebar.pinCountdownHint')
-			: pinned
-				? $_('titlebar.keepOpen')
-				: $_('titlebar.keepOpenOff'),
-	);
+  /** Tooltip varies by state: pinned / unpinned / countdown-active. */
+  const pinLabel = $derived(
+    counting
+      ? $_("titlebar.pinCountdownHint")
+      : pinned
+        ? $_("titlebar.keepOpen")
+        : $_("titlebar.keepOpenOff"),
+  );
 
-	onMount(() => {
-		const overlay: OpentrayWindowOverlay | undefined = ot()?.overlay;
-		if (!overlay) return;
+  onMount(() => {
+    const windowBridge = ot();
+    hasFramelessControls =
+      windowBridge?.overlay?.visible !== true &&
+      typeof windowBridge?.close === "function" &&
+      typeof windowBridge?.minimize === "function" &&
+      typeof windowBridge?.maximize === "function" &&
+      typeof windowBridge?.restore === "function" &&
+      typeof windowBridge?.getWindowState === "function";
 
-		const apply = async () => {
-			try {
-				applyRect(await overlay.getTitlebarAreaRect());
-			} catch {
-				/* geometry read is best-effort — keep the conservative insets */
-			}
-		};
-		void apply();
+    const overlay: OpentrayWindowOverlay | undefined = windowBridge?.overlay;
+    if (!overlay) return;
 
-		// Prefer listen() (opentray native), fall back to addEventListener.
-		let off: (() => void) | undefined;
-		if (overlay.listen) {
-			void overlay
-				.listen('geometrychange', (e) => applyRect(e.titlebarAreaRect))
-				.then((unsub) => (off = () => void unsub?.()));
-		} else if (overlay.addEventListener) {
-			const handler = (e: { titlebarAreaRect: OpentrayRect }) => applyRect(e.titlebarAreaRect);
-			overlay.addEventListener('geometrychange', handler);
-			off = () => overlay.removeEventListener?.('geometrychange', handler);
-		}
-		return () => off?.();
-	});
+    const apply = async () => {
+      try {
+        applyRect(await overlay.getTitlebarAreaRect());
+      } catch {
+        /* geometry read is best-effort — keep the conservative insets */
+      }
+    };
+    void apply();
+
+    // Prefer listen() (opentray native), fall back to addEventListener.
+    let off: (() => void) | undefined;
+    if (overlay.listen) {
+      void overlay
+        .listen("geometrychange", (e) => applyRect(e.titlebarAreaRect))
+        .then((unsub) => (off = () => void unsub?.()));
+    } else if (overlay.addEventListener) {
+      const handler = (e: { titlebarAreaRect: OpentrayRect }) => applyRect(e.titlebarAreaRect);
+      overlay.addEventListener("geometrychange", handler);
+      off = () => overlay.removeEventListener?.("geometrychange", handler);
+    }
+    return () => off?.();
+  });
 </script>
 
 <!--
@@ -172,15 +194,16 @@
 	the safe insets so the drag region also stays clear of the native controls.
 -->
 <div
-	data-window-titlebar
-	class="drag-strip no-drag shrink-0"
-	style="padding-left: {safeLeft}px; padding-right: {safeRight}px"
-	role="toolbar"
-	tabindex="-1"
-		aria-label={$_('titlebar.windowTitlebar')}
-		onpointerdown={onPointerDown}
-	>
-	<!--
+  data-window-titlebar
+  class="drag-strip no-drag shrink-0"
+  style="padding-left: {safeLeft}px; padding-right: {safeRight}px"
+  role="toolbar"
+  tabindex="-1"
+  aria-label={$_("titlebar.windowTitlebar")}
+  onpointerdown={onPointerDown}
+>
+  <MacosWindowControls />
+  <!--
 		"Keep open" pin (Chapter 6.4) — inline-start. A ghost icon Button matching
 		the Workspaces page's pin affordance: the ICON turns brand-colored when
 		active (Pin), muted otherwise (PinOff). The window is always kept on top;
@@ -188,99 +211,110 @@
 		countdown overlays beside the icon while the page-owned exit animation runs.
 		Anchored to the left safe edge so it clears the macOS traffic lights.
 	-->
-		<Button
-			variant="ghost"
-			size="sm"
-			class="pin-toggle no-drag hover:bg-transparent hover:[backdrop-filter:contrast(1)] dark:hover:bg-transparent {counting ? 'counting' : ''}"
-			style="left: {safeLeft + 6}px"
-			onclick={() => actions.setPreferences({ keepOnTop: !pinned })}
-			onpointerdown={(e) => e.stopPropagation()}
-			aria-label={pinLabel}
-			aria-pressed={pinned}
-			title={pinLabel}
-		>
-		{#if pinned}
-			<IconPin class="h-3.5 w-3.5 text-brand" />
-		{:else}
-			<IconPinOff class="h-3.5 w-3.5" />
-		{/if}
-		{#if counting}
-			<span class="pin-countdown" aria-hidden="true">{pinCountdown}</span>
-		{/if}
-	</Button>
-	{#if variant === 'onboarding'}
-		<div
-			class="locale-picker no-drag"
-			style="right: {safeRight + 36}px"
-			role="group"
-			aria-label={$_('common.language')}
-			onpointerdown={(e) => e.stopPropagation()}
-		>
-			<IconLanguages />
-			<select
-				value={currentLocale}
-				aria-label={$_('common.language')}
-				title={$_('common.language')}
-				onchange={onLocaleChange}
-			>
-				{#each locales as lang (lang)}
-					<option value={lang}>{localeNames[lang]}</option>
-				{/each}
-			</select>
-		</div>
-	{:else}
-		<!--
+  {#if variant === "main"}
+    <Button
+      variant="ghost"
+      size="sm"
+      class="pin-toggle no-drag hover:bg-transparent hover:[backdrop-filter:contrast(1)] dark:hover:bg-transparent {counting
+        ? 'counting'
+        : ''}"
+      style="left: {safeLeft + (hasFramelessControls ? 64 : 6)}px"
+      onclick={() => actions.setPreferences({ keepOnTop: !pinned })}
+      onpointerdown={(e) => e.stopPropagation()}
+      aria-label={pinLabel}
+      aria-pressed={pinned}
+      title={pinLabel}
+    >
+      {#if pinned}
+        <IconPin class="h-3.5 w-3.5 text-brand" />
+      {:else}
+        <IconPinOff class="h-3.5 w-3.5" />
+      {/if}
+      {#if counting}
+        <span class="pin-countdown" aria-hidden="true">{pinCountdown}</span>
+      {/if}
+    </Button>
+  {/if}
+  {#if variant === "onboarding"}
+    <div class="locale-select no-drag" style="right: {safeRight + 36}px">
+      <Select.Root
+        type="single"
+        value={currentLocale}
+        items={localeOptions}
+        onValueChange={onLocaleChange}
+      >
+        <Select.Trigger
+          size="sm"
+          class="h-6 gap-1 border-transparent bg-transparent px-1.5 text-[0.6875rem] shadow-none hover:bg-muted/60 data-open:bg-muted/60"
+          onpointerdown={(e) => e.stopPropagation()}
+          aria-label={$_("common.language")}
+          title={$_("common.language")}
+        >
+          <IconLanguages />
+          <span>{localeNames[currentLocale]}</span>
+        </Select.Trigger>
+        <Select.Content align="end" sideOffset={4} class="min-w-32">
+          {#each locales as lang (lang)}
+            <Select.Item value={lang} label={localeNames[lang]}>
+              {localeNames[lang]}
+            </Select.Item>
+          {/each}
+        </Select.Content>
+      </Select.Root>
+    </div>
+  {:else}
+    <!--
 			Settings entry — replaces the language picker on the main shell.
 			Language is still reachable from Settings → 通用. Same hover affordance
 			as the theme toggle (contrast backdrop) and same edge anchoring.
 		-->
-		<button
-			type="button"
-			class="theme-toggle no-drag"
-			style="right: {safeRight + 36}px"
-			onclick={openSettings}
-			onpointerdown={(e) => e.stopPropagation()}
-			aria-label={$_('settings.title')}
-			title={$_('settings.title')}
-			>
-				<IconSettings />
-				{#if updateAvailable}
-					<Badge
-						variant="brand"
-						class="absolute -right-0.5 -top-0.5 size-2 min-w-0 border border-background bg-brand p-0 shadow-sm"
-						aria-label={$_('settings.updateAvailable')}
-					></Badge>
-				{/if}
-			</button>
-	{/if}
-	<button
-		type="button"
-		class="theme-toggle no-drag"
-		style="right: {safeRight + 6}px"
-		onclick={cycleTheme}
-		onpointerdown={(e) => e.stopPropagation()}
-		aria-label={$_(LABEL_KEY[currentMode])}
-		title={$_(LABEL_KEY[currentMode])}
-	>
-		{#if currentMode === 'light'}
-			<IconSun />
-		{:else if currentMode === 'dark'}
-			<IconMoon />
-		{:else}
-			<IconMonitor />
-		{/if}
-	</button>
+    <button
+      type="button"
+      class="theme-toggle no-drag"
+      style="right: {safeRight + 36}px"
+      onclick={openSettings}
+      onpointerdown={(e) => e.stopPropagation()}
+      aria-label={$_("settings.title")}
+      title={$_("settings.title")}
+    >
+      <IconSettings />
+      {#if updateAvailable}
+        <Badge
+          variant="brand"
+          class="absolute -right-0.5 -top-0.5 size-2 min-w-0 border border-background bg-brand p-0 shadow-sm"
+          aria-label={$_("settings.updateAvailable")}
+        ></Badge>
+      {/if}
+    </button>
+  {/if}
+  <button
+    type="button"
+    class="theme-toggle no-drag"
+    style="right: {safeRight + 6}px"
+    onclick={cycleTheme}
+    onpointerdown={(e) => e.stopPropagation()}
+    aria-label={$_(LABEL_KEY[currentMode])}
+    title={$_(LABEL_KEY[currentMode])}
+  >
+    {#if currentMode === "light"}
+      <IconSun />
+    {:else if currentMode === "dark"}
+      <IconMoon />
+    {:else}
+      <IconMonitor />
+    {/if}
+  </button>
 </div>
 
 <style>
-	.drag-strip {
-		position: relative;
-		height: 2rem;
-		width: 100%;
-		background: transparent;
-		cursor: default;
-	}
-	/*
+  .drag-strip {
+    position: relative;
+    height: 2rem;
+    width: 100%;
+    background: transparent;
+    cursor: default;
+  }
+  /*
 		pin-toggle wraps the shadcn Button (ghost, icon-sm). We only own its
 		ABSOLUTE POSITIONING (anchored to the left safe edge) here — sizing,
 		hover/focus come from buttonVariants; the active state is conveyed by the
@@ -288,83 +322,74 @@
 		class is applied to the Button's (child) root element, which Svelte's
 		scoped-CSS analyzer can't see.
 	*/
-	:global(.pin-toggle) {
-		position: absolute;
-		top: 50%;
-		transform: translateY(-50%);
-	}
-	/* During a blur auto-hide countdown, draw the eye so the user notices the
+  :global(.pin-toggle) {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  /* During a blur auto-hide countdown, draw the eye so the user notices the
 		overlay number and knows clicking here cancels it (and pins the window). */
-	:global(.pin-toggle.counting) {
-		animation: pin-pulse 1s ease-in-out infinite;
-	}
-	.pin-countdown {
-		font-size: 0.6875rem;
-		font-variant-numeric: tabular-nums;
-		font-weight: 600;
-		line-height: 1;
-	}
-	@keyframes pin-pulse {
-		0%,
-		100% {
-			opacity: 1;
-		}
-		50% {
-			opacity: 0.55;
-		}
-	}
-	.theme-toggle {
-		position: absolute;
-		top: 50%;
-		transform: translateY(-50%);
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		height: 1.5rem;
-		width: 1.5rem;
-		border-radius: var(--radius-sm);
-		color: var(--muted-foreground);
-		background: transparent;
-		border: none;
-		cursor: pointer;
-		transition: backdrop-filter 0.12s ease, color 0.12s ease;
-	}
-	.theme-toggle:hover {
-		backdrop-filter: contrast(1);
-		color: var(--accent-foreground);
-	}
-	.theme-toggle:focus-visible {
-		outline: 2px solid var(--ring);
-		outline-offset: 1px;
-	}
-	.theme-toggle :global(svg) {
-		width: 0.875rem;
-		height: 0.875rem;
-	}
-	.locale-picker {
-		position: absolute;
-		top: 50%;
-		transform: translateY(-50%);
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-		height: 1.5rem;
-		color: var(--muted-foreground);
-	}
-	.locale-picker :global(svg) {
-		width: 0.875rem;
-		height: 0.875rem;
-	}
-	.locale-picker select {
-		height: 1.5rem;
-		max-width: 6.5rem;
-		border: none;
-		background: transparent;
-		color: inherit;
-		font-size: 0.6875rem;
-		outline: none;
-	}
-	.locale-picker:hover {
-		color: var(--foreground);
-	}
+  :global(.pin-toggle.counting) {
+    animation: pin-pulse 1s ease-in-out infinite;
+  }
+  .pin-countdown {
+    font-size: 0.6875rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    line-height: 1;
+  }
+  @keyframes pin-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+  .theme-toggle {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.5rem;
+    width: 1.5rem;
+    border-radius: var(--radius-sm);
+    color: var(--muted-foreground);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition:
+      backdrop-filter 0.12s ease,
+      color 0.12s ease;
+  }
+  .theme-toggle:hover {
+    backdrop-filter: contrast(1);
+    color: var(--accent-foreground);
+  }
+  .theme-toggle:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  .theme-toggle :global(svg) {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+  .locale-select {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+  .locale-select :global([data-slot="select-trigger"]) {
+    color: var(--muted-foreground);
+  }
+  .locale-select :global([data-slot="select-trigger"] svg) {
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+  .locale-select :global([data-slot="select-trigger"]:hover) {
+    color: var(--foreground);
+  }
 </style>

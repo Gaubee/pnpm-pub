@@ -160,7 +160,10 @@ describe("bootDaemon logging", () => {
     try {
       expect(mount.createWebviewWindow).toHaveBeenCalledWith(
         expect.objectContaining({
+          windowControlsOverlay: process.platform !== "win32",
           style: expect.objectContaining({
+            frameless: process.platform === "win32",
+            resizable: true,
             opacity: WINDOW_ENTER_SEED_OPACITY,
           }),
         }),

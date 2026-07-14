@@ -1,7 +1,7 @@
 /**
  * Ambient types for the OpenTray window bridge injected into the page when the
  * daemon hosts the WebUI inside a native opentray WebView window
- * (`nativeWindowApi: true` + `windowControlsOverlay: true`).
+ * (`nativeWindowApi: true` with either native overlay or frameless chrome).
  *
  * The webui bundle does NOT import `@opentray/ext-webview` (it ships native
  * binaries and is backend-only), so this file is the page-side source of truth
@@ -58,6 +58,14 @@ export interface OpentrayWindowStylePatch {
   keepOnTop?: boolean;
 }
 
+/** Native window state returned by the page-owned titlebar controls. */
+export interface OpentrayWindowState {
+  state: "normal" | "minimized" | "maximized";
+  minimized: boolean;
+  maximized: boolean;
+  visible: boolean;
+}
+
 /**
  * Payload of the bridge `downloadcompleted` event. Emitted by the native host
  * after it finishes saving a page-triggered download to disk (the host owns
@@ -79,15 +87,20 @@ export interface OpentrayDownloadCompletedEvent {
 
 /**
  * The page-facing native window bridge. `startAppRegionDrag()` hands a
- * pointerdown to the native window manager (overlay chrome drag); `overlay`
- * exposes titlebar geometry so the page can reserve space for OS controls;
- * `resizeTo()` lets the page set the OS window size at runtime (used to give
- * each route its preferred default geometry); `setStyle()` lets the WebUI map
- * its page-owned animation timeline onto native window style; the
- * `downloadcompleted` listener lets the page react to native downloads.
+ * pointerdown to the native window manager; `overlay` exposes native-control
+ * geometry where present; the close/minimize/maximize/restore methods serve
+ * page-owned frameless controls; `resizeTo()` lets the page set the OS window
+ * size at runtime; `setStyle()` maps the page-owned animation timeline onto
+ * native style; and the `downloadcompleted` listener reacts to native downloads.
  */
 export interface OpentrayWindowBridge {
   readonly overlay?: OpentrayWindowOverlay;
+  /** Hide the native window without destroying the live tray session. */
+  close?(): Promise<void>;
+  minimize?(): Promise<OpentrayWindowState>;
+  maximize?(): Promise<OpentrayWindowState>;
+  restore?(): Promise<OpentrayWindowState>;
+  getWindowState?(): Promise<OpentrayWindowState>;
   startAppRegionDrag?(options?: {
     x?: number;
     y?: number;
