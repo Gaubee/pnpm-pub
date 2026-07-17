@@ -1,6 +1,6 @@
 {
   "name": "pnpm-pub",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Desktop-level local daemon proxy and productivity tool for high-frequency NPM package authors.",
   "keywords": [
     "2fa",
@@ -54,8 +54,8 @@
   },
   "dependencies": {
     "@github/keytar": "^7.0.0",
-    "@opentray/ext-webview": "^0.14.3",
-    "opentray": "^0.14.3",
+    "@opentray/ext-webview": "^0.14.4",
+    "opentray": "^0.14.4",
     "validate-npm-package-name": "^8.0.0"
   },
   "devDependencies": {
