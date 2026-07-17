@@ -1,5 +1,8 @@
 /**
  * Daemon logging tests — secret-bearing lifecycle material must not be serialized.
+ *
+ * Orthogonal intent (2026-07-17, original request): the tray bootstrap must
+ * declare page-owned auto-hide and no-switcher policy in the native style.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import path from "node:path";
@@ -8,6 +11,10 @@ import { tmpdir } from "node:os";
 import { bootDaemon } from "../../src/daemon/index.js";
 import { daemonLogPath, setHomeOverride } from "../../src/shared/paths.js";
 import { WINDOW_ENTER_SEED_OPACITY } from "../../src/shared/window-opacity.js";
+import {
+  OPENTRAY_WINDOWS_NATIVE_MATERIAL_COMPARATOR_ENV,
+  PNPM_PUB_OPENTRAY_WINDOWS_HOST_TOPOLOGY_ENV,
+} from "../../src/daemon/opentray-windows-host.js";
 import type { WebviewWindowOptions } from "@opentray/ext-webview";
 
 type MenuClickHandler = (event: { itemId: number }) => void;
@@ -58,6 +65,10 @@ function makeHappyMount() {
   const panel = {
     show: async () => {},
     hide: async () => {},
+    close: async () => {},
+    isClosed: async () => false,
+    isVisible: async () => true,
+    toVisible: async () => {},
     setStyle: async () => ({}),
     listen: () => () => {},
     destroy: async () => {},
@@ -98,9 +109,13 @@ beforeEach(async () => {
   trayMocks.placementWatch.mockReset();
   trayMocks.menuClickHandlers = [];
   trayMocks.placementWatch.mockResolvedValue({ stop: () => {} });
+  delete process.env[OPENTRAY_WINDOWS_NATIVE_MATERIAL_COMPARATOR_ENV];
+  delete process.env[PNPM_PUB_OPENTRAY_WINDOWS_HOST_TOPOLOGY_ENV];
 });
 
 afterEach(async () => {
+  delete process.env[OPENTRAY_WINDOWS_NATIVE_MATERIAL_COMPARATOR_ENV];
+  delete process.env[PNPM_PUB_OPENTRAY_WINDOWS_HOST_TOPOLOGY_ENV];
   setHomeOverride(null);
   await fsp.rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
@@ -147,6 +162,29 @@ describe("bootDaemon logging", () => {
     }
   });
 
+  it("Scenario: Given Windows tray startup, When OpenTray creates its broker, Then comparator topology is selected first", async () => {
+    const mount = makeHappyMount();
+    let observedComparator: string | undefined;
+    trayMocks.createTray.mockImplementationOnce(() => {
+      observedComparator = process.env[OPENTRAY_WINDOWS_NATIVE_MATERIAL_COMPARATOR_ENV];
+      return Promise.resolve(mount);
+    });
+
+    const handles = await bootDaemon({ cliVersion: "0.1.0" });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      expect(observedComparator).toBe(process.platform === "win32" ? "1" : undefined);
+      const log = await fsp.readFile(daemonLogPath(), "utf8");
+      expect(log.includes("OpenTray Windows host topology: native-material-comparator")).toBe(
+        process.platform === "win32",
+      );
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
   it("Scenario: Given daemon startup, When the tray WebView is created, Then the native window is seeded below full opacity before first show", async () => {
     const mount = makeHappyMount();
     trayMocks.createTray.mockResolvedValueOnce(mount);
@@ -164,6 +202,9 @@ describe("bootDaemon logging", () => {
           style: expect.objectContaining({
             frameless: process.platform === "win32",
             resizable: true,
+            keepOnTop: true,
+            autoHide: false,
+            platform: { windows: { showInSwitchers: false } },
             opacity: WINDOW_ENTER_SEED_OPACITY,
           }),
         }),

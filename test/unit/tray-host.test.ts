@@ -1,93 +1,101 @@
 /**
- * TrayHost behavior tests (Chapter 6.4).
+ * TrayHost retained-window lifecycle coverage (Chapter 6.4).
  *
- * Covers the new visibility model:
- *   - tray-click toggles show/hide
- *   - keepOnTop is PERMANENT (always on), independent of the pin
- *   - the "keep open" pin only gates blur auto-hide (default unpinned)
- *   - blur authorizes page-owned auto-close (unpinned + no active events)
- *   - focus cancels a pending auto-close intent
- *   - the keep-open pin is a persisted preference (setPreferences), re-evaluated on change
- *   - markHidden (window-hidden WS) keeps toggle() correct after an OS-close
+ * Orthogonal intentions (2026-07-17, original request):
+ * 1. Native isVisible()/visibleChange owns minimized, hidden, and visible state.
+ * 2. Retained sessions reveal with toVisible() and hide with close().
+ * 3. Page-owned blur animation remains guarded by pin, route, and active events.
+ * 4. Tray menu text always describes the next native visibility action.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import os from "node:os";
+import path from "node:path";
+import { promises as fsp } from "node:fs";
 import { DaemonStore } from "../../src/daemon/store.js";
 import { TrayHost } from "../../src/daemon/tray-host.js";
 import type { OpentrayTray, OpentrayWindow, TrayPinFrame } from "../../src/daemon/tray-host.js";
 import { setHomeOverride } from "../../src/shared/paths.js";
 import { WINDOW_ENTER_SEED_OPACITY } from "../../src/shared/window-opacity.js";
-import os from "node:os";
-import path from "node:path";
-import { promises as fsp } from "node:fs";
 
-/**
- * Fake WebviewWindowHandle: tracks visibility + keepOnTop, and lets tests fire
- * blur/focus events through the recorded `listen` subscribers.
- */
-function makeWindow(): OpentrayWindow & {
+type TestWindow = OpentrayWindow & {
   visible: boolean;
   keepOnTop: boolean;
   opacity: number;
   fireBlur(): void;
   fireFocus(): void;
-} {
-  const listeners = new Map<string, Array<(payload: unknown) => void>>();
+  fireVisibleChange(visible: boolean): void;
+};
+
+/** Native-handle probe used by the lifecycle tests. */
+function makeWindow(): TestWindow {
+  const listeners = new Map<string, Array<(event: { payload: unknown }) => void>>();
+  const emit = (event: string, payload: unknown) => {
+    for (const handler of listeners.get(event) ?? []) handler({ payload });
+  };
   const win = {
     visible: false,
     keepOnTop: false,
     opacity: 1,
     async show() {
       win.visible = true;
+      emit("visibleChange", { visible: true });
     },
     async hide() {
       win.visible = false;
+      emit("visibleChange", { visible: false });
+    },
+    async close() {
+      win.visible = false;
+      emit("visibleChange", { visible: false });
+    },
+    async isClosed() {
+      return !win.visible;
+    },
+    async isVisible() {
+      return win.visible;
+    },
+    async toVisible() {
+      win.visible = true;
+      emit("visibleChange", { visible: true });
     },
     async setStyle(style: { keepOnTop?: boolean; opacity?: number }) {
-      if (style.keepOnTop !== undefined) {
-        win.keepOnTop = style.keepOnTop;
-      }
-      if (style.opacity !== undefined) {
-        win.opacity = style.opacity;
-      }
+      if (style.keepOnTop !== undefined) win.keepOnTop = style.keepOnTop;
+      if (style.opacity !== undefined) win.opacity = style.opacity;
     },
-    listen(event: unknown, handler: (payload: unknown) => void) {
-      const key = typeof event === "string" ? event : (event as string);
-      const arr = listeners.get(key) ?? [];
-      arr.push(handler);
-      listeners.set(key, arr);
+    listen(event: unknown, handler: (event: { payload: unknown }) => void) {
+      const key = String(event);
+      const current = listeners.get(key) ?? [];
+      current.push(handler);
+      listeners.set(key, current);
       return () => {
-        const cur = listeners.get(key);
-        if (cur)
-          listeners.set(
-            key,
-            cur.filter((h) => h !== handler),
-          );
+        listeners.set(
+          key,
+          (listeners.get(key) ?? []).filter((candidate) => candidate !== handler),
+        );
       };
     },
     async destroy() {},
     fireBlur() {
-      for (const h of listeners.get("blur") ?? []) h({});
+      emit("blur", {});
     },
     fireFocus() {
-      for (const h of listeners.get("focus") ?? []) h({});
+      emit("focus", {});
+    },
+    fireVisibleChange(visible: boolean) {
+      win.visible = visible;
+      emit("visibleChange", { visible });
     },
   };
-  return win as unknown as OpentrayWindow & {
-    visible: boolean;
-    keepOnTop: boolean;
-    opacity: number;
-    fireBlur(): void;
-    fireFocus(): void;
-  };
+  return win as unknown as TestWindow;
 }
 
-/**
- * Fake tray handle: records menu-click subscribers.
- */
-function makeTray(): OpentrayTray & { fireClick(itemId?: number): void } {
-  let click: ((e: { itemId: number }) => void) | undefined;
+type TestTray = OpentrayTray & { fireClick(itemId?: number): Promise<void> };
+
+/** Tray probe that preserves async menu handlers. */
+function makeTray(): TestTray {
+  let click: ((event: { itemId: number }) => void | Promise<void>) | undefined;
   const tray = {
-    onMenuClick(handler: (e: { itemId: number }) => void) {
+    onMenuClick(handler: (event: { itemId: number }) => void | Promise<void>) {
       click = handler;
       return () => {
         click = undefined;
@@ -96,11 +104,11 @@ function makeTray(): OpentrayTray & { fireClick(itemId?: number): void } {
     async setIcon() {},
     async setMenu() {},
     async destroy() {},
-    fireClick(itemId = 1) {
-      click?.({ itemId });
+    async fireClick(itemId = 1) {
+      await click?.({ itemId });
     },
   };
-  return tray as unknown as OpentrayTray & { fireClick(itemId?: number): void };
+  return tray as unknown as TestTray;
 }
 
 const sandbox = path.join(os.tmpdir(), `pnpm-pub-tray-${process.pid}-${Date.now()}`);
@@ -123,7 +131,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     const window = makeWindow();
     const tray = makeTray();
     const host = new TrayHost(store, tray, window, { title: "pnpm-pub", openItemId: 1 });
-    tray.fireClick(1); // simulate the primaryEvent menu click
+    await tray.fireClick(1); // simulate the primaryEvent menu click
     expect(window.visible).toBe(true);
     expect(host.getVisibility()).toBe("shown");
     await host.destroy();
@@ -135,10 +143,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
 
-    host.show();
-    // show() chains setStyle(keepOnTop) after the show promise resolves, so
-    // flush the microtask before asserting.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await host.show();
     expect(window.visible).toBe(true);
     // keepOnTop is always on, even when unpinned (default).
     expect(window.keepOnTop).toBe(true);
@@ -177,7 +182,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
       title: "pnpm-pub",
       onPinFrame: (frame) => frames.push(frame),
     });
-    host.show();
+    await host.show();
     expect(window.visible).toBe(true);
     expect(window.opacity).toBe(WINDOW_ENTER_SEED_OPACITY);
 
@@ -185,7 +190,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     expect(host.getPinState().exitRequested).toBe(true);
     expect(window.visible).toBe(true);
 
-    host.completeAutoClose();
+    await host.completeAutoClose();
     expect(window.visible).toBe(false);
     expect(host.getVisibility()).toBe("hidden");
     expect(host.getPinState().exitRequested).toBe(false);
@@ -201,7 +206,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    host.show();
+    await host.show();
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(true);
 
@@ -209,7 +214,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     expect(host.getPinState().exitRequested).toBe(false);
 
     // A stale WebUI completion after focus must not hide the window.
-    host.completeAutoClose();
+    await host.completeAutoClose();
     expect(window.visible).toBe(true);
     await host.destroy();
   });
@@ -220,13 +225,13 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
     await store.setPreferences({ keepOnTop: true });
-    host.show();
+    await host.show();
     expect(window.visible).toBe(true);
 
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(false);
 
-    host.completeAutoClose();
+    await host.completeAutoClose();
     expect(window.visible).toBe(true);
     await host.destroy();
   });
@@ -236,14 +241,14 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    host.show();
+    await host.show();
     host.setRoute("/add-profile");
 
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(false);
 
     // A stale completion must still be rejected while the form route owns the window.
-    host.completeAutoClose();
+    await host.completeAutoClose();
     expect(window.visible).toBe(true);
     await host.destroy();
   });
@@ -253,7 +258,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    host.show();
+    await host.show();
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(true);
 
@@ -270,7 +275,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    host.show();
+    await host.show();
     window.fireBlur();
     expect(host.getPinState().exitRequested).toBe(true);
 
@@ -294,6 +299,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
       profile: "alice",
       payload: { kind: "refresh-token", data: { username: "alice" } },
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(window.visible).toBe(true);
     expect(host.getPinState().hasActiveEvents).toBe(true);
 
@@ -322,18 +328,19 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
       profile: "alice",
       payload: { kind: "refresh-token", data: { username: "alice" } },
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(window.visible).toBe(true);
     expect(host.getPinState().hasActiveEvents).toBe(true);
 
     // User clicks "Hide window". hide() triggers a native blur synchronously;
     // the window must stay hidden (not be resurrected by the blur re-eval).
-    host.hide();
+    await host.hide();
     window.fireBlur();
     expect(host.getPinState().visibility).toBe("hidden");
     expect(window.visible).toBe(false);
 
     // A subsequent tray click still re-shows in one press (toggle is correct).
-    tray.fireClick();
+    await tray.fireClick();
     expect(host.getPinState().visibility).toBe("shown");
     expect(window.visible).toBe(true);
     await host.destroy();
@@ -344,7 +351,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
-    host.show(); // establishes keepOnTop = true (permanent)
+    await host.show(); // establishes keepOnTop = true (permanent)
 
     await store.setPreferences({ keepOnTop: true });
     expect(store.getPreferences().keepOnTop).toBe(true);
@@ -357,24 +364,25 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await host.destroy();
   });
 
-  it("markHidden fixes the OS-close double-click (next tray click re-shows)", async () => {
+  it("native visibleChange fixes minimized-window menu state and one-click restore", async () => {
     const store = new DaemonStore();
     await store.load();
     const window = makeWindow();
     const tray = makeTray();
-    const host = new TrayHost(store, tray, window, { title: "pnpm-pub", openItemId: 1 });
+    const host = new TrayHost(store, tray, window, {
+      title: "pnpm-pub",
+      openItemId: 1,
+    });
 
-    host.show();
+    await host.show();
     expect(window.visible).toBe(true);
 
-    // Simulate the OS close (X): the window is hidden out-of-band and the
-    // WebUI reports it via window-hidden.
-    window.visible = false;
-    host.markHidden();
+    // Native minimize/close/auto-hide all project operational visibility here.
+    window.fireVisibleChange(false);
     expect(host.getVisibility()).toBe("hidden");
 
-    // A single tray click now re-shows (the old bug needed two clicks).
-    tray.fireClick(1);
+    // The next tray click queries isVisible() and restores the retained session.
+    await tray.fireClick(1);
     expect(window.visible).toBe(true);
     expect(host.getVisibility()).toBe("shown");
     await host.destroy();
@@ -394,17 +402,17 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
         quitCalls++;
       },
     });
-    host.show();
+    await host.show();
     expect(window.visible).toBe(true);
 
     // Picking the Quit item must call onQuit once and leave the window visible
     // (process teardown is the caller's job, not the host's).
-    tray.fireClick(2);
+    await tray.fireClick(2);
     expect(quitCalls).toBe(1);
     expect(window.visible).toBe(true);
 
     // The Open item still toggles as before.
-    tray.fireClick(1);
+    await tray.fireClick(1);
     expect(window.visible).toBe(false);
     await host.destroy();
   });
@@ -425,7 +433,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
       },
     });
     // Must not throw — the failure is swallowed + logged.
-    expect(() => tray.fireClick(2)).not.toThrow();
+    await expect(tray.fireClick(2)).resolves.toBeUndefined();
     expect(lines.some((l) => l.includes("onQuit failed: shutdown boom"))).toBe(true);
     await host.destroy();
   });
@@ -469,11 +477,11 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     const last = () => pushedMenus[pushedMenus.length - 1];
     expect(last().items.map((i) => i.title)).toEqual(["Hide window", undefined, "Quit"]);
 
-    host.hide();
+    await host.hide();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(last().items.map((i) => i.title)).toEqual(["Show window", undefined, "Quit"]);
 
-    host.show();
+    await host.show();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(last().items.map((i) => i.title)).toEqual(["Hide window", undefined, "Quit"]);
     await host.destroy();
@@ -487,10 +495,10 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     const host = new TrayHost(store, makeTray(), window, { title: "pnpm-pub" });
 
     const evt = store.createEvent({ kind: "publish", profile: "alice" });
-    host.show();
+    await host.show();
     expect(window.visible).toBe(true);
 
-    host.hide();
+    await host.hide();
     expect(window.visible).toBe(false);
     expect(host.getVisibility()).toBe("hidden");
     const stillPending = store.getEvents().find((e) => e.id === evt.id);
@@ -503,7 +511,7 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
     await store.load();
     const window = makeWindow();
     const lines: string[] = [];
-    window.show = async () => {
+    window.toVisible = async () => {
       throw "runtime binding offline";
     };
     const host = new TrayHost(store, makeTray(), window, {
@@ -511,10 +519,10 @@ describe("TrayHost visibility (Chapter 6.4)", () => {
       log: (line) => lines.push(line),
     });
 
-    host.show();
+    await host.show();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(lines).toContain("[tray] show failed: runtime binding offline");
+    expect(lines).toContain("[tray] toVisible failed: runtime binding offline");
     await host.destroy();
   });
 });

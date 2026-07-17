@@ -4,6 +4,9 @@
  * This is the transport contract between the local daemon and the tray-hosted
  * WebUI. It is browser-safe: only Zod schemas and pure oRPC contract builders
  * are imported here.
+ *
+ * Orthogonal intent (2026-07-17, original request): native window visibility
+ * stays outside the page protocol; only page-owned animation completion crosses it.
  */
 import { eventIterator, oc } from "@orpc/contract";
 import { z } from "zod";
@@ -375,7 +378,6 @@ export const webRpcContract = {
   },
   tray: {
     completeAutoClose: oc.output(OkResponseSchema),
-    windowHidden: oc.output(OkResponseSchema),
     /** Reports the WebUI route that currently owns the tray window surface. */
     routeChanged: oc
       .input(z.object({ pathname: z.string().startsWith("/").max(2_048) }))

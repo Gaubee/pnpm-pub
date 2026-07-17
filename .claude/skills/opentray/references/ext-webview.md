@@ -1,6 +1,6 @@
 # ext-webview
 
-Use this reference when the user asks how to use the official OpenTray WebView extension.
+Use this reference for the official OpenTray WebView extension. The retained-window lifecycle below requires OpenTray `0.14.3` or newer.
 
 ## Install
 
@@ -8,124 +8,130 @@ Use this reference when the user asks how to use the official OpenTray WebView e
 pnpm add opentray @opentray/ext-webview
 ```
 
-The facade package stays platform-neutral. Official native WebView packages are published for macOS and Windows. Linux remains supported by OpenTray core, but `@opentray/ext-webview` does not publish a Linux native runtime package.
+The facade is platform-neutral. Native WebView packages are published for macOS and Windows; Linux has no official `@opentray/ext-webview` runtime package.
 
-## Public Shape
+## Retained Window Contract
 
-Attach the facade to an existing tray handle:
+Create one tray, extend it once, create one window handle, and bootstrap it once:
 
 ```ts
-import { attachWebview } from "@opentray/ext-webview";
+import { WebviewExt } from "@opentray/ext-webview";
+import { createTray } from "opentray";
 
-const webview = attachWebview(tray);
-await webview.show({
-  type: "show",
+const openId = 1;
+const menu = (visible: boolean) => ({
+  items: [
+    {
+      type: "item" as const,
+      id: openId,
+      title: visible ? "Hide window" : "Show window",
+      primaryEvent: true,
+    },
+  ],
+});
+
+const tray = (
+  await createTray({ id: "panel", menu: menu(false) }, { appId: "panel", appName: "Panel" })
+).extend(WebviewExt);
+const panel = tray.createWebviewWindow({
   html: "<main>Hello</main>",
   width: 360,
   height: 220,
-  fallbackRect: { x: 0, y: 0, width: 1, height: 1 },
-});
-```
-
-Supported host commands:
-
-- `show`
-- `hide`
-- `navigate`
-- `evaluate`
-- `postMessage`
-- `moveTo`
-- `resizeTo`
-- `getBounds`
-- `getScreenDetails` on the backend WebView extension capability, not on `navigator.opentrayWindow`
-- `drainIpcMessages` on `WebviewWindowHandle` for page-to-backend and native-to-backend intents
-- `setStyle`
-- `setBackground`
-- `setMinimumSize` / `setMaximumSize`
-
-Page-side `navigator.opentrayWindow.show()` and `hide()` are reversible visibility controls for an existing window session. They are not content replacement verbs; use `setContent`, `navigate`, or `destroy` when that is the actual product intent.
-
-Host-side `createWebviewWindow(options)` is the bootstrap declaration for one tray-scoped session. Call it once, keep that `WebviewWindowHandle`, and call `show()` / `hide()` for repeated tray activations. After the first successful show, `show()` must restore visibility without replaying startup width, height, style, content, or native API flags. Use `resizeTo`, `moveTo`, `setStyle`, `setBackground`, `setMinimumSize`, `setMaximumSize`, `setContent`, or `navigate` when a real mutation is intended.
-
-## Placement Kit
-
-Use `WebviewPlacementKit` when host code needs to place a WebView surface relative to tray, cursor, or screen geometry. It is a composition helper, not a `createWebviewPanel` abstraction.
-
-```ts
-import { WebviewExt, WebviewPlacementKit } from "@opentray/ext-webview";
-
-const tray = await createTray(options);
-const webviewTray = tray.extend(WebviewExt);
-const openPanelId = 1;
-const panel = webviewTray.createWebviewWindow({
-  html,
-  width: 328,
-  height: 244,
-  nativeWindowApi: true,
+  style: { platform: { windows: { showInSwitchers: false } } },
 });
 
 await panel.show();
-tray.onMenuClick(({ itemId }) => {
-  if (itemId === openPanelId) void panel.show();
+const stopVisibleChange = panel.listen("visibleChange", ({ payload }) => {
+  void tray.setMenu(menu(payload.visible));
 });
-const placementWatch = await new WebviewPlacementKit({ tray, screen: webviewTray }).watch(panel, {
+await tray.setMenu(menu(true));
+
+tray.onMenuClick(({ itemId }) => {
+  if (itemId !== openId) return;
+  void (async () => {
+    if (await panel.isVisible()) await panel.close();
+    else await panel.toVisible();
+  })();
+});
+```
+
+```text
+createWebviewWindow(options)
+  -> show() once: load native extension + create page runtime
+  -> listen(visibleChange)
+  -> isVisible() before each tray toggle
+       +-- true  -> close(): hide retained session
+       `-- false -> toVisible(): reveal hidden or minimized session
+```
+
+Rules:
+
+- `visibleChange(false)` covers hidden/closed, minimized, and native auto-hide states.
+- Do not infer native visibility from `document.visibilityState`, page blur, or a private boolean.
+- Do not call `show(options)` again to restore a retained session; startup size, style, content, and native API flags are bootstrap declarations.
+- Use `destroy()` only when page state should be discarded.
+- Install native listeners only after the first successful `show()`, and unsubscribe before final destroy.
+
+## Blur Ownership
+
+Native tray windows default to:
+
+```text
+native blur
+  +-- autoHide: false -> remain visible
+  +-- keepOnTop: true -> remain visible
+  `-- otherwise      -> hide retained session -> visibleChange(false)
+```
+
+Use native `autoHide` for ordinary tray panels. Set `autoHide: false` when the page owns an exit animation, protected form, or diagnostic flow; after the page completes, the host calls `close()`.
+
+`style.platform.windows.showInSwitchers` is independent. Windows tray utility windows default to `false`, excluding them from the taskbar and Alt+Tab. Set it to `true` only for a normal app-window role.
+
+## Host Operations
+
+`WebviewWindowHandle` provides:
+
+- lifecycle: `show`, `close`, `destroy`, `isClosed`, `isVisible`, `toVisible`
+- geometry: `moveTo`, `resizeTo`, `getBounds`, size constraints
+- appearance: `setStyle`, `setBackground`
+- content: `setContent`, `navigate`, `evaluate`, `postMessage`
+- integration: `drainIpcMessages`, permission messages, DevTools
+
+Page-side `navigator.opentrayWindow` exposes standard window commands. Host code should still own tray lifecycle and menu synchronization.
+
+## Placement Kit
+
+`WebviewPlacementKit` composes tray/screen geometry with an existing WebView handle:
+
+```ts
+const watch = await new WebviewPlacementKit({ tray, screen: webviewTray }).watch(panel, {
   placement: "tray",
-  width: 328,
-  height: 244,
   placementMargin: 8,
 });
 ```
 
-Supported placements include `tray`, `cursor`, `screen-center`, screen edges, screen corners, and edge-snapping modes. `watch()` is the default continuous placement shape; it should yield to live user drag/resize and only reapply after the bounds settle. A placement watch follows position by default; it must not keep resizing the window back to an old width/height after the user or backend changes size. Use `applyOnce()` only when a one-shot placement, including size application, is intentional. Treat the returned `source` and `kind` as provenance; tray placement can be unavailable by context even when WebView itself is supported.
+`watch()` follows position and yields to live drag/resize until bounds settle. It must not continuously restore a stale size. Use `applyOnce()` when one-shot placement and size application are intentional. Stop watches before final destroy; pause or stop them when hidden if their polling would fight lifecycle.
 
-Geometry law: `WebviewPlacementKit` consumes logical desktop pixels for the full `Rect`. Host code should normalize native screen, tray, and window bounds before they reach placement math; do not mix physical `x/y` with logical `width/height`.
+All public placement rectangles use logical desktop pixels. Physical pixels belong only inside native Win32/AppKit/WebView substrate code.
 
-For tray-anchored panels, prefer `getBounds()` as the source of truth after user drag/resize. Keep `WebviewPlacementKit`, `styleKit`, and `mediaQueryKit` in backend code. If page controls need to trigger backend behavior, send an intent through `navigator.opentray.ipc.postMessage(...)`, drain it with `WebviewWindowHandle.drainIpcMessages()`, then let the backend call the kit. Stop placement/media/message watches when the panel hides or closes so polling does not fight the window lifecycle.
+## Frameless And Overlay
 
-## Overlay and Frameless Guidance
+- `frameless` removes native titlebar/chrome; the page owns controls, accessibility, and deliberate drag regions.
+- `resizable` is an independent public setting.
+- `windowControlsOverlay` retains native controls while page content enters titlebar space.
+- Native semantic blur/material is a window background concern, not CSS `backdrop-filter`.
+- Do not inject titlebars, drag strips, or CSS into consumer pages.
 
-Do not auto-inject titlebars, drag strips, or CSS into the user's HTML. For overlay titlebars, explain that the page should deliberately read `navigator.opentrayWindow.overlay.getTitlebarAreaRect()` and bind native drag behavior with `startAppRegionDrag()` where the product wants drag. For borderless panels, remind the user that once native controls disappear, their app owns controls, focus states, and accessibility.
+On Windows, read `windows-frameless.md` before comparing a package consumer with source `example:webview-control`; the source example may select an internal comparator topology.
 
-Lightweight tray panels usually behave like desktop cards. If the whole document develops root-level scrollbars, the experience often feels less native than choosing a better window size, responsive card layout, or an intentional internal scroll region. Explain that product tradeoff instead of prescribing a universal CSS block.
+## Visual Sources
 
-`example:placement` is the source-tree demo for `WebviewPlacementKit` tray, screen, and edge placement. `example:mediaQuery` is the source-tree demo for `mediaQueryKit` plus `styleKit` responsive native-window behavior.
-
-## Examples
-
-Protocol-only facade example:
-
-```bash
-pnpm --filter @opentray/ext-webview example:webview
-```
-
-Real native smoke is a visual acceptance recipe, not an `opentray` CLI subcommand. In a source checkout, use:
+Use source examples according to the question:
 
 ```bash
-OPENTRAY_EXAMPLE_WEBVIEW_SMOKE=1 pnpm --filter opentray example:daemon-tray
+pnpm --filter opentray example:webview-control
+pnpm --filter opentray example:placement
+pnpm --filter opentray example:mediaQuery
 ```
 
-## Platform Truth
-
-- macOS is the stable human-visible acceptance path.
-- Windows is the stable WebView2-backed runtime path.
-- Linux is unsupported for `@opentray/ext-webview`; do not tell package users to install `@opentray/ext-webview-linux-*`.
-- If a platform cannot create a visible native WebView runtime, it should return explicit unsupported/capability failure rather than fake success.
-
-## Geometry Law
-
-Treat OpenTray window, screen, and tray rectangles as one logical desktop pixel system at the public API boundary. Do not mix browser CSS pixels, `devicePixelRatio`, or Win32 physical pixels into `WebviewPlacementKit`, `styleKit`, or `mediaQueryKit`.
-
-Use physical pixels only inside the native substrate when calling Win32 APIs such as `CreateWindowExW`, `SetWindowPos`, `GetWindowRect`, or WebView controller bounds. Overlay titlebar geometry is the exception: it starts physical in the native payload and is converted to CSS pixels by the injected bootstrap script because browser zoom and viewport rules can shift the final page coordinate space.
-
-DPI matters when:
-
-- the code crosses a native boundary and must convert between Win32 and public `Rect`
-- the code reads overlay titlebar geometry on Windows
-- the code inspects monitor scale or native caption metrics
-
-DPI does not belong in:
-
-- placement math
-- responsive native window recipes
-- screen-relative window anchors
-- page-facing `Rect` comparisons
+Final visual acceptance must run the actual consumer app. Verify taskbar/switcher participation, minimize -> `visibleChange(false)`, one-click restore, blur auto-hide ownership, retained page state, placement, and every resize edge.

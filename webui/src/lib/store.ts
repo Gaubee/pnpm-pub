@@ -5,6 +5,9 @@
  * The store exposes reactive Svelte state for profiles / workspaces / events
  * and helper methods for every action verb in the protocol. The WebToken is
  * injected via the URL hash by the opentray host (Chapter 3.2.2 安全分发).
+ *
+ * Orthogonal intent (2026-07-17, original request): the page never infers
+ * native visibility from document.visibilityState; OpenTray owns that fact.
  */
 import { writable, derived, get } from "svelte/store";
 import { browser } from "$app/environment";
@@ -208,7 +211,6 @@ let stopStateSubscription: (() => Promise<void>) | null = null;
 /** Open (or reopen) the daemon WebSocket and authenticate with the WebToken. */
 export function connect(): void {
   if (!browser) return;
-  installHideReporter();
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
@@ -267,69 +269,6 @@ function startStateSubscription(): void {
       daemon.update((s) => ({ ...s, connected: false, authed: false }));
       scheduleReconnect();
     },
-  });
-}
-
-/**
- * Report out-of-band window hides to the daemon. The opentray host's hide()
- * and the OS close (X) button emit NO dedicated lifecycle event, so without
- * this the TrayHost's in-memory visibility would drift out of sync and the
- * next tray click would need two presses (toggle mis-reads "shown" → hide).
- *
- * We use two complementary signals because page visibility is NOT symmetric
- * across hosts:
- *   - `visibilitychange` → 'hidden': fires reliably on Windows (WebView2 flips
- *     page visibility on SW_HIDE, incl. the WM_CLOSE→SW_HIDE X-button path).
- *     On macOS (WKWebView) `orderOut` does NOT reliably flip visibilityState,
- *     so this alone can miss a hide.
- *   - `window` blur + a short delayed re-check: a blur fires on both platforms
- *     when the window loses key/focus (incl. the X-button on macOS). After the
- *     blur we re-check `document.visibilityState` after a brief delay — if the
- *     page reports hidden, the window was dismissed (not just momentarily
- *     unfocused, which would keep visibilityState 'visible'). This catches the
- *     macOS X-close case that visibilitychange alone misses.
- *
- * The message is idempotent (the daemon no-ops an already-hidden mark), so
- * redundant signals from both paths are harmless. The listeners are installed
- * once.
- */
-let hideReporterInstalled = false;
-function reportHidden(): void {
-  void rpc?.tray.windowHidden();
-}
-function installHideReporter(): void {
-  if (!browser || hideReporterInstalled) return;
-  hideReporterInstalled = true;
-  // A page reload / SPA navigation unloads the document, which the browser
-  // surfaces as a `visibilitychange → hidden`. That is NOT a real window hide
-  // — the native window stays visible and just reloads its content. Without
-  // this gate the daemon's `markHidden()` poisons `visibility = "hidden"`,
-  // and subsequent blurs short-circuit in `reevaluateAutoClose` (visibility
-  // must be "shown" to authorize auto-close), so blur auto-hide dies until a
-  // close+reopen cycle runs `show()` and resets the state. We arm this flag on
-  // unload precursors (which fire BEFORE visibilitychange) and never clear it,
-  // since the document is going away anyway.
-  let unloading = false;
-  const armUnload = () => {
-    unloading = true;
-  };
-  window.addEventListener("pagehide", armUnload, { capture: true });
-  window.addEventListener("beforeunload", armUnload, { capture: true });
-  // Primary: page visibility flip (reliable on Windows). Skip the unload-driven
-  // flip so a reload no longer masquerades as a real hide.
-  document.addEventListener("visibilitychange", () => {
-    if (unloading) return;
-    if (document.visibilityState === "hidden") reportHidden();
-  });
-  // Supplement: on a window blur, re-check visibility shortly after. A plain
-  // focus loss (clicking another app) keeps visibilityState 'visible', so the
-  // re-check no-ops; an actual hide (orderOut/SW_HIDE) flips it to 'hidden'
-  // and we report. This bridges the macOS X-close gap.
-  window.addEventListener("blur", () => {
-    setTimeout(() => {
-      if (unloading) return;
-      if (document.visibilityState === "hidden") reportHidden();
-    }, 150);
   });
 }
 

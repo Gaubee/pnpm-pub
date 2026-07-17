@@ -4,6 +4,9 @@
  * Serves the SvelteKit SPA from `dist/webui` and upgrades WebSocket connections
  * carrying the daemon's per-process WebToken. WebUI actions are funneled
  * through the shared oRPC contract into the scheduler.
+ *
+ * Orthogonal intent (2026-07-17, original request): WebUI may complete its
+ * exit animation, but it must not report or infer native window visibility.
  */
 import http from "node:http";
 import path from "node:path";
@@ -576,12 +579,8 @@ export class WebServer {
         }),
       },
       tray: {
-        completeAutoClose: rpc.tray.completeAutoClose.handler(() => {
-          this.trayHost?.completeAutoClose();
-          return { ok: true };
-        }),
-        windowHidden: rpc.tray.windowHidden.handler(() => {
-          this.trayHost?.markHidden();
+        completeAutoClose: rpc.tray.completeAutoClose.handler(async () => {
+          await this.trayHost?.completeAutoClose();
           return { ok: true };
         }),
         routeChanged: rpc.tray.routeChanged.handler(({ input }) => {
@@ -607,15 +606,21 @@ export class WebServer {
         }),
         install: rpc.appUpdate.install.handler(async () => {
           const service = this.deps.appUpdate;
-          return service ? service.startInstall() : { ok: false, error: "Application updates are unavailable." };
+          return service
+            ? service.startInstall()
+            : { ok: false, error: "Application updates are unavailable." };
         }),
         restart: rpc.appUpdate.restart.handler(async () => {
           const service = this.deps.appUpdate;
-          return service ? service.restartNow() : { ok: false, error: "Application updates are unavailable." };
+          return service
+            ? service.restartNow()
+            : { ok: false, error: "Application updates are unavailable." };
         }),
         cancelRestart: rpc.appUpdate.cancelRestart.handler(async () => {
           const service = this.deps.appUpdate;
-          return service ? service.cancelRestart() : { ok: false, error: "Application updates are unavailable." };
+          return service
+            ? service.cancelRestart()
+            : { ok: false, error: "Application updates are unavailable." };
         }),
       },
     });

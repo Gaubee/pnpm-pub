@@ -1,6 +1,10 @@
 /**
  * Daemon bootstrap & lifecycle (Chapter 5.1, 5.2, 6.4).
  *
+ * Orthogonal intent (2026-07-17, original request): tray windows stay out of
+ * system switchers and keep page-owned auto-close while native visibility is
+ * projected by TrayHost.
+ *
  *  - Single-instance lock via the IPC socket (5.1.3)
  *  - Loads config + credentials into the in-memory pool (3.1, 5.1)
  *  - Brings up IPC + HTTP/WS servers (5.2)
@@ -25,6 +29,7 @@ import { WINDOW_ENTER_SEED_OPACITY } from "../shared/window-opacity.js";
 import { trayIconForProfile } from "./avatar.js";
 import { getProfileSecrets } from "./keychain.js";
 import { AppUpdateService } from "./app-update.js";
+import { configureOpenTrayWindowsHostTopology } from "./opentray-windows-host.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -423,7 +428,7 @@ export { keychain };
  * stopped on daemon shutdown.
  *
  * Per the skill (ext-webview.md): createWebviewWindow bootstraps ONCE; repeated
- * activations restore via show()/hide() and must NOT replay startup options.
+ * activations reveal/hide via toVisible()/close() and must NOT replay startup options.
  * The `icon` is optional; native icon support is `rgba` (skill
  * troubleshooting), so only a real .png is passed.
  *
@@ -441,6 +446,11 @@ async function tryCreateTray(
   let panel: OpentrayWindow | null = null;
   let stopPlacement: (() => void) | undefined;
   try {
+    const windowsHostTopology = configureOpenTrayWindowsHostTopology(process.env, process.platform);
+    if (process.platform === "win32") {
+      log(`OpenTray Windows host topology: ${windowsHostTopology}`);
+    }
+
     // opentray 0.10 tray-first model: createTray() is the public creation
     // entrypoint and owns local-broker transport selection. pnpm-pub only
     // declares the tray atom and runtime identity.
@@ -493,13 +503,18 @@ async function tryCreateTray(
         // The "keep open" pin (whether blur auto-hide is enabled) is separate
         // and lives in TrayHost, not the window style.
         keepOnTop: true,
+        // pnpm-pub owns a guarded exit animation, so native blur must not hide
+        // the window before the page finishes. TrayHost calls close() afterward.
+        autoHide: false,
+        // Windows tray panels are utility surfaces, not taskbar/Alt+Tab windows.
+        platform: { windows: { showInSwitchers: false } },
         opacity: WINDOW_ENTER_SEED_OPACITY,
         background: { kind: "semantic", token: "blur", state: "active" },
       },
     });
 
-    // Initial show so the window is visible on first tray mount (the panel is
-    // created hidden; subsequent toggles go through tray-host show/hide).
+    // Initial show makes the hidden bootstrap session visible. Subsequent
+    // tray toggles use TrayHost's toVisible()/close() lifecycle.
     await panel.show();
     log("tray window shown on mount");
     if (enableDevtools) {

@@ -54,8 +54,8 @@
   },
   "dependencies": {
     "@github/keytar": "^7.0.0",
-    "@opentray/ext-webview": "^0.14.0",
-    "opentray": "^0.14.0",
+    "@opentray/ext-webview": "^0.14.3",
+    "opentray": "^0.14.3",
     "validate-npm-package-name": "^8.0.0"
   },
   "devDependencies": {
