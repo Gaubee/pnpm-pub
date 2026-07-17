@@ -131,8 +131,7 @@ export class TrayHost {
       const offMenu = this.tray.onMenuClick(({ itemId }) => {
         this.log(`menu click received: itemId=${itemId}`);
         if (itemId === openId) {
-          void this.toggle();
-          return;
+          return this.toggle();
         }
         if (quitId === undefined || itemId !== quitId) return;
         this.log("quit requested");

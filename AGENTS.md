@@ -31,6 +31,7 @@
    - pnpm-pub 保留页面退出动画，因此显式使用 `autoHide:false`，动画完成后由 daemon 调用 `close()`；普通托盘应用优先使用 OpenTray 默认原生 auto-hide。
    - `keepOnTop`、`autoHide`、`showInSwitchers` 是三个正交事实。pnpm-pub 原生窗口固定 `keepOnTop:true`、`style.platform.windows.showInSwitchers:false`；偏好字段 `keepOnTop` 当前只表示页面层保持打开门禁，不反向改写原生窗口层级。
    - 页面协议不得重新增加 `windowHidden` 回报。退出动画只允许回报 `completeAutoClose`，窗口事实由 OpenTray 查询与事件提供。
+   - 托盘动作必须暴露可等待的完成边界：事件源可以忽略返回值，但菜单回调仍返回同一个 `toggle()` Promise，使宿主适配器、关闭流程与测试能够观察队列完成。`toggle()` 内部必须吞并并记录原生拒绝，禁止形成未处理 Promise。
 
 5. 文件意图预警
    - `src/daemon/tray-host.ts` 当前已承载 5 个正交意图，达到上限。后续新增 placement、icon、permission 或其它窗口策略前，必须先征得用户同意并拆分文件。
