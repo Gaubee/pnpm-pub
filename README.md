@@ -84,3 +84,8 @@ pnpm-pub is local-first. The CLI, daemon, and tray window communicate over a loc
 ## License
 
 [MIT](LICENSE)
+
+## Links
+
+- [LINUX DO — 中文开发者社区](https://linux.do/)
+- [OpenTray](https://github.com/jixoai/opentray)
