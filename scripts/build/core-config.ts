@@ -82,7 +82,8 @@ function copyAssets(): Plugin {
       const assetsDir = path.resolve(process.cwd(), "assets");
       if (!existsSync(assetsDir)) return;
       for (const file of readdirSync(assetsDir)) {
-        if (file.endsWith(".svg"))
+        // SVG sources + the committed Darwin .icns app icon (gen-app-icon.mjs).
+        if (file.endsWith(".svg") || file.endsWith(".icns"))
           copyFileSync(path.join(assetsDir, file), path.join(destDir, file));
       }
     },

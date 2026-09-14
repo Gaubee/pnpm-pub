@@ -204,11 +204,48 @@ describe("bootDaemon logging", () => {
             resizable: true,
             keepOnTop: true,
             autoHide: false,
-            platform: { windows: { showInSwitchers: false } },
+            // OpenTray 0.27 Shell-role fact: Dock identity on darwin, utility
+            // projection (no taskbar/Alt+Tab) elsewhere.
+            appMode: process.platform === "darwin",
             opacity: WINDOW_ENTER_SEED_OPACITY,
           }),
         }),
       );
+      expect(mount.createWebviewWindow).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          style: expect.objectContaining({ platform: expect.anything() }),
+        }),
+      );
+    } finally {
+      await handles.stop({ exit: false });
+    }
+  });
+
+  it("Scenario: Given daemon startup, When OpenTray binds the app identity, Then the Darwin Dock icon is declared and no daemon-child launch vector is persisted", async () => {
+    const mount = makeHappyMount();
+    trayMocks.createTray.mockResolvedValueOnce(mount);
+
+    const handles = await bootDaemon({ cliVersion: "0.1.0" });
+    expect(handles).not.toBeNull();
+    if (!handles) return;
+
+    try {
+      const runtime = trayMocks.createTray.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(runtime).toBeDefined();
+      // Source/dev layout has no bundled cli.js next to the daemon, so the
+      // durable-entry vector must stay undefined (never the daemon child).
+      expect(runtime.appLaunch).toBeUndefined();
+      if (process.platform === "darwin") {
+        expect(runtime.appIcon).toEqual([
+          {
+            platform: "darwin",
+            format: "icns",
+            source: { type: "file", path: expect.stringContaining("app-icon.icns") },
+          },
+        ]);
+      } else {
+        expect(runtime.appIcon).toBeUndefined();
+      }
     } finally {
       await handles.stop({ exit: false });
     }

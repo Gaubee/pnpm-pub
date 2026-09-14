@@ -22,7 +22,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createResolverByRootFile } from "@gaubee/node/path";
-import type { CreateTrayOptions, EventfulTrayHandle, TrayIcon } from "opentray";
+import type {
+  AppIcon,
+  CreateTrayOptions,
+  EventfulTrayHandle,
+  OpenTrayAppLaunchOptions,
+  TrayIcon,
+} from "opentray";
 import type { IpcStatusFrame } from "../shared/index.js";
 import { daemonLogPath } from "../shared/paths.js";
 import { WINDOW_ENTER_SEED_OPACITY } from "../shared/window-opacity.js";
@@ -173,6 +179,10 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   const webToken = randomHex(32); // 64-char hex (256-bit) — Chapter 3.2.2.
   const scheduler = new PublishScheduler(store);
 
+  // Declared before the IPC server so early `start` frames (the socket accepts
+  // connections during boot) never hit the temporal dead zone in onStart.
+  let trayHost: TrayHost | null = null;
+
   const ipc = new IpcServer({
     scheduler,
     cliVersion: opts.cliVersion,
@@ -181,11 +191,16 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
       await daemonHandles?.stop({ exit: true });
     },
     onStart: async (profileOverride) => {
-      if (profileOverride && store.getProfile(profileOverride)) {
+      if (profileOverride) {
+        if (!store.getProfile(profileOverride)) return false;
         await store.setDefault(profileOverride);
-        return true;
       }
-      return !profileOverride;
+      // Durable-entry contract (opentray app-mode): `start` against a healthy
+      // daemon projects an open/focus intent instead of exiting silently.
+      // TrayHost.show() contains all native failures, so this is fire-and-
+      // forget — the status reply must not wait on the window transition.
+      void trayHost?.show();
+      return true;
     },
   });
 
@@ -229,8 +244,8 @@ export async function bootDaemon(opts: DaemonOptions): Promise<DaemonHandles | n
   // Tray host (Chapter 6.4). We bind opentray's public createTray() directly;
   // when the runtime is unavailable (dev/headless) we still construct a
   // TrayHost with null handles so the KeepOnTop/flash state machine is
-  // observable via the daemon log.
-  let trayHost: TrayHost | null = null;
+  // observable via the daemon log. (`trayHost` itself is declared above the
+  // IPC server — see the single-instance lock comment.)
   let stopPlacement: (() => void) | undefined;
   if (opts.withTray !== false) {
     // Chapter 1.3.2 / 4.3: pre-fetch the active profile's avatar so the tray
@@ -477,6 +492,9 @@ async function tryCreateTray(
       packageVersion,
       appId: "com.pnpm-pub",
       appName: "pnpm-pub",
+      // Application identity (opentray 0.15+): the Dock/taskbar icon comes
+      // from appIcon, not from the tray icon or the WebView favicon.
+      ...appIdentityRuntimeOptions(log),
     });
     tray = baseTray.extend(ext.WebviewExt);
 
@@ -506,8 +524,12 @@ async function tryCreateTray(
         // pnpm-pub owns a guarded exit animation, so native blur must not hide
         // the window before the page finishes. TrayHost calls close() afterward.
         autoHide: false,
-        // Windows tray panels are utility surfaces, not taskbar/Alt+Tab windows.
-        platform: { windows: { showInSwitchers: false } },
+        // OpenTray 0.27: appMode replaces platform.windows.showInSwitchers as
+        // the Shell-role fact. macOS opts in so the panel carries the Dock
+        // identity (app icon, warm reopen, cold relaunch via appLaunch);
+        // Windows keeps the pinned utility projection (appMode defaults to
+        // false: no taskbar / Alt+Tab presence).
+        appMode: process.platform === "darwin",
         opacity: WINDOW_ENTER_SEED_OPACITY,
         background: { kind: "semantic", token: "blur", state: "active" },
       },
@@ -747,6 +769,55 @@ function resolveAsset(name: string): string | null {
 //            as a single-color menubar item that adapts to light/dark appearance.
 const ICON_COLOR_FILE = "icon-windows.png";
 const ICON_MONO_FILE = "icon-macos.png";
+
+/** Darwin application icon (Dock / .app bundle), generated from assets/icon.svg. */
+const APP_ICON_FILE = "app-icon.icns";
+
+/**
+ * Application-identity runtime options for createTray (opentray 0.15+).
+ *
+ * appIcon gives the Dock/.app bundle its artwork; appLaunch persists the
+ * durable public entry (`cli.js start`) into the stable Darwin .app bundle so
+ * a Dock cold relaunch rebuilds the complete application graph. Dev sessions
+ * are excluded: the Vite supervisor owns that graph, and persisting the daemon
+ * child would relaunch a supervisor-less daemon (opentray skill, app-mode.md).
+ */
+function appIdentityRuntimeOptions(log: (line: string) => void): {
+  appIcon?: AppIcon;
+  appLaunch?: OpenTrayAppLaunchOptions;
+} {
+  const options: { appIcon?: AppIcon; appLaunch?: OpenTrayAppLaunchOptions } = {};
+  if (process.platform === "darwin") {
+    const icns = resolveAsset(APP_ICON_FILE);
+    if (icns) {
+      options.appIcon = [
+        { platform: "darwin", format: "icns", source: { type: "file", path: icns } },
+      ];
+    } else {
+      log(`app icon missing (${APP_ICON_FILE}) — Dock falls back to the OS default`);
+    }
+  }
+  const appLaunch = resolveAppLaunch();
+  if (appLaunch) options.appLaunch = appLaunch;
+  return options;
+}
+
+/**
+ * Durable Dock-relaunch vector: `node <dist>/cli.js start`. Resolved from the
+ * daemon's own location, so a bundled release install (global, npx cache)
+ * persists its real entry — never the raw daemon child. Returns undefined in
+ * source/dev layouts where no bundled CLI entry exists next to the daemon.
+ */
+function resolveAppLaunch(): OpenTrayAppLaunchOptions | undefined {
+  if (isDevRuntime()) return undefined;
+  const cliEntry = path.join(__dirname, "cli.js");
+  if (!fs.existsSync(cliEntry)) return undefined;
+  return {
+    command: process.execPath,
+    args: [cliEntry, "start"],
+    cwd: path.dirname(path.dirname(cliEntry)),
+  };
+}
 
 /**
  * Resolve the tray icon projection (`opentray` public `TrayIcon`).

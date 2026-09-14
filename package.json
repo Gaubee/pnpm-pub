@@ -32,6 +32,7 @@
   "type": "module",
   "scripts": {
     "gen:icons": "node scripts/gen-icons.mjs",
+    "gen:app-icon": "node scripts/gen-app-icon.mjs",
     "build": "bun run scripts/build/run.ts",
     "dev": "tsx scripts/dev-webui.ts",
     "dev:core": "tsx src/daemon/dev.ts",
@@ -54,12 +55,13 @@
   },
   "dependencies": {
     "@github/keytar": "^7.0.0",
-    "@opentray/ext-webview": "^0.14.4",
-    "opentray": "^0.14.4",
+    "@opentray/ext-webview": "^0.27.4",
+    "opentray": "^0.27.4",
     "validate-npm-package-name": "^8.0.0"
   },
   "devDependencies": {
     "@gaubee/node": "^0.4.0",
+    "@opentray/icon": "0.27.4",
     "@orpc/client": "1.14.6",
     "@orpc/contract": "1.14.6",
     "@orpc/server": "1.14.6",

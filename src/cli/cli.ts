@@ -743,19 +743,13 @@ async function runStart(profileOverride?: string): Promise<number> {
     process.stderr.write("Failed to start the pnpm-pub daemon.\n");
     return 1;
   }
-  // Chapter 7.1.1: `start [--profile=*]` selects the default identity the
-  // daemon should load. We send a management request so the daemon applies it.
-  if (profileOverride && profileOverride.length > 0) {
-    sock.write(encodeFrame({ command: "start", profileOverride } satisfies IpcManagementRequest));
-    return relayStart(sock);
-  }
-  try {
-    sock.end();
-  } catch {
-    /* ignore */
-  }
-  process.stdout.write("Daemon started. Open the tray to interact.\n");
-  return 0;
+  // Chapter 7.1.1 + durable-entry contract (opentray app-mode): always send
+  // the management frame. The daemon applies the optional profile override
+  // and projects an open/focus intent to the tray window — the same vector a
+  // Dock relaunch takes when a daemon is already alive, so `start` never
+  // exits silently against a healthy daemon.
+  sock.write(encodeFrame({ command: "start", profileOverride } satisfies IpcManagementRequest));
+  return relayStart(sock);
 }
 
 function relayStart(sock: net.Socket): Promise<number> {

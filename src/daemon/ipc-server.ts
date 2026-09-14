@@ -254,19 +254,21 @@ export class IpcServer {
       return undefined;
     }
     if (cmd === "start") {
-      if (frame.profileOverride && frame.profileOverride.length > 0) {
-        const applied = (await this.deps.onStart?.(frame.profileOverride)) ?? true;
-        if (!applied) {
-          const message = `Profile "${frame.profileOverride}" not found. Add it via the tray GUI first.`;
-          markDaemonExit(socket);
-          writeExit(socket, 1, message);
-          try {
-            socket.end();
-          } catch {
-            /* ignore */
-          }
-          return undefined;
+      // Always consult the owner: the start command is the durable-entry
+      // intent, so even without a profile override the daemon projects an
+      // open/focus intent (Dock relaunch and `pnpm-pub start` share it).
+      const applied = (await this.deps.onStart?.(frame.profileOverride)) ?? true;
+      const hasProfileOverride = Boolean(frame.profileOverride && frame.profileOverride.length > 0);
+      if (hasProfileOverride && !applied) {
+        const message = `Profile "${frame.profileOverride}" not found. Add it via the tray GUI first.`;
+        markDaemonExit(socket);
+        writeExit(socket, 1, message);
+        try {
+          socket.end();
+        } catch {
+          /* ignore */
         }
+        return undefined;
       }
       markDaemonExit(socket);
       safeWrite(socket, encodeFrame({ type: "status", active: true }));
