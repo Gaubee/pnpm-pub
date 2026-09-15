@@ -54,13 +54,13 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "@github/keytar": "^7.0.0",
     "@opentray/ext-webview": "^0.27.4",
     "opentray": "^0.27.4",
     "validate-npm-package-name": "^8.0.0"
   },
   "devDependencies": {
     "@gaubee/node": "^0.4.0",
+    "@github/keytar": "^7.0.0",
     "@opentray/icon": "0.27.4",
     "@orpc/client": "1.14.6",
     "@orpc/contract": "1.14.6",

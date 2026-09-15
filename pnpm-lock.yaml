@@ -18,9 +18,6 @@ importers:
 
   .:
     dependencies:
-      '@github/keytar':
-        specifier: ^7.0.0
-        version: 7.10.6
       '@opentray/ext-webview':
         specifier: ^0.27.4
         version: 0.27.4(opentray@0.27.4(@gaubee/util@0.35.2))
@@ -34,6 +31,9 @@ importers:
       '@gaubee/node':
         specifier: ^0.4.0
         version: 0.4.0(@gaubee/util@0.35.2)
+      '@github/keytar':
+        specifier: ^7.0.0
+        version: 7.10.6
       '@opentray/icon':
         specifier: 0.27.4
         version: 0.27.4
