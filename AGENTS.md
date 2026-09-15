@@ -49,3 +49,10 @@
    - pnpm-pub 只需声明并锁定 `opentray` 与 `@opentray/ext-webview` 至 `^0.27.4`，不得在应用层拼接 WebView2 profile、复制 native broker 或通过 `pnpx` 路径做条件分支。
    - 发布验收必须分别检查源码启动和发布包启动：`pnpm pub start`、`pnpx pnpm-pub@latest start`；异常时先核对 `pnpm-pub version`、npm 上的实际版本与 OpenTray 依赖版本，再检查 broker 断开日志。
    - `pnpx` 短暂显示后消失属于发布 artifact/runtime 组合问题，不能只用本地 workspace 运行结果判定已修复。
+
+8. 运行时依赖零构建脚本与发布验收矩阵（2026-09-15；`pnpx pnpm-pub@latest` 安装失败实证，1.4.2 起存量、1.5.1 修复）
+   - `dependencies` 禁止出现携带 install/postinstall 构建脚本的包：pnpm dlx/pnpx 沙箱以 `ERR_PNPM_IGNORED_BUILDS` 拒绝安装，`pnpx pnpm-pub@latest start` 在 CLI 运行前就失败。新增运行时依赖前必须 `npm view <pkg> scripts` 核查；确需原生的走 `dist/prebuilds/` 自带分发或换纯 JS 实现。
+   - 原生能力自带分发的范本是 keytar：构建期把 `@github/keytar` 的 JS shim 与其 npm tarball 自带的多平台 `.node` 预编译拷入 `dist/prebuilds/keytar/`（core-config 的 TARGET_PLATFORMS 四平台），运行时 `keychain.ts` 以 createRequire 动态加载该拷贝；keytar 因此留在 devDependencies，不得回移 dependencies。
+   - 发布验收矩阵（每条真机实证后才算发布完成）：源码路径 `pnpm release:start/status/stop` 生命周期完整；发布包路径 `pnpx pnpm-pub@<version> start`（精确版本 spec）干净安装并启动 daemon；registry 解析由 npm 与当前默认 pnpm（10.x）把 `latest` 指向新版本。
+   - 本机已知 quirk：全局 shim 派发的 pnpm 12.4.1 runner 把 `pnpm-pub@latest` 钉死解析到旧版本（dlx/packument 缓存、store、HOME、PNPM_HOME 逐层隔离无效，registry full/corgi/dist-tags 表面均正确）。本机验收一律用精确版本 spec；升级全局默认 pnpm 后需复查 `pnpx pnpm-pub@latest`。
+   - 验收命令一律日志走文件、显式判 `$?`：`pnpx ... | head` 会因管道提前关闭把 dlx 进程 SIGPIPE 掉，制造假失败。
